@@ -19,6 +19,7 @@ from . import (
     fusion,
     health,
     hiring_signals,
+    http,
     jobs_digest,
     library_index,
     meta_ads,
@@ -303,8 +304,14 @@ def _render_drill_context(report: schema.Report) -> list[str]:
         return []
     titles = [_safe_title(str(t)) for t in (context.get("cluster_titles") or [report.drill_of])]
     sources = context.get("sources") or []
-    source_text = ", ".join(_source_label(source) for source in sources) or "none"
-    original = _defang_engine_sentinels(str(context.get("original_summary") or "No cached summary was available."))
+    source_text = ", ".join(_safe_title(_source_label(str(source))) for source in sources) or "none"
+    raw_original = str(context.get("original_summary") or "No cached summary was available.")
+    original_lines = [
+        _escape_atx_heading_prefix(line)
+        for line in _defang_engine_sentinels(
+            _NON_NEWLINE_CONTROL_CHARS.sub(" ", raw_original)
+        ).splitlines()
+    ] or ["No cached summary was available."]
     target = _safe_title(str(context.get("target") or report.drill_of))
     lines = [
         "## Drill Follow-up",
@@ -314,7 +321,7 @@ def _render_drill_context(report: schema.Report) -> list[str]:
         "",
         "### Original",
         "",
-        original,
+        *original_lines,
         "",
         "### Deeper",
         "",
@@ -621,13 +628,25 @@ def _render_corpus_section(report: schema.Report, limit: int = 8) -> list[str]:
     return lines
 
 
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f]+")
+_NON_NEWLINE_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]+")
+_TILDE_FENCE_RUN = re.compile(r"~{3,}")
+_PASS_THROUGH_FOOTER_PHRASE = re.compile(r"PASS-THROUGH\s+FOOTER", re.IGNORECASE)
+_EVIDENCE_FOR_SYNTHESIS_PHRASE = re.compile(r"EVIDENCE\s+FOR\s+SYNTHESIS", re.IGNORECASE)
+_LIBRARY_CONTEXT_TOKEN = re.compile(r"last30days:library-context", re.IGNORECASE)
+_CANONICAL_OUTPUT_PHRASE = re.compile(
+    r"END\s+OF\s+last30days\s+CANONICAL\s+OUTPUT", re.IGNORECASE
+)
+_PRIVATE_CORPUS_TOKEN = re.compile(r"LAST30DAYS_PRIVATE_CORPUS", re.IGNORECASE)
+
+
 def _defang_corpus_sentinels(value: str) -> str:
     """Source content must not be able to terminate the private-block markers.
 
     A note containing the literal end marker would otherwise close the block
     early, leaving later corpus snippets in publishable output.
     """
-    return value.replace("LAST30DAYS_PRIVATE_CORPUS", "LAST30DAYS_PRIVATE-CORPUS")
+    return _PRIVATE_CORPUS_TOKEN.sub("LAST30DAYS_PRIVATE-CORPUS", value)
 
 
 def _defang_engine_sentinels(value: str) -> str:
@@ -642,14 +661,17 @@ def _defang_engine_sentinels(value: str) -> str:
     neutralizes them; the phrase substitutions are defense in depth for a model
     that pattern-matches on the wording rather than the syntax.
     """
-    return (
+    value = (
         value.replace("<!--", "<!- -")
         .replace("-->", "- ->")
         .replace("```", "'''")
-        .replace("~~~", "~ ~ ~")
-        .replace("PASS-THROUGH FOOTER", "PASS-THROUGH-FOOTER")
-        .replace("EVIDENCE FOR SYNTHESIS", "EVIDENCE-FOR-SYNTHESIS")
     )
+    value = _TILDE_FENCE_RUN.sub(lambda match: " ".join(match.group(0)), value)
+    value = _PASS_THROUGH_FOOTER_PHRASE.sub("PASS-THROUGH-FOOTER", value)
+    value = _EVIDENCE_FOR_SYNTHESIS_PHRASE.sub("EVIDENCE-FOR-SYNTHESIS", value)
+    value = _LIBRARY_CONTEXT_TOKEN.sub("last30days:library_context", value)
+    value = _CANONICAL_OUTPUT_PHRASE.sub("END OF last30days CANONICAL-OUTPUT", value)
+    return value
 
 
 def _safe_title(title: str) -> str:
@@ -663,7 +685,7 @@ def _safe_title(title: str) -> str:
     Collapsing whitespace first is what keeps the title on the line the
     caller built for it.
     """
-    return _defang_engine_sentinels(" ".join(title.split()))
+    return _defang_engine_sentinels(" ".join(_CONTROL_CHARS.sub(" ", title).split()))
 
 
 _FRESHNESS_PRIORITY = {
@@ -716,6 +738,7 @@ def _freshness_table(verdicts: list[schema.FreshnessVerdict], heading: str) -> l
         )
         evidence_label = (
             _safe_title(raw_label)
+            .replace("\\", "\\\\")
             .replace("|", "\\|")
             .replace("[", "\\[")
             .replace("]", "\\]")
@@ -726,14 +749,15 @@ def _freshness_table(verdicts: list[schema.FreshnessVerdict], heading: str) -> l
                 safe_dest = rendered_link.rsplit("](", 1)[1][:-1].replace("|", "%7C")
                 evidence = f"[{evidence_label}]({safe_dest})"
             elif rendered_link:
-                evidence = f"{evidence_label} ({rendered_link.replace('|', '\\|')})"
+                evidence = f"{evidence_label} ({rendered_link})"
             else:
                 evidence = evidence_label
         else:
             evidence = evidence_label
         checked_at = _safe_title(str(verdict.checked_at or "")).replace("|", "\\|")
+        state = _safe_title(str(verdict.verdict or "")).replace("|", "\\|")
         lines.append(
-            f"| **{_safe_title(str(verdict.verdict))}** | {claim} | {evidence} | {checked_at} |"
+            f"| **{state}** | {claim} | {evidence} | {checked_at} |"
         )
     return lines
 
@@ -1070,14 +1094,19 @@ def render_for_html(
         evidence_report,
         evidence_report.clusters,
     )
+    no_solid_evidence = bool(evidence_report.clusters) and not html_clusters
     html_candidates = _candidates_for_auxiliary_sections(
         evidence_report,
         evidence_report.clusters,
         html_clusters,
     )
-    hiring_block = _render_hiring_signals(
-        evidence_report,
-        candidates=html_candidates if evidence_report.clusters else None,
+    hiring_block = (
+        []
+        if no_solid_evidence
+        else _render_hiring_signals(
+            evidence_report,
+            candidates=html_candidates if evidence_report.clusters else None,
+        )
     )
     if synthesis_md:
         lines.extend(["", synthesis_md.strip()])
@@ -1776,20 +1805,22 @@ _MARKDOWN_PLAIN_TEXT_ESCAPES = re.compile(r"([\\`*_{}\[\]()#+\-.!|~:])")
 
 
 def _sanitize_url_for_single_line_output(url: str) -> str:
-    """Collapse embedded newlines/carriage-returns out of an untrusted URL.
+    """Scrub URL userinfo, collapse line breaks/control chars, and defang sentinels.
 
-    A URL is not supposed to contain raw line breaks; a source-controlled
-    value that does could otherwise inject fabricated report structure
-    (fake headings, list items) into the saved single-line output --
-    whether or not it ends up wrapped in markdown link syntax. Applied
-    before either the link-safety check or the plain-text fallback below,
-    so this closes the injection at the root rather than only for links.
+    A URL is not supposed to contain embedded credentials or raw line breaks;
+    a source-controlled value that does could otherwise leak tokens or inject
+    fabricated report structure (fake headings, list items, block sentinels)
+    into single-line output -- whether or not it ends up wrapped in markdown
+    link syntax. Applied before either the link-safety check or the plain-text
+    fallback below, so this closes the injection at the root rather than only
+    for links.
     """
+    scrubbed = http._URL_USERINFO_RE.sub(r"\1", url)
     collapsed = "".join(
         " "
         if ch.isspace() or ord(ch) < 0x20 or 0x7F <= ord(ch) <= 0x9F
         else ch
-        for ch in url
+        for ch in scrubbed
     )
     return _defang_engine_sentinels(collapsed)
 
@@ -1820,7 +1851,7 @@ def _markdown_url_link(url: str, *, label: str | None = None) -> str:
     has_whitespace_or_control = any(
         ch.isspace() or ord(ch) < 0x20 or 0x7F <= ord(ch) <= 0x9F
         for ch in url
-    )
+    ) or any(ch.isspace() for ch in sanitized_url)
     safe_destination = False
     if not has_whitespace_or_control and not any(
         ch in sanitized_url for ch in _MARKDOWN_LINK_UNSAFE_CHARS
@@ -2150,6 +2181,15 @@ def _format_item_engagement(item: schema.SourceItem) -> str:
     return ", ".join(parts) if parts else ""
 
 
+def _format_context_freshness_verdict(verdict: schema.FreshnessVerdict) -> str:
+    state = _safe_title(str(verdict.verdict or ""))
+    claim = _safe_title(str(verdict.claim or ""))
+    url = _sanitize_url_for_single_line_output(
+        str(verdict.evidence_url or verdict.source_url or "")
+    )
+    return f"- {state}: {claim} ({url})"
+
+
 def render_context(report: schema.Report, cluster_limit: int = 6) -> str:
     evidence_report = schema.without_sources(report, {"corpus"})
     candidate_by_id = {
@@ -2163,7 +2203,7 @@ def render_context(report: schema.Report, cluster_limit: int = 6) -> str:
     )
     no_solid_evidence = bool(requested_clusters) and not visible_clusters
     lines = [
-        f"Topic: {report.topic}",
+        f"Topic: {_safe_title(str(report.topic or ''))}",
         f"Intent: {report.query_plan.intent}",
         _AI_SAFETY_NOTE,
     ]
@@ -2177,7 +2217,7 @@ def render_context(report: schema.Report, cluster_limit: int = 6) -> str:
     if freshness_warning:
         lines.append(f"Freshness warning: {freshness_warning}")
     context_candidates = _candidates_for_auxiliary_sections(
-        report,
+        evidence_report,
         requested_clusters,
         visible_clusters,
     )
@@ -2185,7 +2225,7 @@ def render_context(report: schema.Report, cluster_limit: int = 6) -> str:
         []
         if no_solid_evidence
         else _render_hiring_signals(
-            report,
+            evidence_report,
             candidates=context_candidates if requested_clusters else None,
         )
     )
@@ -2208,9 +2248,9 @@ def render_context(report: schema.Report, cluster_limit: int = 6) -> str:
                 continue
             detail_parts = [
                 schema.candidate_source_label(candidate),
-                candidate.title,
+                _safe_title(candidate.title),
                 schema.candidate_best_published_at(candidate) or "date unknown",
-                candidate.url,
+                _sanitize_url_for_single_line_output(candidate.url or ""),
             ]
             lines.append(f"  - {' | '.join(detail_parts)}")
             if candidate.snippet:
@@ -2224,12 +2264,24 @@ def render_context(report: schema.Report, cluster_limit: int = 6) -> str:
     if report.warnings:
         lines.append("Warnings:")
         lines.extend(f"- {warning}" for warning in report.warnings)
-    if report.freshness_verdicts:
+    public_verdicts, private_verdicts = schema.partition_freshness_verdicts(report, {"corpus"})
+    if public_verdicts:
         lines.append("Freshness verdicts:")
         lines.extend(
-            f"- {verdict.verdict}: {verdict.claim} ({verdict.evidence_url or verdict.source_url})"
-            for verdict in report.freshness_verdicts
+            _format_context_freshness_verdict(verdict)
+            for verdict in public_verdicts
         )
+    if private_verdicts:
+        private_lines = [
+            "Local freshness verdicts:",
+            *(_format_context_freshness_verdict(verdict) for verdict in private_verdicts),
+        ]
+        lines.extend([
+            "",
+            PRIVATE_CORPUS_START,
+            *map(_defang_corpus_sentinels, private_lines),
+            PRIVATE_CORPUS_END,
+        ])
     return "\n".join(lines).strip() + "\n"
 
 
@@ -2319,20 +2371,26 @@ def render_brief(report: schema.Report, cluster_limit: int = 8) -> str:
         for candidate in hooks[:5]:
             source_label = _source_label(candidate.source)
             primary = schema.candidate_primary_item(candidate)
-            author = _safe_title(str(primary.author)) if primary and primary.author else None
+            author = _safe_title(str(primary.author)) if primary and primary.author else ""
             if author and candidate.source in ("x", "tiktok", "instagram", "threads"):
-                attribution = f"@{author} on {source_label}"
+                bare = author.lstrip("@").strip()
+                attribution = f"@{bare} on {source_label}" if bare else source_label
             elif author and candidate.source == "reddit":
-                container = _safe_title(str(primary.container)) if primary and primary.container else None
+                container = (
+                    _safe_title(str(primary.container)).removeprefix("r/").strip()
+                    if primary and primary.container
+                    else ""
+                )
                 attribution = f"r/{container}" if container else "Reddit"
             else:
                 attribution = source_label
-            reason = (
-                f" — {_safe_title(str(candidate.fun_explanation))}"
+            clean_reason = (
+                _safe_title(str(candidate.fun_explanation))
                 if candidate.fun_explanation
                 and candidate.fun_explanation != "heuristic-fallback"
                 else ""
             )
+            reason = f" — {clean_reason}" if clean_reason else ""
             lines.append(
                 f'- "{_truncate(_safe_title(candidate.title), 200)}"'
                 f" ({attribution}, fun:{candidate.fun_score:.0f}){reason}"
@@ -2384,7 +2442,7 @@ def _extract_audience_questions(candidates: list[schema.Candidate]) -> list[str]
     questions: list[str] = []
     seen: set[str] = set()
     for candidate in candidates:
-        title = candidate.title.strip()
+        title = _safe_title(str(candidate.title or ""))
         if not title:
             continue
         if title.endswith("?"):
@@ -3515,20 +3573,38 @@ _SITE_NAMES: dict[str, str] = {
 def _site_name_for_url(url: str) -> str:
     """Return a clean publication name for a URL, or a bare domain fallback.
 
-    Strips protocol and ``www.`` from unknowns; checks known publications
-    before falling back. Returns a short readable string, never a raw URL.
+    Strips protocol, userinfo, port, and ``www.`` from unknowns; checks known
+    publications before falling back. Returns a short readable string, never a
+    raw URL or embedded credentials.
     """
     if not url:
         return ""
     u = url.strip()
     if not u:
         return ""
-    # urlparse needs a scheme to resolve the netloc; prepend http:// if missing.
-    parsed = urlparse(u if "://" in u else f"http://{u}")
-    host = (parsed.netloc or parsed.path.split("/", 1)[0]).lower()
-    host = host.removeprefix("www.")
+    u = http._URL_USERINFO_RE.sub(r"\1", u)
+    has_scheme = "://" in u
+    try:
+        # urlparse needs a scheme to resolve the netloc; prepend http:// if missing.
+        parsed = urlparse(u if has_scheme else f"http://{u}")
+        _ = parsed.port
+    except ValueError:
+        return ""
+    if has_scheme and parsed.scheme.lower() not in _SAFE_MARKDOWN_LINK_SCHEMES:
+        return ""
+    host = (parsed.hostname or "").lower().removeprefix("www.")
+    if (
+        not host
+        or any(
+            ch.isspace() or ord(ch) < 0x20 or 0x7F <= ord(ch) <= 0x9F
+            for ch in host
+        )
+        or any(ch in host for ch in "<>`~│\\\"")
+    ):
+        return ""
+    host = _safe_title(host)
     if not host:
-        return u[:40]
+        return ""
     if host in _SITE_NAMES:
         return _SITE_NAMES[host]
     # Try stripping one subdomain level (eu.example.com -> example.com)
@@ -4737,7 +4813,7 @@ def _format_digg_confirmation(candidate: schema.Candidate) -> str | None:
 def _format_explanation(candidate: schema.Candidate) -> str | None:
     if not candidate.explanation or candidate.explanation == "fallback-local-score":
         return None
-    return candidate.explanation
+    return _safe_title(str(candidate.explanation)) or None
 
 
 # Per-source minimum vote counts for showing a top comment in compact emit.
@@ -5942,7 +6018,8 @@ def _format_untrusted_evidence(
     truncated = _truncate(text, limit)
     if not truncated:
         return truncated
-    lines = _defang_engine_sentinels(truncated).splitlines()
+    cleaned = _NON_NEWLINE_CONTROL_CHARS.sub(" ", truncated)
+    lines = _defang_engine_sentinels(cleaned).splitlines()
     safe: list[str] = [_escape_atx_heading_prefix(lines[0])]
     for line in lines[1:]:
         safe.append(continuation_indent + _escape_atx_heading_prefix(line))
