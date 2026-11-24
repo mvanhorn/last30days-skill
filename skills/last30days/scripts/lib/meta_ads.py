@@ -45,7 +45,7 @@ import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import dates, http, log
+from . import dates, health, http, log
 
 _DEFAULT_SC_BASE = "https://api.scrapecreators.com/v1/facebook/adLibrary"
 SC_BASE = _DEFAULT_SC_BASE
@@ -645,6 +645,10 @@ class _StopFetching(Exception):
     and are reported as a partial result rather than thrown away.
     """
 
+    def __init__(self, message: str, outcome_state: Optional[str] = None) -> None:
+        super().__init__(message)
+        self.outcome_state = outcome_state
+
 
 def _call(
     url: str,
@@ -660,7 +664,7 @@ def _call(
     limit and spends the lane budget sleeping between attempts.
     """
     if budget.exhausted():
-        raise _StopFetching("lane budget exhausted")
+        raise _StopFetching("lane budget timed out (exhausted)", outcome_state=health.TIMEOUT)
     try:
         response = http.get(
             url,
@@ -678,10 +682,16 @@ def _call(
             # Credential- or account-scoped: every later call fails the same
             # way, so the lane ends and keeps nothing.
             raise _Fatal(message, status) from exc
+        if (
+            exc.outcome_state == health.TIMEOUT
+            and "timed out" not in message.lower()
+            and "timeout" not in message.lower()
+        ):
+            message = f"timed out: {message}"
         # Anything else (a 5xx, a bad gateway partway through pagination) is
         # about this one request. Stop fetching, but keep the creatives
         # already retrieved rather than discarding paid-for work.
-        raise _StopFetching(message) from exc
+        raise _StopFetching(message, outcome_state=exc.outcome_state) from exc
     except Exception as exc:  # noqa: BLE001 - an unclassifiable transport failure
         raise _Fatal(f"{type(exc).__name__}: {exc}") from exc
     return response if isinstance(response, dict) else {}
@@ -973,14 +983,17 @@ def search_meta_ads(
         interruption = interruption or transcript_interruption
     except (_Fatal, _StopFetching) as exc:
         # Nothing was salvageable: either a credential/account failure, or the
-        # clock ran out before the advertiser was even resolved.
+        # clock ran out before any creatives were fetched.
         _log(f"Lane stopped: {exc}")
-        return {
+        outcome: Dict[str, Any] = {
             "ads": [],
             "page": None,
             "tally": _empty_tally(UNRESOLVED),
             "error": str(exc),
         }
+        if getattr(exc, "outcome_state", None):
+            outcome["outcome_state"] = exc.outcome_state
+        return outcome
 
     placements: List[str] = []
     promo_codes: List[str] = []

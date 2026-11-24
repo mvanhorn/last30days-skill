@@ -126,14 +126,16 @@ def detect_symbols(topic: str, *, resolve: bool = True, max_symbols: int = 2) ->
     if not resolve or not financial:
         return []
 
-    # Strip finance noise words so the search query is just the entity name.
-    name = re.sub(
-        r"\b(stock|stocks|shares?|price(?:\s+target)?|ticker|cashtag|equit(?:y|ies)|"
-        r"earnings|pre-?market|after\s?hours|dividend|valuation|forecast|"
-        r"crypto|altcoin|defi|market\s+cap|bullish|bearish|"
-        r"token|coin|news|today|now)\b",
-        "", topic, flags=re.IGNORECASE,
-    ).strip()
+    # Strip only clear non-name finance modifiers so company names like
+    # "Equity Residential" or "Capital One" stay intact for symbol lookup.
+    name = " ".join(
+        re.sub(
+            r"\b(stock|stocks|shares?|price(?:\s+target)?|tickers?|cashtags?|"
+            r"earnings|forecast|sentiment|crypto|altcoin|defi|"
+            r"bullish|bearish|etfs?|watchlist|news|today|now)\b",
+            "", topic, flags=re.IGNORECASE,
+        ).split()
+    )
     if not name:
         return []
     try:

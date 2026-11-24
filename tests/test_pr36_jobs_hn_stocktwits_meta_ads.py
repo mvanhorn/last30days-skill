@@ -642,3 +642,173 @@ def test_high206_interrupted_window_fetch_skips_paid_transcript_calls(status):
     assert result.get("partial") is True
     assert result["tally"]["transcribed"] == 0
     assert str(status) in result["error"]
+
+
+# ---------------------------------------------------------------------------
+# PR #1611 Greptile review regressions
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        http.DeadlineExceeded(),
+        http.HTTPError("server error", status_code=503),
+    ],
+)
+def test_greptile_registry_workday_unanswered_tries_owned_sitemap_first(_fresh_jobs_robots, exc):
+    sf_robots, sf_xml = _sitemap_xml("jobs.salesforce.com", "principal-distributed-systems-engineer")
+    asked: list[str] = []
+
+    def fake_get_text(url, *_args, **kwargs):
+        asked.append(url)
+        table = {
+            "https://jobs.salesforce.com/robots.txt": sf_robots,
+            "https://jobs.salesforce.com/jobs/sitemap.xml": sf_xml,
+        }
+        body = table.get(url)
+        if body is not None and kwargs.get("landed") is not None:
+            kwargs["landed"].append(url)
+        return body
+
+    budget = jobs.LaneBudget(45.0)
+    with patch.object(jobs.http, "get_text", side_effect=fake_get_text), \
+            patch.object(jobs.http, "post", side_effect=exc):
+        items, artifact = jobs.search_jobs(
+            "Salesforce", WINDOW, {}, web_backend="none",
+            site="https://www.salesforce.com/", budget=budget,
+        )
+
+    assert "https://jobs.salesforce.com/robots.txt" in asked
+    assert artifact["tier"] == "ats"
+    assert artifact["provider"] == "sitemap"
+    assert artifact["owned"] is True
+    assert artifact["board_sitemap_host"] == "jobs.salesforce.com"
+    assert "workday board did not answer" in artifact["board_fallback"]
+    assert "_source_outcome" not in artifact
+    assert [item["title"] for item in items] == ["Principal Distributed Systems Engineer"]
+
+
+def test_greptile_registry_workday_unanswered_preserves_timeout_when_sitemap_and_web_empty(
+    _fresh_jobs_robots,
+):
+    budget = jobs.LaneBudget(45.0)
+    with patch.object(jobs.http, "get_text", return_value=None), \
+            patch.object(jobs.http, "post", side_effect=http.HTTPError("503", status_code=503)), \
+            patch.object(jobs, "search_jobs_web", return_value=([], {"tier": "web"})):
+        items, artifact = jobs.search_jobs(
+            "Salesforce", WINDOW, {}, web_backend="auto",
+            site="https://www.salesforce.com/", budget=budget,
+        )
+
+    assert items == []
+    assert "job_site_unreadable" not in artifact
+    assert artifact["_source_outcome"]["state"] == health.TIMEOUT
+    assert "salesforce.wd12/External_Career_Site did not answer" in artifact["_source_outcome"]["detail"]
+    assert "_source_out_of_time" not in artifact
+
+
+@pytest.mark.parametrize(
+    ("topic", "expected_query", "expected_sym"),
+    [
+        ("Equity Residential stock", "Equity Residential", "EQR"),
+        ("Capital One stock", "Capital One", "COF"),
+        ("Bank of America earnings", "Bank of America", "BAC"),
+        ("Digital Realty Trust stock", "Digital Realty Trust", "DLR"),
+        ("The Trade Desk stock", "The Trade Desk", "TTD"),
+    ],
+)
+def test_greptile_stocktwits_preserves_company_name_words(topic, expected_query, expected_sym):
+    captured_q: list[str] = []
+
+    def fake_get(url, timeout=20):
+        qs = parse_qs(urlsplit(url).query)
+        captured_q.extend(qs.get("q", []))
+        return {"results": [{"symbol": expected_sym}]}
+
+    with patch.object(stocktwits, "_get_json", side_effect=fake_get):
+        syms = stocktwits.detect_symbols(topic, resolve=True)
+
+    assert captured_q == [expected_query]
+    assert syms == [expected_sym]
+
+
+def test_greptile_meta_ads_budget_exhausted_after_discovery_classifies_as_timeout():
+    discovery = _ads_envelope([_video_ad_row("1000")], key="searchResults")
+    ticks = {"n": 0}
+    real_monotonic = meta_ads.time.monotonic
+
+    def advancing_clock():
+        ticks["n"] += 1
+        # Budget initialized + discovery call pass; before first /company/ads call, budget expires.
+        return real_monotonic() + (0.0 if ticks["n"] <= 3 else 10_000.0)
+
+    with patch.object(meta_ads.time, "monotonic", side_effect=advancing_clock), \
+            patch.object(meta_ads.http, "get", side_effect=[discovery]) as mock_get:
+        result = meta_ads.search_meta_ads(
+            "Brightpan", "2026-08-15", "2026-09-14", depth="default", token="fake-sc-key",
+        )
+
+    assert mock_get.call_count == 1
+    assert result["ads"] == []
+    assert "partial" not in result
+    assert result.get("outcome_state") == health.TIMEOUT
+    assert "budget" in result["error"]
+
+    subquery = schema.SubQuery(
+        label="primary", search_query="Brightpan", ranking_query="Brightpan", sources=["meta_ads"],
+    )
+    ticks["n"] = 0
+    with patch.object(meta_ads.time, "monotonic", side_effect=advancing_clock), \
+            patch.object(meta_ads.http, "get", side_effect=[discovery]):
+        items, artifact = pipeline._retrieve_stream_impl(
+            topic="Brightpan",
+            subquery=subquery,
+            source="meta_ads",
+            config={"SCRAPECREATORS_API_KEY": "fake-sc-key"},
+            depth="default",
+            date_range=("2026-08-15", "2026-09-14"),
+            runtime=schema.ProviderRuntime("none", "none", "none"),
+            mock=False,
+            raw_topic="Brightpan",
+        )
+
+    assert items == []
+    assert artifact["_source_outcome"]["state"] == health.TIMEOUT
+
+
+def test_greptile_meta_ads_deadline_exceeded_on_first_window_call_classifies_as_timeout():
+    discovery = _ads_envelope([_video_ad_row("1000")], key="searchResults")
+    subquery = schema.SubQuery(
+        label="primary", search_query="Brightpan", ranking_query="Brightpan", sources=["meta_ads"],
+    )
+    with patch.object(meta_ads.http, "get", side_effect=[discovery, http.DeadlineExceeded()]):
+        items, artifact = pipeline._retrieve_stream_impl(
+            topic="Brightpan",
+            subquery=subquery,
+            source="meta_ads",
+            config={"SCRAPECREATORS_API_KEY": "fake-sc-key"},
+            depth="default",
+            date_range=("2026-08-15", "2026-09-14"),
+            runtime=schema.ProviderRuntime("none", "none", "none"),
+            mock=False,
+            raw_topic="Brightpan",
+        )
+
+    assert items == []
+    assert artifact["_source_outcome"]["state"] == health.TIMEOUT
+
+
+def test_greptile_jobs_teams_preserves_ampersands_when_company_not_adjacent():
+    rows = [
+        _team_role(f"Engineer {i}, Research &Development", i) for i in range(4)
+    ] + [
+        _team_role(f"Scientist {i}, Acme Research &Development", i + 10) for i in range(4)
+    ]
+    result = jobs_teams.named_teams(rows, company="Acme", window_start="2026-10-15")
+    by_name = {t["name"]: t["roles"] for t in result["teams"]}
+    assert by_name == {"research &development": 8}
+
+    mixed = [_team_role(f"Engineer {i}, R&D Cloud&AI", i) for i in range(4)]
+    mixed_result = jobs_teams.named_teams(mixed, company="AI", window_start="2026-10-15")
+    assert [t["name"] for t in mixed_result["teams"]] == ["r&d cloud"]

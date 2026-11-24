@@ -834,7 +834,17 @@ def _search_jobs(
             return found
         if reason == "unanswered":
             # A board that did not answer is not one that cannot be read:
-            # the budget names it, and a retry may read it.
+            # the budget names it, and a retry may read it. For a hosted
+            # board (e.g. Workday), the company's own site may still serve an
+            # owned job sitemap while the third-party host is slow/overloaded.
+            if hosted:
+                roster = _sitemap_tier(
+                    company, date_range, _sitemap_hosts([], site),
+                    attempted=attempted, explicit=explicit, budget=budget,
+                    fallback=f"{entry['provider']} board did not answer",
+                )
+                if roster is not None:
+                    return roster
             return _web_tier(
                 company, date_range, config, attempted=attempted,
                 web_backend=web_backend, explicit=explicit,
