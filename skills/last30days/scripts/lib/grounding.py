@@ -338,8 +338,8 @@ _SERPER_RELATIVE_WORDS = {"just now": 0, "today": 0, "yesterday": 1}
 
 
 def _now() -> datetime:
-    """Query-time clock. Isolated so tests can pin it."""
-    return datetime.now()
+    """Query-time UTC clock. Isolated so tests can pin it."""
+    return datetime.now(timezone.utc)
 
 
 def _parse_serper_relative(raw: str, now: datetime | None = None) -> str | None:
@@ -628,29 +628,54 @@ def _enrich_reddit_items(
     except Exception as exc:  # enrichment is best-effort on results already in hand
         sys.stderr.write(f"[Web] Reddit enrichment failed: {exc}\n")
         return items
-    by_id = {
-        thread["metadata"]["post_id"]: thread
-        for thread in hydrated.items
-        if thread.get("engagement_source") != reddit_refs.UNKNOWN
-    }
+    by_id: dict[str, dict] = {}
+    for thread in hydrated.items:
+        if not isinstance(thread, dict) or thread.get("engagement_source") == reddit_refs.UNKNOWN:
+            continue
+        meta = thread.get("metadata")
+        post_id = meta.get("post_id") if isinstance(meta, dict) else None
+        if post_id:
+            by_id[str(post_id)] = thread
     for item, ref in refs_by_item:
         thread = by_id.get(ref.post_id)
         if thread is None:
             continue
+        if not item.get("date") and thread.get("date"):
+            item["date"] = thread["date"]
         selftext = thread.get("selftext") or ""
         if selftext:
             item["snippet"] = selftext[:2000]
         top = thread.get("top_comments") or []
         if top:
-            item["top_comments"] = [
-                {
+            enriched_comments: list[dict] = []
+            for c in top[:5]:
+                if not isinstance(c, dict):
+                    continue
+                entry: dict = {
                     "score": c.get("score"),
                     "excerpt": (c.get("body") or c.get("excerpt") or "")[:200],
                     "depth": c.get("depth", 0),
-                    **({"score_pending": True} if c.get("score_pending") else {}),
                 }
-                for c in top[:5]
-            ]
+                if c.get("id"):
+                    entry["id"] = str(c["id"])
+                if c.get("author"):
+                    entry["author"] = str(c["author"])
+                if c.get("date"):
+                    entry["date"] = str(c["date"])
+                comment_url = c.get("url")
+                if not comment_url:
+                    permalink = str(c.get("permalink") or "")
+                    if permalink.startswith("/"):
+                        comment_url = f"https://reddit.com{permalink}"
+                if comment_url:
+                    entry["url"] = str(comment_url)
+                if isinstance(c.get("is_uploader"), bool):
+                    entry["is_uploader"] = c["is_uploader"]
+                if c.get("score_pending"):
+                    entry["score_pending"] = True
+                enriched_comments.append(entry)
+            if enriched_comments:
+                item["top_comments"] = enriched_comments
         item["enriched_via"] = "arctic"
     return items
 

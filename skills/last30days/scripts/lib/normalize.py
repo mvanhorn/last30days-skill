@@ -1132,21 +1132,34 @@ def _normalize_grounding(
     title = str(item.get("title") or "").strip()
     snippet = str(item.get("snippet") or "").strip()
     url = str(item.get("url") or "").strip()
+    raw_meta = item.get("metadata")
+    metadata = dict(raw_meta) if isinstance(raw_meta, dict) else {}
+    raw_comments = item.get("top_comments")
+    if not isinstance(raw_comments, list) or not raw_comments:
+        meta_comments = metadata.get("top_comments")
+        raw_comments = meta_comments if isinstance(meta_comments, list) else []
+    top_comments = [dict(c) if isinstance(c, dict) else c for c in raw_comments]
+    if top_comments:
+        metadata["top_comments"] = top_comments
+    comment_text = _join_comment_excerpts(top_comments, "excerpt").strip() if top_comments else ""
+    enriched_via = item.get("enriched_via")
+    if enriched_via:
+        metadata["enriched_via"] = enriched_via
     return _source_item(
         item_id=str(item.get("id") or f"W{index + 1}"),
         source=source,
         title=title or _domain_from_url(url) or f"Web result {index + 1}",
-        body="\n".join(part for part in [title, snippet] if part),
+        body="\n".join(part for part in [title, snippet, comment_text] if part),
         url=url,
         author=None,
         container=str(item.get("source_domain") or _domain_from_url(url) or ""),
         published_at=item.get("date"),
         date_confidence=_date_confidence(item, from_date, to_date),
-        engagement=item.get("engagement") or {},
+        engagement=dict(item.get("engagement") or {}),
         relevance_hint=item.get("relevance", 0.5),
         why_relevant=str(item.get("why_relevant") or ""),
         snippet=snippet,
-        metadata=item.get("metadata") or {},
+        metadata=metadata,
     )
 
 
