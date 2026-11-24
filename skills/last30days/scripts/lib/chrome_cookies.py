@@ -465,11 +465,17 @@ def _extract_chromium_cookies_macos(
         partition_expr = (
             col_map["top_frame_site_key"] if "top_frame_site_key" in col_map else "''"
         )
+        cross_site_expr = (
+            col_map["has_cross_site_ancestor"]
+            if "has_cross_site_ancestor" in col_map
+            else "0"
+        )
 
         placeholders = ",".join("?" for _ in cookie_names)
         query = (
             f"SELECT name, value, encrypted_value, host_key, "
-            f"{path_expr}, {expires_expr}, {secure_expr}, {httponly_expr}, {partition_expr} "
+            f"{path_expr}, {expires_expr}, {secure_expr}, {httponly_expr}, "
+            f"{partition_expr}, {cross_site_expr} "
             f"FROM cookies "
             f"WHERE LOWER(host_key) IN (?, ?) AND name IN ({placeholders})"
         )
@@ -478,7 +484,10 @@ def _extract_chromium_cookies_macos(
 
         now_chrome_utc = (int(time.time()) + _CHROME_EPOCH_OFFSET_SECONDS) * 1_000_000
         allowed_hosts = (wanted, f".{wanted}")
-        scopes: dict[tuple[str, str, str], dict[str, list[tuple[int, int, bool, int, Any, Any]]]] = {}
+        scopes: dict[
+            tuple[str, str, tuple[str, int]],
+            dict[str, list[tuple[int, int, bool, int, Any, Any]]],
+        ] = {}
         for (
             name,
             value,
@@ -489,6 +498,7 @@ def _extract_chromium_cookies_macos(
             is_secure,
             is_httponly,
             top_frame_site_key,
+            has_cross_site_ancestor,
         ) in cursor.fetchall():
             try:
                 expires_val = int(expires_utc) if expires_utc is not None else 0
@@ -500,12 +510,15 @@ def _extract_chromium_cookies_macos(
             if host_norm not in allowed_hosts:
                 continue
             path_norm = path if isinstance(path, str) and path else "/"
-            partition_norm = str(top_frame_site_key or "").strip()
+            partition_site = str(top_frame_site_key or "").strip()
+            cross_site_flag = 1 if has_cross_site_ancestor else 0
+            partition_key = (partition_site, cross_site_flag)
             secure_flag = 1 if is_secure else 0
             httponly_flag = 1 if is_httponly else 0
             # Host-only (x.com) and domain (.x.com) cookies apply to the same
             # apex origin per RFC 6265; pair them within one (path, partition).
-            scope_key = (host_norm.lstrip("."), path_norm, partition_norm)
+            # Chromium CHIPS partitions are keyed by (top_frame_site_key, has_cross_site_ancestor).
+            scope_key = (host_norm.lstrip("."), path_norm, partition_key)
             scopes.setdefault(scope_key, {}).setdefault(str(name), []).append(
                 (
                     secure_flag,
@@ -534,21 +547,26 @@ def _extract_chromium_cookies_macos(
                 )
 
         def _scope_sort_key(
-            item: tuple[tuple[str, str, str], dict[str, list[tuple[int, int, bool, int, Any, Any]]]]
+            item: tuple[
+                tuple[str, str, tuple[str, int]],
+                dict[str, list[tuple[int, int, bool, int, Any, Any]]],
+            ]
         ) -> tuple[Any, ...]:
-            (host_base, path_norm, partition_norm), by_name = item
+            (host_base, path_norm, (partition_site, cross_site_flag)), by_name = item
             has_all_names = all(name in by_name for name in requested)
             all_secure = all(cands[0][0] == 1 for cands in by_name.values())
             all_httponly = all(cands[0][1] == 1 for cands in by_name.values())
             return (
                 not has_all_names,
-                partition_norm != "",
+                partition_site != "",
+                cross_site_flag != 0,
                 path_norm != "/",
                 not all_secure,
                 not all_httponly,
                 path_norm,
                 host_base,
-                partition_norm,
+                partition_site,
+                cross_site_flag,
             )
 
         aes_key = None

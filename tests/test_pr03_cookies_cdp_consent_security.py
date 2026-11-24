@@ -552,6 +552,50 @@ class TestHigh081ChromiumCookieScoping:
             db_both, "Chrome Safe Storage", "x.com", ["auth_token"]
         ) == {"auth_token": "host-auth"}
 
+    def test_never_mixes_cookies_across_has_cross_site_ancestor_partition(self, tmp_path):
+        db = tmp_path / "Cookies_chips_bit"
+        future = _chrome_utc(3600)
+        conn = sqlite3.connect(str(db))
+        try:
+            conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
+            conn.execute("INSERT INTO meta VALUES ('version', '24')")
+            conn.execute(
+                "CREATE TABLE cookies ("
+                "  host_key TEXT NOT NULL,"
+                "  name TEXT NOT NULL,"
+                "  value TEXT NOT NULL DEFAULT '',"
+                "  encrypted_value BLOB NOT NULL DEFAULT x'',"
+                "  path TEXT NOT NULL DEFAULT '/',"
+                "  expires_utc INTEGER NOT NULL DEFAULT 0,"
+                "  is_secure INTEGER NOT NULL DEFAULT 1,"
+                "  is_httponly INTEGER NOT NULL DEFAULT 1,"
+                "  top_frame_site_key TEXT NOT NULL DEFAULT '',"
+                "  has_cross_site_ancestor INTEGER NOT NULL DEFAULT 0"
+                ")"
+            )
+            # Same host_key, path, and top_frame_site_key — differ ONLY in has_cross_site_ancestor.
+            conn.executemany(
+                "INSERT INTO cookies "
+                "(host_key, name, value, encrypted_value, path, expires_utc, "
+                "is_secure, is_httponly, top_frame_site_key, has_cross_site_ancestor) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (".x.com", "auth_token", "same-site-auth", b"", "/", future, 1, 1, "https://x.com", 0),
+                    (".x.com", "ct0", "cross-site-ct0", b"", "/", future, 1, 1, "https://x.com", 1),
+                ],
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        got = chrome_cookies._extract_chromium_cookies_macos(
+            db, "Chrome Safe Storage", ".x.com", ["auth_token", "ct0"]
+        )
+        assert got is not None
+        assert set(got) != {"auth_token", "ct0"}
+        # Same-site ancestor (0) ranks ahead of cross-site ancestor (1).
+        assert got == {"auth_token": "same-site-auth"}
+
     def test_works_on_legacy_schema_without_top_frame_site_key(self, tmp_path):
         db = tmp_path / "Cookies"
         future = _chrome_utc(3600)
@@ -606,6 +650,7 @@ class TestHigh082ChromeCdpHardening:
     def test_rejects_unsafe_browser_cdp_urls_without_network_io(self, bad_url):
         with (
             mock.patch("socket.create_connection", side_effect=AssertionError("no socket")),
+            mock.patch.object(chrome_cdp._CDP_OPENER, "open", side_effect=AssertionError("no opener")),
             mock.patch("urllib.request.urlopen", side_effect=AssertionError("no urlopen")),
         ):
             assert chrome_cdp.candidate_endpoints({"BROWSER_CDP_URL": bad_url}) == []
@@ -734,6 +779,34 @@ class TestHigh082ChromeCdpHardening:
         ):
             assert forbidden not in handler_types
 
+    def test_http_get_json_always_uses_cdp_opener_even_when_urlopen_is_wrapped(self):
+        class DirectHandler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                payload = json.dumps({"Browser": "Chrome/OpenerOnly"}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *_args):
+                pass
+
+        srv = http.server.HTTPServer(("127.0.0.1", 0), DirectHandler)
+        port = srv.server_address[1]
+        thread = threading.Thread(target=srv.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with mock.patch(
+                "urllib.request.urlopen",
+                side_effect=AssertionError("CDP must never fall back to wrapped urlopen"),
+            ):
+                got = chrome_cdp._http_get_json(f"http://127.0.0.1:{port}/json/version")
+            assert got == {"Browser": "Chrome/OpenerOnly"}
+        finally:
+            srv.shutdown()
+            srv.server_close()
+
     @pytest.mark.parametrize(
         "spoofed_ws",
         [
@@ -819,16 +892,29 @@ class TestHigh083BoxChromeLoginProfileDir:
         monkeypatch.setenv("XDG_CACHE_HOME", "/tmp")
         assert bcl._default_profile_dir() == str(Path.home() / ".cache" / "last30days" / "x-chrome")
 
-    def test_render_recipe_emits_mkdir_m_700(self, tmp_path):
-        profile = tmp_path / "x-chrome"
+    def test_render_recipe_and_setup_guide_launch_via_exec(self, tmp_path):
+        profile = tmp_path / "custom profile"
         with (
             mock.patch("lib.env.x_extras_enabled", return_value=True),
             mock.patch("shutil.which", return_value="/usr/local/bin/box-chrome"),
         ):
             recipe = bcl.build_recipe({}, profile_dir=str(profile))
         rendered = bcl.render_recipe(recipe)
-        assert f"mkdir -m 700 -p {profile}" in rendered
+        assert "box_chrome_login.py" in rendered
+        assert "--exec" in rendered
+        assert f"--profile-dir '{profile}'" in rendered
+        assert "mkdir " not in rendered
         assert "/tmp/last30days-x-chrome" not in rendered
+
+        setup_doc = (
+            Path(__file__).resolve().parents[1]
+            / "skills"
+            / "last30days"
+            / "references"
+            / "setup-wizard.md"
+        ).read_text(encoding="utf-8")
+        assert "/tmp/last30days-x-chrome" not in setup_doc
+        assert 'box_chrome_login.py" --exec' in setup_doc
 
     @pytest.mark.skipif(os.name == "nt", reason="POSIX mode/uid checks")
     def test_exec_creates_0700_dir_and_tightens_loose_owner_dir(self, tmp_path):
@@ -838,10 +924,9 @@ class TestHigh083BoxChromeLoginProfileDir:
             mock.patch("lib.env.x_extras_enabled", return_value=True),
             mock.patch("shutil.which", return_value="/usr/local/bin/box-chrome"),
             mock.patch.object(bcl.env, "get_config", return_value={}),
-            mock.patch.object(bcl, "_default_profile_dir", return_value=str(profile)),
             mock.patch("subprocess.Popen", popen),
         ):
-            assert bcl.main(["--exec"]) == 0
+            assert bcl.main(["--exec", "--profile-dir", str(profile)]) == 0
         assert stat.S_IMODE(os.lstat(profile).st_mode) == 0o700
 
         # Existing owner-owned directory with 0755 gets tightened to 0700.
@@ -850,10 +935,9 @@ class TestHigh083BoxChromeLoginProfileDir:
             mock.patch("lib.env.x_extras_enabled", return_value=True),
             mock.patch("shutil.which", return_value="/usr/local/bin/box-chrome"),
             mock.patch.object(bcl.env, "get_config", return_value={}),
-            mock.patch.object(bcl, "_default_profile_dir", return_value=str(profile)),
             mock.patch("subprocess.Popen", popen),
         ):
-            assert bcl.main(["--exec"]) == 0
+            assert bcl.main(["--exec", "--profile-dir", str(profile)]) == 0
         assert stat.S_IMODE(os.lstat(profile).st_mode) == 0o700
 
     @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink/uid checks")
@@ -871,19 +955,94 @@ class TestHigh083BoxChromeLoginProfileDir:
         ):
             assert bcl.main(["--exec"]) == 1
 
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX parent trust checks")
+    @pytest.mark.parametrize("parent_mode", [0o777, 0o775, 0o720])
+    def test_exec_aborts_nonzero_on_group_or_world_writable_parent_dir(self, tmp_path, parent_mode):
+        parent = tmp_path / "writable-parent"
+        parent.mkdir()
+        os.chmod(parent, parent_mode)
+        profile = parent / "x-chrome"
+        profile.mkdir(mode=0o700)
+        os.chmod(profile, 0o700)
+        try:
+            with (
+                mock.patch("lib.env.x_extras_enabled", return_value=True),
+                mock.patch("shutil.which", return_value="/usr/local/bin/box-chrome"),
+                mock.patch.object(bcl.env, "get_config", return_value={}),
+                mock.patch("subprocess.Popen", side_effect=AssertionError("must not spawn under writable parent")),
+            ):
+                assert bcl.main(["--exec", "--profile-dir", str(profile)]) == 1
+        finally:
+            os.chmod(parent, 0o700)
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX ancestor trust checks")
+    def test_exec_aborts_nonzero_on_writable_non_sticky_cache_ancestor(self, tmp_path):
+        unsafe_cache = tmp_path / "unsafe-cache"
+        unsafe_cache.mkdir()
+        os.chmod(unsafe_cache, 0o777)
+        parent = unsafe_cache / "last30days"
+        parent.mkdir(mode=0o700)
+        os.chmod(parent, 0o700)
+        profile = parent / "x-chrome"
+        profile.mkdir(mode=0o700)
+        os.chmod(profile, 0o700)
+        try:
+            with (
+                mock.patch("lib.env.x_extras_enabled", return_value=True),
+                mock.patch("shutil.which", return_value="/usr/local/bin/box-chrome"),
+                mock.patch.object(bcl.env, "get_config", return_value={}),
+                mock.patch("subprocess.Popen", side_effect=AssertionError("must not spawn under writable ancestor")),
+            ):
+                assert bcl.main(["--exec", "--profile-dir", str(profile)]) == 1
+        finally:
+            os.chmod(unsafe_cache, 0o700)
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX immediate parent checks")
+    def test_exec_aborts_nonzero_on_shared_tmp_immediate_parent(self):
+        with (
+            mock.patch("lib.env.x_extras_enabled", return_value=True),
+            mock.patch("shutil.which", return_value="/usr/local/bin/box-chrome"),
+            mock.patch.object(bcl.env, "get_config", return_value={}),
+            mock.patch("subprocess.Popen", side_effect=AssertionError("must not spawn directly in /tmp")),
+        ):
+            assert bcl.main(["--exec", "--profile-dir", "/tmp/last30days-x-chrome-test"]) == 1
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink parent checks")
+    def test_exec_aborts_nonzero_on_symlink_parent_dir(self, tmp_path):
+        real_parent = tmp_path / "real-parent"
+        real_parent.mkdir(mode=0o700)
+        os.chmod(real_parent, 0o700)
+        link_parent = tmp_path / "link-parent"
+        link_parent.symlink_to(real_parent)
+        profile = link_parent / "x-chrome"
+        with (
+            mock.patch("lib.env.x_extras_enabled", return_value=True),
+            mock.patch("shutil.which", return_value="/usr/local/bin/box-chrome"),
+            mock.patch.object(bcl.env, "get_config", return_value={}),
+            mock.patch("subprocess.Popen", side_effect=AssertionError("must not spawn under symlink parent")),
+        ):
+            assert bcl.main(["--exec", "--profile-dir", str(profile)]) == 1
+
     @pytest.mark.skipif(os.name == "nt", reason="POSIX uid checks")
     def test_exec_aborts_nonzero_on_foreign_owner_profile_dir(self, tmp_path):
         profile = tmp_path / "foreign-profile"
         profile.mkdir(mode=0o700)
+        real_lstat = os.lstat
         fake_stat = mock.MagicMock()
         fake_stat.st_mode = stat.S_IFDIR | 0o700
         fake_stat.st_uid = os.getuid() + 1
+
+        def selective_lstat(path, *args, **kwargs):
+            if Path(path) == profile:
+                return fake_stat
+            return real_lstat(path, *args, **kwargs)
+
         with (
             mock.patch("lib.env.x_extras_enabled", return_value=True),
             mock.patch("shutil.which", return_value="/usr/local/bin/box-chrome"),
             mock.patch.object(bcl.env, "get_config", return_value={}),
             mock.patch.object(bcl, "_default_profile_dir", return_value=str(profile)),
-            mock.patch("os.lstat", return_value=fake_stat),
+            mock.patch("os.lstat", side_effect=selective_lstat),
             mock.patch("subprocess.Popen", side_effect=AssertionError("must not spawn on foreign uid")),
         ):
             assert bcl.main(["--exec"]) == 1

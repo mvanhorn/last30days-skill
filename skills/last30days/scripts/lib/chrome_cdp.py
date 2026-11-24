@@ -60,7 +60,6 @@ _WS_TIMEOUT = 3.0        # websocket exchange
 _MAX_HTTP_JSON_BYTES = 4 * 1024 * 1024
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 _WS_TARGET_RE = re.compile(r"/[A-Za-z0-9._~:/?\[\]@!$&'()*+,;=%-]+")
-_STDLIB_URLOPEN = urllib.request.urlopen
 
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -219,14 +218,8 @@ def _http_get_json(url: str) -> Optional[Any]:
     scheme, host, port, target = parsed
     safe_url = f"{scheme}://{_format_netloc(host, port)}{target}"
     try:
-        # Preserve test monkeypatches of urllib.request.urlopen while using the
-        # hardened HTTP-only, proxy-free, no-redirect opener in production.
-        if urllib.request.urlopen is not _STDLIB_URLOPEN:
-            with urllib.request.urlopen(safe_url, timeout=_HTTP_TIMEOUT) as resp:
-                body = resp.read(_MAX_HTTP_JSON_BYTES)
-        else:
-            with _CDP_OPENER.open(safe_url, timeout=_HTTP_TIMEOUT) as resp:
-                body = resp.read(_MAX_HTTP_JSON_BYTES)
+        with _CDP_OPENER.open(safe_url, timeout=_HTTP_TIMEOUT) as resp:
+            body = resp.read(_MAX_HTTP_JSON_BYTES)
     except (OSError, ValueError, OverflowError, UnicodeEncodeError):
         return None
     try:

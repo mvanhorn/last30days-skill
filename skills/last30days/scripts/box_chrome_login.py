@@ -28,6 +28,7 @@ Contract, matching the rest of the feature:
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import shlex
@@ -55,19 +56,72 @@ OFFICIAL_HOST_NOTE = (
 )
 
 
+def _ancestor_chain(path: Path) -> List[Path]:
+    """Return existing/planned ancestors of ``path`` from filesystem root down to ``path.parent``."""
+    return list(reversed(path.parents))
+
+
+def _check_trusted_ancestor(anc: Path, *, is_immediate_parent: bool, uid: int) -> None:
+    """Verify an existing ancestor directory cannot be tampered with by another local user."""
+    st = os.lstat(anc)
+    if stat.S_ISLNK(st.st_mode):
+        # Never allow a symlink at the immediate parent or owned by a non-root user.
+        if is_immediate_parent or os.name == "nt" or st.st_uid != 0:
+            raise OSError(f"Refusing symlink in profile path: {anc}")
+        # Allow root-owned system symlinks strictly above the immediate parent
+        # (e.g., macOS /var -> private/var) only when the target dir is also trusted.
+        st = os.stat(anc)
+    if not stat.S_ISDIR(st.st_mode):
+        raise OSError(f"Ancestor in profile path is not a directory: {anc}")
+    if os.name == "nt":
+        return
+
+    mode = stat.S_IMODE(st.st_mode)
+    other_writable = bool(mode & 0o022)
+    is_sticky = bool(mode & stat.S_ISVTX)
+
+    if is_immediate_parent:
+        if st.st_uid != uid:
+            raise PermissionError(
+                f"Profile parent directory is not owned by uid {uid}: {anc}"
+            )
+        if other_writable:
+            raise PermissionError(
+                f"Profile parent directory is writable by group or others: {anc}"
+            )
+        return
+
+    if st.st_uid not in (0, uid):
+        raise PermissionError(
+            f"Profile ancestor directory has untrusted owner: {anc}"
+        )
+    # A root-owned sticky directory (e.g., /tmp with mode 1777) prevents other
+    # non-root users from replacing a uid-owned child directory beneath it; any
+    # other group/world-writable ancestor allows path substitution.
+    if other_writable and not (st.st_uid == 0 and is_sticky):
+        raise PermissionError(
+            f"Profile ancestor directory is writable by group or others: {anc}"
+        )
+
+
 def _is_safe_owner_dir(path: Path) -> bool:
-    """True when ``path`` is an existing non-symlink directory owned by the current user with no group/other access."""
+    """True when ``path`` is an existing owner-only dir inside a trusted ancestor chain."""
     try:
+        if ".." in path.parts:
+            return False
         st = os.lstat(path)
+        if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+            return False
+        uid = os.getuid() if os.name != "nt" else 0
+        if os.name != "nt":
+            if st.st_uid != uid:
+                return False
+            if stat.S_IMODE(st.st_mode) & 0o077:
+                return False
+        for anc in _ancestor_chain(path):
+            _check_trusted_ancestor(anc, is_immediate_parent=False, uid=uid)
     except OSError:
         return False
-    if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
-        return False
-    if os.name != "nt":
-        if st.st_uid != os.getuid():
-            return False
-        if stat.S_IMODE(st.st_mode) & 0o077:
-            return False
     return True
 
 
@@ -90,15 +144,35 @@ DEFAULT_PROFILE_DIR = _default_profile_dir()
 
 
 def _ensure_private_profile_dir(profile_dir: str) -> None:
-    """Create and verify a non-symlink, owner-only (0o700) Chrome profile directory."""
+    """Create and verify a non-symlink, owner-only (0o700) profile directory in a trusted path."""
     if not profile_dir or not profile_dir.strip():
         raise OSError("Profile directory path must not be empty")
 
+    raw_path = Path(profile_dir)
+    if ".." in raw_path.parts:
+        raise OSError(f"Refusing traversal segments in profile directory: {profile_dir}")
+    target = raw_path if raw_path.is_absolute() else Path(os.path.abspath(profile_dir))
+
+    uid = os.getuid() if os.name != "nt" else 0
+    ancestors = _ancestor_chain(target)
+    if not ancestors:
+        raise OSError(f"Refusing root as profile directory: {profile_dir}")
+
+    # Validate existing ancestors from root downward and create missing per-user
+    # intermediate directories with mode 0700 only beneath trusted parents.
+    for idx, anc in enumerate(ancestors):
+        is_immediate = idx == len(ancestors) - 1
+        try:
+            _check_trusted_ancestor(anc, is_immediate_parent=is_immediate, uid=uid)
+        except FileNotFoundError:
+            os.makedirs(str(anc), mode=0o700, exist_ok=True)
+            _check_trusted_ancestor(anc, is_immediate_parent=is_immediate, uid=uid)
+
     try:
-        st = os.lstat(profile_dir)
+        st = os.lstat(target)
     except FileNotFoundError:
-        os.makedirs(profile_dir, mode=0o700, exist_ok=True)
-        st = os.lstat(profile_dir)
+        os.makedirs(str(target), mode=0o700, exist_ok=True)
+        st = os.lstat(target)
 
     if stat.S_ISLNK(st.st_mode):
         raise OSError(f"Refusing symlink profile directory: {profile_dir}")
@@ -106,12 +180,11 @@ def _ensure_private_profile_dir(profile_dir: str) -> None:
         raise OSError(f"Profile path is not a directory: {profile_dir}")
 
     if os.name != "nt":
-        uid = os.getuid()
         if st.st_uid != uid:
             raise PermissionError(f"Profile directory is not owned by uid {uid}: {profile_dir}")
         if hasattr(os, "O_DIRECTORY") and hasattr(os, "fchmod"):
             open_flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
-            fd = os.open(profile_dir, open_flags)
+            fd = os.open(str(target), open_flags)
             try:
                 fst = os.fstat(fd)
                 if not stat.S_ISDIR(fst.st_mode):
@@ -130,8 +203,8 @@ def _ensure_private_profile_dir(profile_dir: str) -> None:
             finally:
                 os.close(fd)
         elif stat.S_IMODE(st.st_mode) != 0o700:
-            os.chmod(profile_dir, 0o700)
-            st = os.lstat(profile_dir)
+            os.chmod(str(target), 0o700)
+            st = os.lstat(target)
             if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
                 raise OSError(f"Profile directory changed unexpectedly: {profile_dir}")
             if st.st_uid != uid:
@@ -245,13 +318,24 @@ def render_recipe(recipe: Dict[str, Any]) -> str:
         lines.append(recipe["note"])
         return "\n".join(lines)
 
-    env_prefix = " ".join(f"{k}={shlex.quote(str(v))}" for k, v in recipe["env"].items())
-    cmd = " ".join(shlex.quote(str(part)) for part in recipe["command"])
-    lines.append("[box-chrome login] Extras host. Launch the throwaway login Chrome:")
+    helper_cmd = [sys.executable or "python3", str(Path(__file__).resolve()), "--exec"]
+    if recipe["profile_dir"] != _default_profile_dir():
+        helper_cmd.extend(["--profile-dir", str(recipe["profile_dir"])])
+    if recipe["url"] != LOGIN_URL:
+        helper_cmd.extend(["--url", str(recipe["url"])])
+    launch_line = " ".join(shlex.quote(part) for part in helper_cmd)
+    lines.append(
+        "[box-chrome login] Extras host. Launch the throwaway login Chrome "
+        "via --exec (verifies trusted 0700 profile dir):"
+    )
     lines.append("")
-    lines.append(f"  mkdir -m 700 -p {shlex.quote(recipe['profile_dir'])}")
-    lines.append(f"  {env_prefix} {cmd}")
+    lines.append(f"  {launch_line}")
     lines.append("")
+    lines.append(
+        f"Launches {recipe['command'][0]} with "
+        f"SAND_CHROME_REMOTE_DEBUG_PORT={recipe['port']} and "
+        f"CHROME_USER_DATA_DIR={recipe['profile_dir']}."
+    )
     lines.append(recipe["note"])
     lines.append(
         "For this first-run harvest, set AGENTCOOKIE=off so a sidecar can't mix "
@@ -260,22 +344,31 @@ def render_recipe(recipe: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _parse_args(argv: List[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Print or launch the host-gated box-chrome X login helper."
+    )
+    parser.add_argument("--exec", dest="do_exec", action="store_true")
+    parser.add_argument("--json", dest="as_json", action="store_true")
+    parser.add_argument("--profile-dir", dest="profile_dir", default=None)
+    parser.add_argument("--url", dest="url", default=LOGIN_URL)
+    return parser.parse_args(argv)
+
+
 def main(argv: Optional[List[str]] = None) -> int:
-    argv = list(sys.argv[1:] if argv is None else argv)
-    do_exec = "--exec" in argv
-    as_json = "--json" in argv
+    args = _parse_args(list(sys.argv[1:] if argv is None else argv))
 
     config = env.get_config()  # default policy: no cookie reads, no discovery
-    recipe = build_recipe(config)
+    recipe = build_recipe(config, profile_dir=args.profile_dir, url=args.url)
 
-    if as_json:
+    if args.as_json:
         printable = {k: v for k, v in recipe.items() if k != "box_chrome"}
         printable["box_chrome_present"] = recipe["box_chrome"] is not None
         print(json.dumps(printable))
     else:
         print(render_recipe(recipe))
 
-    if do_exec:
+    if args.do_exec:
         # Refuse to spawn on a non-extras host, or when box-chrome is missing.
         if not recipe["applies"] or not recipe["command"]:
             return 0
