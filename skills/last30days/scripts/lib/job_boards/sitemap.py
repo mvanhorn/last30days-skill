@@ -163,6 +163,10 @@ def _parse_sitemap_xml(text: str) -> tuple[str | None, list[tuple[str, str]]]:
     return None, []
 
 
+def _is_jobs_sitemap_url(url: str, jobs_host: bool) -> bool:
+    return bool(jobs_host) or bool(_JOBS_WORD.search(url))
+
+
 def job_urls(hosts: list[str], *, deadline: float) -> tuple[str, list[tuple[str, str]], bool]:
     """The host whose sitemaps list job URLs, those URLs with their
     ``lastmod`` ('' when none), from the first host in ``hosts`` that has any,
@@ -186,12 +190,12 @@ def job_urls(hosts: list[str], *, deadline: float) -> tuple[str, list[tuple[str,
         rules = robots.rules_for(
             host, deadline_monotonic=time.monotonic() + max(0.0, deadline - jobs._clock()()),
         )
-        jobs_host = bool(re.match(r"(?:jobs|careers?)\.", host)) or _JOBS_WORD.search(host.split(".")[0] or "")
+        jobs_host = bool(re.match(r"(?:jobs|careers?)\.", host)) or bool(_JOBS_WORD.search(host.split(".")[0] or ""))
         queue = [
             url for url in rules.sitemaps
             # robots.txt is remote content too: its sitemaps pass the same
             # check as the role URLs they list.
-            if _public_url(url, host) and (jobs_host or _JOBS_WORD.search(url))
+            if _public_url(url, host) and _is_jobs_sitemap_url(url, jobs_host)
         ]
         found: dict[str, tuple[str, str]] = {}
         asked = 0
@@ -203,17 +207,17 @@ def job_urls(hosts: list[str], *, deadline: float) -> tuple[str, list[tuple[str,
             if not text:
                 # On a jobs host any sitemap file may hold roles
                 # (``sitemap-2.xml``); elsewhere only one that names jobs.
-                missed = missed or bool(jobs_host) or bool(_JOBS_WORD.search(urlparse(url).path))
+                missed = missed or _is_jobs_sitemap_url(url, jobs_host)
                 continue
             xml_kind, entries = _parse_sitemap_xml(text)
             if not xml_kind:
-                missed = missed or bool(jobs_host) or bool(_JOBS_WORD.search(urlparse(url).path))
+                missed = missed or _is_jobs_sitemap_url(url, jobs_host)
                 continue
             if xml_kind == "sitemapindex":
                 children = [loc for loc, _lastmod in entries]
                 # A jobs sitemap first, then English ones, then the rest.
                 children.sort(key=lambda child: (
-                    not _JOBS_WORD.search(urlparse(child).path), "/en" not in child,
+                    not _JOBS_WORD.search(child), "/en" not in child,
                 ))
                 # One file per path across languages: /fr/jobs/sitemap.xml
                 # lists the roles /en/jobs/sitemap.xml does.
@@ -228,9 +232,7 @@ def job_urls(hosts: list[str], *, deadline: float) -> tuple[str, list[tuple[str,
                 if _public_url(page, host) and _JOB_PATH.search(urlparse(page).path) and key not in found:
                     found[key] = (page, lastmod)
         if found:
-            unread = bool(queue) and (
-                bool(jobs_host) or any(_JOBS_WORD.search(urlparse(url).path) for url in queue)
-            )
+            unread = bool(queue) and any(_is_jobs_sitemap_url(url, jobs_host) for url in queue)
             return host, list(found.values()), missed or unread
     return "", [], False
 

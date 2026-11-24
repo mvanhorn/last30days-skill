@@ -518,22 +518,17 @@ def test_high169_protocol_downgrade_blocked_while_upgrade_allowed(monkeypatch):
 
         http_guard = detect.same_site_redirect_guard("http://careers.acme.com/robots.txt")
         assert http_guard("http://careers.acme.com/step1") is True
-        assert http_guard("https://evil.com/phish") is False
-        assert http_guard("http://careers.acme.com/step2") is True
         assert http_guard("https://careers.acme.com/next") is True
-        assert http_guard("https://careers.acme.com/next2") is True
-        assert http_guard("http://careers.acme.com/downgrade") is False
+        # Guard itself is stateless so retries from http:// still succeed.
+        assert http_guard("http://careers.acme.com/step1") is True
 
         careers_https_guard = detect.public_redirect_guard("https://acme.com/careers")
         assert careers_https_guard("https://jobs.acme.com/openings") is True
         assert careers_https_guard("http://jobs.acme.com/openings") is False
 
         careers_http_guard = detect.public_redirect_guard("http://acme.com/careers")
-        assert careers_http_guard("http://jobs.acme.com/step1") is True
-        assert careers_http_guard("https://127.0.0.1/blocked") is False
-        assert careers_http_guard("http://jobs.acme.com/step2") is True
         assert careers_http_guard("https://jobs.acme.com/openings") is True
-        assert careers_http_guard("http://jobs.acme.com/downgrade") is False
+        assert careers_http_guard("http://jobs.acme.com/step1") is True
 
         # _careers_fetch attaches the non-downgrade guard to http.get_text.
         with patch.object(jobs.http, "get_text", return_value="<html></html>") as mock_get_text:
@@ -543,11 +538,101 @@ def test_high169_protocol_downgrade_blocked_while_upgrade_allowed(monkeypatch):
         assert attached_guard("https://jobs.acme.com/") is True
         assert attached_guard("http://jobs.acme.com/") is False
 
-        # sitemap._guard latches HTTPS across multi-hop chains; _on_site rejects https -> http.
+        # Multi-hop http -> https -> http is blocked statelessly by http._StripAuthOnCrossOriginRedirect.
+        handler = http._StripAuthOnCrossOriginRedirect()
+        req0 = urllib.request.Request("http://careers.acme.com/start")
+        setattr(req0, http._REDIRECT_GUARD_ATTR, detect.same_site_redirect_guard("http://careers.acme.com/start"))
+        req1 = handler.redirect_request(req0, None, 302, "Found", {}, "https://careers.acme.com/upgraded")
+        assert req1 is not None and req1.full_url == "https://careers.acme.com/upgraded"
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            handler.redirect_request(req1, None, 302, "Found", {}, "http://careers.acme.com/downgraded")
+        assert exc_info.value.code == 403
+        assert "HTTPS downgrade" in str(exc_info.value.reason)
+
+        # End-to-end through http.request:
+        # 1) http -> https -> http is refused with 403.
+        # 2) http -> http -> https retry after transient error succeeds on attempt 2.
+        import io
+        from email.message import Message
+
+        def make_resp(url: str, status: int, body: bytes = b"", headers_dict: dict[str, str] | None = None):
+            msg = Message()
+            for k, v in (headers_dict or {}).items():
+                msg[k] = v
+            resp = urllib.response.addinfourl(io.BytesIO(body), msg, url, code=status)
+            resp.msg = "OK" if status == 200 else "Found"
+            return resp
+
+        class _FakeTransport(urllib.request.BaseHandler):
+            def __init__(self, script):
+                self._script = script
+
+            def http_open(self, req):
+                return self._script(req)
+
+            def https_open(self, req):
+                return self._script(req)
+
+        def build_test_opener(script):
+            opener = urllib.request.OpenerDirector()
+            opener.add_handler(_FakeTransport(script))
+            opener.add_handler(http._StripAuthOnCrossOriginRedirect())
+            opener.add_handler(urllib.request.HTTPErrorProcessor())
+            opener.add_handler(urllib.request.HTTPDefaultErrorHandler())
+            return opener
+
+        def downgrade_script(req):
+            if req.full_url == "http://acme.com/start":
+                return make_resp(req.full_url, 302, headers_dict={"Location": "https://acme.com/secure"})
+            if req.full_url == "https://acme.com/secure":
+                return make_resp(req.full_url, 302, headers_dict={"Location": "http://acme.com/downgrade"})
+            return make_resp(req.full_url, 200, b"should-not-reach")
+
+        monkeypatch.setattr(http, "_opener", build_test_opener(downgrade_script))
+        with pytest.raises(http.HTTPError) as downgrade_err:
+            http.request(
+                "GET",
+                "http://acme.com/start",
+                retries=1,
+                raw=True,
+                redirect_guard=detect.same_site_redirect_guard("http://acme.com/start"),
+            )
+        assert downgrade_err.value.status_code == 403
+
+        hop2_attempts = {"count": 0}
+        visited_urls: list[str] = []
+
+        def retry_script(req):
+            visited_urls.append(req.full_url)
+            if req.full_url == "http://acme.com/start":
+                return make_resp(req.full_url, 302, headers_dict={"Location": "http://acme.com/hop1"})
+            if req.full_url == "http://acme.com/hop1":
+                return make_resp(req.full_url, 302, headers_dict={"Location": "https://acme.com/hop2"})
+            if req.full_url == "https://acme.com/hop2":
+                hop2_attempts["count"] += 1
+                if hop2_attempts["count"] == 1:
+                    raise urllib.error.URLError(socket.gaierror(-3, "Temporary failure"))
+                return make_resp(req.full_url, 200, b"recovered-after-retry")
+            return make_resp(req.full_url, 404, b"missing")
+
+        monkeypatch.setattr(http, "_opener", build_test_opener(retry_script))
+        monkeypatch.setattr(http.time, "sleep", lambda _s: None)
+        body = http.request(
+            "GET",
+            "http://acme.com/start",
+            retries=2,
+            raw=True,
+            redirect_guard=detect.same_site_redirect_guard("http://acme.com/start"),
+        )
+        assert body == "recovered-after-retry"
+        assert hop2_attempts["count"] == 2
+        assert visited_urls == [
+            "http://acme.com/start", "http://acme.com/hop1", "https://acme.com/hop2",
+            "http://acme.com/start", "http://acme.com/hop1", "https://acme.com/hop2",
+        ]
+
+        # sitemap._on_site rejects https -> http landed downgrade.
         monkeypatch.setattr(sitemap, "_resolves_public", lambda _name: True)
-        sitemap_http_guard = sitemap._guard("http://jobs.acme.com/sitemap.xml")
-        assert sitemap_http_guard("https://jobs.acme.com/sitemap.xml") is True
-        assert sitemap_http_guard("http://jobs.acme.com/downgrade.xml") is False
         assert sitemap._on_site(
             "https://jobs.acme.com/en/jobs/1",
             lambda landed: (landed.append("http://jobs.acme.com/en/jobs/1"), "downgraded")[1],
@@ -1093,6 +1178,55 @@ def test_high174_sitemap_missed_distinguishes_empty_urlset_from_rejected_or_malf
     host_dtd, urls_dtd, missed_dtd = run_with(doctype_xml)
     assert host_dtd == "jobs.acme.com" and len(urls_dtd) == 1
     assert missed_dtd is True
+
+
+def test_high174_sitemap_missed_uses_full_url_for_host_and_query_jobs_sitemaps(monkeypatch):
+    monkeypatch.setattr(sitemap, "_resolves_public", lambda _name: True)
+    valid_jobs_xml = (
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+        "<url><loc>https://acme.com/jobs/12345-staff-engineer</loc></url>"
+        "</urlset>"
+    )
+    empty_urlset_xml = '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"/>'
+    malformed_xml = "<urlset><url><loc>https://acme.com/jobs/99999-broken"
+    doctype_xml = (
+        '<?xml version="1.0"?><!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>'
+        + valid_jobs_xml
+    )
+
+    for first_url in (
+        "https://acme.com/sitemap.xml?type=jobs",
+        "https://jobs-cdn.acme.com/sitemap.xml",
+    ):
+        fake_rules = robots.Rules(
+            f"Sitemap: {first_url}\n"
+            "Sitemap: https://acme.com/jobs/sitemap-2.xml\n"
+        )
+
+        def run_case(first_body: str | None) -> tuple[str, list[tuple[str, str]], bool]:
+            bodies = {
+                first_url: first_body,
+                "https://acme.com/jobs/sitemap-2.xml": valid_jobs_xml,
+            }
+            with patch.object(robots, "rules_for", return_value=fake_rules):
+                with patch.object(jobs.http, "get_text", side_effect=lambda u, **_kw: bodies.get(u)):
+                    return sitemap.job_urls(["acme.com"], deadline=time.monotonic() + 5)
+
+        host_empty, urls_empty, missed_empty = run_case(empty_urlset_xml)
+        assert host_empty == "acme.com" and len(urls_empty) == 1
+        assert missed_empty is False
+
+        host_malformed, urls_malformed, missed_malformed = run_case(malformed_xml)
+        assert host_malformed == "acme.com" and len(urls_malformed) == 1
+        assert missed_malformed is True
+
+        host_dtd, urls_dtd, missed_dtd = run_case(doctype_xml)
+        assert host_dtd == "acme.com" and len(urls_dtd) == 1
+        assert missed_dtd is True
+
+        host_fetch_fail, urls_fetch_fail, missed_fetch_fail = run_case(None)
+        assert host_fetch_fail == "acme.com" and len(urls_fetch_fail) == 1
+        assert missed_fetch_fail is True
 
 
 def test_high174_kula_empty_jobs_array_returns_zero_without_error():

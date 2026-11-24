@@ -380,24 +380,13 @@ def public_site_url(
 
 
 def public_redirect_guard(url: str) -> Callable[[str], bool]:
-    """Redirect guard allowing any safe public URL while forbidding
-    ``https -> http`` protocol downgrades across single or multi-hop chains."""
+    """Stateless redirect guard allowing any safe public URL while forbidding
+    ``https -> http`` downgrades from an ``https://`` origin."""
     if not is_safe_public_url(url):
         return lambda _target: False
-    require_https = urlparse(url).scheme.lower() == "https"
-
-    def _check(target: str) -> bool:
-        nonlocal require_https
-        if not is_safe_public_url(target):
-            return False
-        scheme = urlparse(target).scheme.lower()
-        if require_https and scheme != "https":
-            return False
-        if scheme == "https":
-            require_https = True
-        return True
-
-    return _check
+    if urlparse(url).scheme.lower() != "https":
+        return is_safe_public_url
+    return lambda target: is_safe_public_url(target) and urlparse(target).scheme.lower() == "https"
 
 
 def same_site_redirect_guard(
@@ -405,26 +394,18 @@ def same_site_redirect_guard(
     *,
     resolves: Callable[[str], bool] | None = None,
 ) -> Callable[[str], bool]:
-    """Redirect guard allowing only safe standard-port http(s) same-site URLs,
-    forbidding ``https -> http`` protocol downgrades across redirect chains."""
+    """Stateless redirect guard allowing only safe standard-port http(s)
+    same-site URLs, forbidding ``https -> http`` downgrades from an
+    ``https://`` origin."""
     if not is_safe_public_url(url):
         return lambda _target: False
     origin_host = page_host(url)
     if not origin_host:
         return lambda _target: False
     require_https = urlparse(url).scheme.lower() == "https"
-
-    def _check(target: str) -> bool:
-        nonlocal require_https
-        if not public_site_url(
-            target, origin_host, resolves=resolves, require_https=require_https,
-        ):
-            return False
-        if urlparse(target).scheme.lower() == "https":
-            require_https = True
-        return True
-
-    return _check
+    return lambda target: public_site_url(
+        target, origin_host, resolves=resolves, require_https=require_https,
+    )
 
 
 def detect_platform(html: str, page_url: str) -> tuple[str, dict[str, Any]] | None:
