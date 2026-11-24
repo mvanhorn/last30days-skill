@@ -466,6 +466,97 @@ class TestHigh113ListingHealthAndFailureIsolation:
         assert items == []
         assert "_source_outcome" not in (artifact or {})
 
+    def test_mixed_shreddit_429_and_arctic_timeout_or_500_reports_error_not_throttled(self):
+        def shreddit_429(_url, **_kwargs):
+            http._record_failure(http.HTTPError("HTTP 429: Too Many Requests", 429))
+            return None
+
+        # (a) Shreddit 429 + Arctic timeout -> ERROR (not THROTTLED)
+        with mock.patch.object(http, "get_text", side_effect=shreddit_429), \
+             mock.patch.object(http.time, "sleep"), \
+             mock.patch.object(http, "_sleep_reddit_429_retry"), \
+             mock.patch.object(reddit_arctic.http, "get", side_effect=http.DeadlineExceeded()):
+            posts_t, state_t = reddit_keyless._scored_listings_with_state(["python"], depth="quick")
+        assert posts_t == []
+        assert state_t == reddit_health.ERROR
+
+        http.reset_reddit_keyless_memo()
+        reddit_arctic.reset_memo()
+
+        # (b) Shreddit 429 + Arctic 500 -> ERROR (not THROTTLED)
+        with mock.patch.object(http, "get_text", side_effect=shreddit_429), \
+             mock.patch.object(http.time, "sleep"), \
+             mock.patch.object(http, "_sleep_reddit_429_retry"), \
+             mock.patch.object(reddit_arctic.http, "get", side_effect=http.HTTPError("HTTP 500", 500)):
+            posts_500, state_500 = reddit_keyless._scored_listings_with_state(["python"], depth="quick")
+        assert posts_500 == []
+        assert state_500 == reddit_health.ERROR
+
+        http.reset_reddit_keyless_memo()
+        reddit_arctic.reset_memo()
+
+        # (c) Shreddit 429 + Arctic clean empty -> THROTTLED
+        with mock.patch.object(http, "get_text", side_effect=shreddit_429), \
+             mock.patch.object(http.time, "sleep"), \
+             mock.patch.object(http, "_sleep_reddit_429_retry"), \
+             mock.patch.object(reddit_arctic.http, "get", return_value={"data": []}):
+            posts_clean, state_clean = reddit_keyless._scored_listings_with_state(["python"], depth="quick")
+        assert posts_clean == []
+        assert state_clean == reddit_health.THROTTLED
+
+        http.reset_reddit_keyless_memo()
+        reddit_arctic.reset_memo()
+
+        # (d) Shreddit 429 + Arctic 429 -> THROTTLED
+        with mock.patch.object(http, "get_text", side_effect=shreddit_429), \
+             mock.patch.object(http.time, "sleep"), \
+             mock.patch.object(http, "_sleep_reddit_429_retry"), \
+             mock.patch.object(reddit_arctic.http, "get", side_effect=http.HTTPError("HTTP 429", 429)):
+            posts_both, state_both = reddit_keyless._scored_listings_with_state(["python"], depth="quick")
+        assert posts_both == []
+        assert state_both == reddit_health.THROTTLED
+
+    def test_dedicated_throttled_plus_targeted_error_combines_to_error_and_avoids_rate_limited(self):
+        assert reddit_keyless._combine_listing_states(
+            [reddit_health.THROTTLED, reddit_health.ERROR], False
+        ) == reddit_health.ERROR
+        assert reddit_keyless._combine_listing_states(
+            [reddit_health.THROTTLED, reddit_health.THROTTLED], False
+        ) == reddit_health.THROTTLED
+
+        # Production contract: _discover calls _scored_listings_with_state directly.
+        assert not hasattr(reddit_keyless, "_call_scored_listings")
+        assert not hasattr(reddit_keyless, "_ORIG_SCORED_LISTINGS")
+
+        def search_429(*_args, **_kwargs):
+            http._record_failure(http.HTTPError("HTTP 429: Too Many Requests", 429))
+            return []
+
+        def web_throttled(*_args, **_kwargs):
+            web_search_keyless.RUNG_HEALTH.record("brave", web_search_keyless.THROTTLED)
+            return reddit_discover.WebFloor(
+                refs=[], queries=["site:reddit.com django"], rungs={"brave": web_search_keyless.THROTTLED}
+            )
+
+        calls = iter([
+            ([], reddit_health.THROTTLED),  # dedicated
+            ([], reddit_health.ERROR),      # targeted
+        ])
+        with mock.patch.object(reddit_keyless.reddit_search, "search", side_effect=search_429), \
+             mock.patch.object(reddit_keyless.reddit_discover, "web_refs", side_effect=web_throttled), \
+             mock.patch.object(reddit_keyless, "_scored_listings_with_state", side_effect=lambda *_a, **_k: next(calls)), \
+             reddit_keyless.lane_paths() as paths:
+            posts = reddit_keyless._discover(
+                "django", "quick", ["python"], dedicated_subreddits=["django"]
+            )
+
+        assert posts == []
+        assert paths["listing"] == reddit_health.ERROR
+        assert reddit_health.every_path_failed(paths) is True
+        outcome_state, _detail = reddit_health.failure_outcome(paths)
+        assert outcome_state == health.UNREACHABLE
+        assert outcome_state != health.RATE_LIMITED
+
 
 # ---------------------------------------------------------------------------
 # HIGH-114: Arctic Shift score backfill preserves live num_comments & labels
@@ -620,6 +711,93 @@ class TestHigh114ScoreBackfillAndCommentIntegrity:
         assert cards[0]["score"] == 0
         assert cards[0]["num_comments"] == 19
         assert cards[0]["engagement_source"] == reddit_refs.LIVE
+
+    def test_slugless_live_search_post_keeps_live_score_over_full_url_arctic_listing(self):
+        # Search returns a slugless URL with live score=42; Arctic Shift returns
+        # the full slug URL for the same post with stale score=1.
+        live_search = _post_dict(
+            "abc123",
+            title="Python 3.14 free threading benchmark",
+            sub="python",
+            score=42,
+            num_comments=15,
+            engagement_source=reddit_refs.LIVE,
+        )
+        live_search["url"] = "https://www.reddit.com/r/python/comments/abc123/"
+
+        arctic_listing = _post_dict(
+            "abc123",
+            title="Python 3.14 free threading benchmark",
+            sub="python",
+            score=1,
+            num_comments=2,
+            created_utc=1_700_000_000,  # >36h old -> labeled ARCTIC
+        )
+        arctic_listing["url"] = "https://www.reddit.com/r/python/comments/abc123/python_314_free_threading/"
+        arctic_listing["why_relevant"] = "Reddit listing (arctic-shift)"
+
+        with mock.patch.object(reddit_keyless.reddit_search, "search", return_value=[live_search]), \
+             mock.patch.object(reddit_keyless.reddit_discover, "web_refs", side_effect=_empty_web_floor), \
+             mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings", return_value=[]), \
+             mock.patch.object(reddit_keyless.reddit_arctic, "fetch_listings", return_value=[arctic_listing]), \
+             mock.patch.object(reddit_keyless.reddit_arctic, "fetch_scores") as fetch_scores:
+            out = reddit_keyless._discover("Python 3.14", "quick", ["python"])
+
+        fetch_scores.assert_not_called()
+        assert len(out) == 1
+        assert out[0]["score"] == 42
+        assert out[0]["engagement"]["score"] == 42
+        assert out[0]["num_comments"] == 15
+        assert out[0]["engagement"]["num_comments"] == 15
+        assert out[0]["engagement_source"] == reddit_refs.LIVE
+        assert set(out[0]["provenance"]) == {"listing", "search"}
+
+    def test_score_map_and_apply_scores_carry_source_and_never_mislable_archive_as_live(self):
+        # Even when URLs have distinct thread_keys (matched only via score_map post_id),
+        # an archive score must never overwrite a LIVE score, and must tag an unscored post ARCTIC.
+        live_target = _post_dict("idlive1", score=42, num_comments=15, engagement_source=reddit_refs.LIVE)
+        unscored_target = _post_dict("idarc1", score=0, num_comments=62)
+
+        arctic_for_live = _post_dict("idlive1", score=1, num_comments=2, created_utc=1_700_000_000)
+        arctic_for_live["url"] = "https://www.reddit.com/r/python/comments/other1/diff_url/"
+        arctic_for_unscored = _post_dict("idarc1", score=17, num_comments=3, created_utc=1_700_000_000)
+        arctic_for_unscored["url"] = "https://www.reddit.com/r/python/comments/other2/diff_url/"
+
+        with mock.patch.object(
+            reddit_keyless.reddit_search, "search", return_value=[live_target, unscored_target]
+        ), mock.patch.object(
+            reddit_keyless.reddit_discover, "web_refs", side_effect=_empty_web_floor
+        ), mock.patch.object(
+            reddit_keyless.reddit_listing, "fetch_listings", return_value=[]
+        ), mock.patch.object(
+            reddit_keyless.reddit_arctic,
+            "fetch_listings",
+            return_value=[arctic_for_live, arctic_for_unscored],
+        ), mock.patch.object(reddit_keyless.reddit_arctic, "fetch_scores", return_value={}):
+            out = reddit_keyless._discover("topic", "quick", ["python"])
+
+        by_url = {p["url"]: p for p in out}
+        assert by_url[live_target["url"]]["score"] == 42
+        assert by_url[live_target["url"]]["engagement_source"] == reddit_refs.LIVE
+        assert by_url[unscored_target["url"]]["score"] == 17
+        assert by_url[unscored_target["url"]]["num_comments"] == 62
+        assert by_url[unscored_target["url"]]["engagement_source"] == reddit_refs.ARCTIC
+
+        # Direct _apply_scores: live 0-score post refuses archive overwrite; archive post upgrades to LIVE.
+        zero_live = _post_dict("z0", score=0, num_comments=10, engagement_source=reddit_refs.LIVE)
+        reddit_keyless._apply_scores(
+            zero_live, {"score": 1, "num_comments": 0, "engagement_source": reddit_refs.ARCTIC}
+        )
+        assert zero_live["score"] == 0
+        assert zero_live["engagement_source"] == reddit_refs.LIVE
+
+        archive_post = _post_dict("a1", score=1, num_comments=2, engagement_source=reddit_refs.ARCTIC)
+        reddit_keyless._apply_scores(
+            archive_post, {"score": 88, "num_comments": 20, "engagement_source": reddit_refs.LIVE}
+        )
+        assert archive_post["score"] == 88
+        assert archive_post["num_comments"] == 20
+        assert archive_post["engagement_source"] == reddit_refs.LIVE
 
 
 # ---------------------------------------------------------------------------
@@ -812,3 +990,48 @@ class TestHigh122ShredditParaAndBodyBounding:
         assert "$750" in by_id["ol8tp8n"]["body"]
         assert "pending ($712.49)" in by_id["olcy1iv"]["body"]
         assert "Family plan" == by_id["ol8undb"]["body"]
+
+    def test_quoted_gt_in_div_comment_post_and_para_attributes(self):
+        comment_html = (
+            '<shreddit-comment data-hint="a > b" author="alice" thingId="t1_gt1" score="25" '
+            'depth="0" permalink="/r/python/comments/1/comment/gt1/">'
+            '<div data-note="x > y" id="t1_gt1-comment-rtjson-content">'
+            '<p title="1 > 0">Hello <a title="2 > 1" href="/x">world</a></p>'
+            '<div data-expr="m > n"><p>Nested after gt attr.</p></div>'
+            "</div>"
+            '<div class="ui-footer"><p>Must not leak</p></div>'
+            "</shreddit-comment>"
+        )
+        comments = reddit_shreddit.parse_comments(comment_html)
+        assert len(comments) == 1
+        assert comments[0]["author"] == "alice"
+        assert comments[0]["score"] == 25
+        assert comments[0]["body"] == "Hello world Nested after gt attr."
+        assert "Must not leak" not in comments[0]["body"]
+
+        post_html = (
+            '<shreddit-post post-title="Python > Ruby" score="100" comment-count="12" '
+            'author="bob" subreddit-name="python" '
+            'permalink="/r/python/comments/gtp1/python_gt_ruby/" '
+            'created-timestamp="2026-11-20T00:00:00+00:00"></shreddit-post>'
+        )
+        cards = reddit_listing.parse_cards(post_html, query="Python")
+        assert len(cards) == 1
+        assert cards[0]["title"] == "Python > Ruby"
+        assert cards[0]["score"] == 100
+        assert cards[0]["num_comments"] == 12
+        assert cards[0]["author"] == "bob"
+
+    def test_self_closing_unquoted_attrs_and_unclosed_quote_linear_time(self):
+        assert reddit_listing._attr("<shreddit-post score=42/>", "score") == "42"
+        assert reddit_shreddit._attr("<shreddit-comment score=19/>", "score") == "19"
+        assert (
+            reddit_listing._attr('<shreddit-post permalink="/r/python/comments/1/x/"/>', "permalink")
+            == "/r/python/comments/1/x/"
+        )
+
+        # Malformed unclosed quote must not catastrophically backtrack.
+        malformed = '<div title="' + ("a" * 50_000)
+        started = time.monotonic()
+        assert reddit_shreddit._body_for(malformed, "t1_missing") == ""
+        assert time.monotonic() - started < 1.0

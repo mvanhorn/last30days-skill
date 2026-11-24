@@ -71,18 +71,20 @@ _CAMEL_BOT = re.compile(r"[a-z0-9]Bot\d*$")
 
 # Match the exact <shreddit-comment> element start tag, not <shreddit-comment-tree>
 # or <shreddit-comment-tree-stats> (lookahead requires whitespace or '>').
-_COMMENT_START = re.compile(r"<shreddit-comment(?=[\s>])[^>]*>", re.IGNORECASE)
+_TAG_BODY = r'(?:"[^"]*"|\'[^\']*\'|[^>"\'])*'
+_COMMENT_START = re.compile(rf"<shreddit-comment(?=[\s>]){_TAG_BODY}>", re.IGNORECASE)
 _TOTAL_COMMENTS = re.compile(r'(?<![A-Za-z0-9_.:-])total-comments="(\d+)"', re.IGNORECASE)
-_PARA = re.compile(r"<p(?=[\s>])[^>]*?(?<!/)>(.*?)</p\s*>", re.S | re.IGNORECASE)
-_TAG = re.compile(r"<[^>]+>")
+_PARA = re.compile(rf"<p(?=[\s>]){_TAG_BODY}(?<!/)>(.*?)</p\s*>", re.S | re.IGNORECASE)
+_TAG = re.compile(r'<(?:"[^"]*"|\'[^\']*\'|[^>"\'])+>')
 _WS = re.compile(r"\s+")
 _NEXT_RTJSON = re.compile(
     r'(?<![A-Za-z0-9_.:-])id\s*=\s*(?:"([A-Za-z0-9_]+)-(?:comment|post)-rtjson-content"'
     r"|\'([A-Za-z0-9_]+)-(?:comment|post)-rtjson-content\')",
     re.IGNORECASE,
 )
+_DIV_OPEN = re.compile(rf"<div(?=[\s>]){_TAG_BODY}>", re.IGNORECASE)
 _BODY_BOUNDARY = re.compile(
-    r"<div(?=[\s>/])[^>]*>"
+    rf"<div(?=[\s>/]){_TAG_BODY}>"
     r"|</div\s*>"
     r"|<shreddit-comment(?=[\s>])"
     r"|</shreddit-comment\s*>",
@@ -158,7 +160,9 @@ def _attr(tag: str, name: str) -> str:
     wanted = name.lower()
     body = _TAG_HEAD.sub("", tag.strip())
     if body.endswith(">"):
-        body = body[:-1]
+        body = body[:-1].rstrip()
+        if body.endswith("/"):
+            body = body[:-1]
     for m in _TAG_ATTR.finditer(body):
         if m.group(1).lower() != wanted:
             continue
@@ -203,17 +207,20 @@ def _iso_to_date(value: str) -> Optional[str]:
 
 def _find_body_div_start(html_text: str, thing_id: str) -> Optional[int]:
     """Return the index right after the opening body ``<div>`` for ``thing_id``."""
-    escaped = re.escape(thing_id)
-    for suffix in ("post-rtjson-content", "comment-rtjson-content"):
-        pattern = re.compile(
-            rf'<div(?=[\s>])[^>]*?(?<![A-Za-z0-9_.:-])id\s*=\s*'
-            rf'(?:"{escaped}-{suffix}"|\'{escaped}-{suffix}\')[^>]*>',
-            re.IGNORECASE,
-        )
-        for m in pattern.finditer(html_text):
-            if not m.group(0).rstrip().endswith("/>"):
-                return m.end()
-    return None
+    thing_lower = thing_id.lower()
+    post_target = f"{thing_lower}-post-rtjson-content"
+    comment_target = f"{thing_lower}-comment-rtjson-content"
+    comment_match_end: Optional[int] = None
+    for m in _DIV_OPEN.finditer(html_text):
+        tag = m.group(0)
+        if tag.rstrip().endswith("/>"):
+            continue
+        div_id = _attr(tag, "id").lower()
+        if div_id == post_target:
+            return m.end()
+        if div_id == comment_target and comment_match_end is None:
+            comment_match_end = m.end()
+    return comment_match_end
 
 
 def _body_for(html_text: str, thing_id: str) -> str:
@@ -231,7 +238,7 @@ def _body_for(html_text: str, thing_id: str) -> str:
     start = _find_body_div_start(html_text, thing_id)
     if start is None:
         return ""
-    window = html_text[start: start + 8000]
+    window = html_text[start: start + 16000]
     thing_lower = thing_id.lower()
     depth = 1
     cut = len(window)
@@ -244,9 +251,12 @@ def _body_for(html_text: str, thing_id: str) -> str:
                 cut = m.start()
                 break
         elif lower.startswith("<div"):
-            rt = _NEXT_RTJSON.search(tok)
-            if rt:
-                other_id = (rt.group(1) or rt.group(2) or "").lower()
+            div_id = _attr(tok, "id").lower()
+            if div_id.endswith(("-comment-rtjson-content", "-post-rtjson-content")):
+                other_id = (
+                    div_id.removesuffix("-comment-rtjson-content")
+                    .removesuffix("-post-rtjson-content")
+                )
                 if other_id != thing_lower:
                     cut = m.start()
                     break

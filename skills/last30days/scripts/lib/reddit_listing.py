@@ -42,7 +42,8 @@ TIMEFRAME = "month"
 MAX_WORKERS = 4
 LISTING_TIMEOUT = 15
 
-_POST_CARD = re.compile(r"<shreddit-post(?=[\s>])[^>]*>", re.IGNORECASE)
+_TAG_BODY = r'(?:"[^"]*"|\'[^\']*\'|[^>"\'])*'
+_POST_CARD = re.compile(rf"<shreddit-post(?=[\s>]){_TAG_BODY}>", re.IGNORECASE)
 _TAG_HEAD = re.compile(r"^<\s*[^\s>/]+")
 _TAG_ATTR = re.compile(
     r'(?<![A-Za-z0-9_.:-])([A-Za-z_:][A-Za-z0-9_.:-]*)'
@@ -94,7 +95,9 @@ def _attr(tag: str, name: str) -> Optional[str]:
     wanted = name.lower()
     body = _TAG_HEAD.sub("", tag.strip())
     if body.endswith(">"):
-        body = body[:-1]
+        body = body[:-1].rstrip()
+        if body.endswith("/"):
+            body = body[:-1]
     for m in _TAG_ATTR.finditer(body):
         if m.group(1).lower() != wanted:
             continue

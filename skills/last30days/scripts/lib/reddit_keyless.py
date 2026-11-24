@@ -204,10 +204,30 @@ def _log(msg: str) -> None:
 _TIMED_OUT = object()
 
 
-def _apply_scores(post: Dict[str, Any], scored: Dict[str, int]) -> None:
+def _apply_scores(post: Dict[str, Any], scored: Dict[str, Any]) -> None:
     engagement = post.setdefault("engagement", {})
-    post["score"] = scored["score"]
-    engagement["score"] = scored["score"]
+    existing_source = post.get("engagement_source")
+    incoming_source = scored.get("engagement_source")
+    existing_score = (
+        engagement.get("score")
+        if engagement.get("score") is not None
+        else post.get("score")
+    )
+    has_live_score = existing_source == reddit_refs.LIVE or (
+        existing_source is None and bool(existing_score)
+    )
+    incoming_is_lower = (
+        incoming_source is not None
+        and reddit_refs.score_rank(incoming_source) < reddit_refs.score_rank(reddit_refs.LIVE)
+    )
+    if not (has_live_score and incoming_is_lower):
+        post["score"] = scored["score"]
+        engagement["score"] = scored["score"]
+        if incoming_source and (
+            not existing_source
+            or reddit_refs.score_rank(incoming_source) > reddit_refs.score_rank(existing_source)
+        ):
+            post["engagement_source"] = incoming_source
     counts = [
         v for v in (
             post.get("num_comments"),
@@ -243,10 +263,14 @@ def _classify_listing_state(
     if posts:
         return reddit_health.OK
     snapshot = list(failures)
-    statuses = {getattr(f, "status_code", None) for f in snapshot}
     if any(_is_listing_block_failure(f) for f in snapshot):
         return reddit_health.BLOCKED
-    if 429 in statuses:
+    if (
+        snapshot
+        and not timed_out
+        and not failed
+        and all(getattr(f, "status_code", None) == 429 for f in snapshot)
+    ):
         return reddit_health.THROTTLED
     if snapshot or timed_out or failed:
         return reddit_health.ERROR
@@ -262,8 +286,6 @@ def _combine_listing_states(states: List[str], has_posts: bool) -> str:
         return reddit_health.THROTTLED
     if reddit_health.BLOCKED in states:
         return reddit_health.BLOCKED
-    if reddit_health.THROTTLED in states:
-        return reddit_health.THROTTLED
     return reddit_health.ERROR
 
 
@@ -339,14 +361,21 @@ def _scored_listings_with_state(
                 now = time.time()
                 for p in arctic_posts:
                     reddit_hydrate.label_archive_post(p, now)
-                # Merge and dedupe by URL — shreddit posts take priority.
-                seen = {p["url"] for p in posts}
+                # Merge and dedupe by thread key (fallback URL) — shreddit posts take priority.
+                seen_urls = {p["url"] for p in posts}
+                seen_keys = {
+                    k for p in posts if (k := reddit_refs.thread_key(p.get("url", "")))
+                }
                 added = 0
                 for p in arctic_posts:
-                    if p["url"] not in seen:
-                        seen.add(p["url"])
-                        posts.append(p)
-                        added += 1
+                    key = reddit_refs.thread_key(p.get("url", ""))
+                    if p["url"] in seen_urls or (key and key in seen_keys):
+                        continue
+                    seen_urls.add(p["url"])
+                    if key:
+                        seen_keys.add(key)
+                    posts.append(p)
+                    added += 1
                 if added:
                     _log(f"arctic-shift supplement: {added} new posts from {len(arctic_posts)} arctic results")
 
@@ -369,34 +398,6 @@ def _scored_listings(
         from_date=from_date, to_date=to_date, deadline=deadline,
     )
     return posts
-
-
-_ORIG_SCORED_LISTINGS = _scored_listings
-
-
-def _call_scored_listings(
-    subreddits: List[str],
-    *,
-    depth: str = "default",
-    query: str = "",
-    sorts: Optional[List[str]] = None,
-    from_date: Optional[str] = None,
-    to_date: Optional[str] = None,
-    deadline: Optional[float] = None,
-) -> tuple[List[Dict[str, Any]], str]:
-    if _scored_listings is _ORIG_SCORED_LISTINGS:
-        return _scored_listings_with_state(
-            subreddits, depth=depth, query=query, sorts=sorts,
-            from_date=from_date, to_date=to_date, deadline=deadline,
-        )
-    result = _scored_listings(
-        subreddits, depth=depth, query=query, sorts=sorts,
-        from_date=from_date, to_date=to_date, deadline=deadline,
-    )
-    if isinstance(result, tuple) and len(result) == 2:
-        return result
-    posts = list(result or [])
-    return posts, (reddit_health.OK if posts else reddit_health.EMPTY)
 
 
 # Reserve up to 8s (capped at 40% of remaining budget) before the lane deadline
@@ -738,7 +739,7 @@ def _discover(
     listing_states: List[str] = []
     dedicated_posts: List[Dict[str, Any]] = []
     if dedicated_subreddits:
-        dedicated_posts, dedicated_state = _call_scored_listings(
+        dedicated_posts, dedicated_state = _scored_listings_with_state(
             dedicated_subreddits, depth=depth, query=topic, sorts=DEDICATED_SORTS,
             from_date=from_date, to_date=to_date, deadline=deadline,
         )
@@ -753,7 +754,7 @@ def _discover(
     # listings, so high-upvote off-topic posts cannot flood the results.
     listing_posts: List[Dict[str, Any]] = []
     if subreddits and not _out_of_time(deadline):
-        listing_posts, targeted_state = _call_scored_listings(
+        listing_posts, targeted_state = _scored_listings_with_state(
             subreddits, depth=depth, query=topic, from_date=from_date, to_date=to_date,
             deadline=deadline,
         )
@@ -771,42 +772,66 @@ def _discover(
         f"{'listing discovery ' + str(len(listing_posts)) if subreddits else 'no listings'}"
     )
 
-    # Score lookup by post id, from the scored listing cards.
-    score_map: Dict[str, Dict[str, int]] = {}
+    # Score lookup by post id, from the scored listing cards, carrying
+    # engagement_source so live scores are never overwritten by archive snapshots.
+    score_map: Dict[str, Dict[str, Any]] = {}
     for p in listing_posts:
         pid = p.get("metadata", {}).get("post_id", "")
-        if pid and not reddit_refs.score_pending(p):
-            score_map[pid] = {"score": p["score"], "num_comments": p["num_comments"]}
+        if not pid or reddit_refs.score_pending(p):
+            continue
+        src = p.get("engagement_source") or reddit_refs.LIVE
+        prev = score_map.get(pid)
+        if prev is not None and reddit_refs.score_rank(src) < reddit_refs.score_rank(prev.get("engagement_source")):
+            continue
+        score_map[pid] = {
+            "score": p["score"],
+            "num_comments": p["num_comments"],
+            "engagement_source": src,
+        }
 
     # Merge: dedicated-sub posts first (floor-exempt), then scored listing posts
-    # (targeted only), then search results, taking a listing's live score where
-    # the post also appears there. First writer wins the dedupe, so a thread in
-    # both the dedicated lane and a listing keeps its floor-exempt status.
+    # (targeted only), then search results, merging copies of the same thread by
+    # canonical thread id so slugless search URLs and full listing URLs collapse
+    # into one item while preserving live scores over archive snapshots.
     merged: List[Dict[str, Any]] = []
     seen: set = set()
+    merged_by_thread: Dict[str, Dict[str, Any]] = {}
     for p in dedicated_posts + listing_posts:
-        if p["url"] not in seen:
-            seen.add(p["url"])
-            merged.append(p)
+        key = reddit_refs.thread_key(p.get("url", ""))
+        if key and key in merged_by_thread:
+            reddit_hydrate.merge_post(merged_by_thread[key], p)
+            continue
+        if p["url"] in seen:
+            continue
+        seen.add(p["url"])
+        if key:
+            merged_by_thread[key] = p
+        merged.append(p)
     # Session threads merge by thread id, so a listing copy gains the
     # session's comments and a thread found both ways stays one item.
-    merged_by_thread = {reddit_refs.thread_key(p.get("url", "")): p for p in merged}
     for p in session_posts:
         key = reddit_refs.thread_key(p.get("url", ""))
         if key and key in merged_by_thread:
             reddit_hydrate.merge_post(merged_by_thread[key], p)
             merged_by_thread[key]["topic_bar"] = True
             continue
-        merged_by_thread[key] = p
+        if key:
+            merged_by_thread[key] = p
         seen.add(p["url"])
         merged.append(p)
     for p in search_posts:
+        key = reddit_refs.thread_key(p.get("url", ""))
+        if key and key in merged_by_thread:
+            reddit_hydrate.merge_post(merged_by_thread[key], p)
+            continue
         if p["url"] in seen:
             continue
         pid = reddit_listing._post_id(p["url"])
         if pid in score_map:
             _apply_scores(p, score_map[pid])
         seen.add(p["url"])
+        if key:
+            merged_by_thread[key] = p
         merged.append(p)
     # Host and web-floor threads merge by thread id: a copy another rung
     # already holds keeps that copy's live score and gains their comments,
