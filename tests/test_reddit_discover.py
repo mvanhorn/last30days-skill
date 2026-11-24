@@ -697,6 +697,7 @@ class TestSearxngConfigHandoff:
 
     def _run_pipeline_reddit_with_searxng(
         self, cfg, *, sc_search=None, html_fetch=None, site_hits=(), searxng_get=None,
+        full_report=False, labels=("primary",), report_depth="quick", report_sources=("reddit",),
     ):
         from lib import pipeline, reddit, reddit_keyless, schema
 
@@ -739,6 +740,29 @@ class TestSearxngConfigHandoff:
              mock.patch.object(web_search_keyless.http, "get_text", side_effect=html_fetch or self._throttled_html), \
              mock.patch.object(web_search_keyless.http, "get", side_effect=searxng_get or fake_get), \
              mock.patch.object(env, "resolve_searxng_url", side_effect=AssertionError("already loaded config should be threaded")):
+            if full_report:
+                # The whole run, so the result is the serialized per-source outcome.
+                report = pipeline.run(
+                    topic="IQ3 quantization",
+                    config=cfg,
+                    depth=report_depth,
+                    requested_sources=list(report_sources),
+                    web_backend="none",
+                    as_of_date="2026-05-31",
+                    external_plan={
+                        "intent": "research",
+                        "freshness_mode": "balanced_recent",
+                        "cluster_mode": "topic",
+                        "subqueries": [{
+                            "label": label,
+                            # Identical subqueries are planned once, and quick depth plans only one.
+                            "search_query": "IQ3 quantization" if index == 0 else f"IQ3 quantization {label}",
+                            "ranking_query": "IQ3 quantization" if index == 0 else f"IQ3 quantization {label}",
+                            "sources": list(report_sources),
+                        } for index, label in enumerate(labels)],
+                    },
+                )
+                return report, None, seen_urls
             items, artifact = pipeline._retrieve_stream(
                 topic="IQ3 quantization",
                 subquery=schema.SubQuery(
@@ -1073,8 +1097,8 @@ class TestSearxngConfigHandoff:
         assert outcome["state"] == health.TIMEOUT and outcome["detail"] == note
 
     @pytest.mark.parametrize("failure, note", [
-        (http.HTTPError("HTTP 403: refused", 403), "SearXNG fallback refused (HTTP 403)"),
-        (http.HTTPError("HTTP 429: slow down", 429), "SearXNG fallback rate-limited (HTTP 429)"),
+        (http.HTTPError("HTTP 403: refused", 403), "SearXNG fallback refused (403)"),
+        (http.HTTPError("HTTP 429: slow down", 429), "SearXNG fallback throttled (429)"),
     ])
     def test_searxng_failure_is_noted_without_becoming_a_reddit_failure(self, failure, note):
         def refuse(*args, **kwargs):
@@ -1106,8 +1130,8 @@ class TestSearxngConfigHandoff:
         assert artifact["_source_outcome"]["state"] == health.TIMEOUT
 
     @pytest.mark.parametrize("failure, note", [
-        (http.HTTPError("HTTP 403: refused", 403), "SearXNG fallback refused (HTTP 403)"),
-        (http.HTTPError("HTTP 429: slow down", 429), "SearXNG fallback rate-limited (HTTP 429)"),
+        (http.HTTPError("HTTP 403: refused", 403), "SearXNG fallback refused (403)"),
+        (http.HTTPError("HTTP 429: slow down", 429), "SearXNG fallback throttled (429)"),
     ])
     def test_sc_first_public_dispatch_keeps_the_searxng_note(self, failure, note):
         def refuse(*args, **kwargs):
@@ -1148,9 +1172,11 @@ class TestSearxngConfigHandoff:
         baseline = run(lambda *a, **k: {"results": []})
         noted = run(refuse)
 
-        assert noted.get("_source_outcome") == baseline.get("_source_outcome")
+        assert noted["_source_outcome"]["state"] == baseline["_source_outcome"]["state"]
+        # The reason stays first and intact. The note only follows it.
+        assert noted["_source_outcome"]["detail"] == f"{baseline['_source_outcome']['detail']}; SearXNG fallback refused (403)"
         assert "SearXNG" not in baseline.get("_source_outcome_detail", "")
-        assert "SearXNG fallback refused (HTTP 403)" in noted["_source_outcome_detail"]
+        assert "SearXNG fallback refused (403)" in noted["_source_outcome_detail"]
 
     def test_public_first_early_timeout_keeps_the_observed_searxng_note(self):
         clock = [100.0]
@@ -1169,7 +1195,7 @@ class TestSearxngConfigHandoff:
 
         assert not items
         assert artifact["_source_outcome"]["state"] == health.TIMEOUT
-        assert "SearXNG fallback refused (HTTP 403)" in artifact["_source_outcome_detail"]
+        assert "SearXNG fallback refused (403)" in artifact["_source_outcome_detail"]
         assert "_source_outcome_detail_state" not in artifact
 
     def test_public_first_early_failure_keeps_the_observed_searxng_note(self):
@@ -1192,7 +1218,7 @@ class TestSearxngConfigHandoff:
 
         assert not items
         assert artifact["_source_outcome"]["state"] == health.UNREACHABLE
-        assert "SearXNG fallback refused (HTTP 403)" in artifact["_source_outcome_detail"]
+        assert "SearXNG fallback refused (403)" in artifact["_source_outcome_detail"]
 
     def test_public_first_backfill_timeout_keeps_its_detail_and_gains_the_searxng_note(self):
         note = "paid backfill stopped at its deadline before completing"
@@ -1210,8 +1236,329 @@ class TestSearxngConfigHandoff:
 
         assert not items
         assert artifact["_source_outcome"]["state"] == health.TIMEOUT
-        assert artifact["_source_outcome"]["detail"] == note
-        assert artifact["_source_outcome_detail"] == "SearXNG fallback rate-limited (HTTP 429)"
+        assert artifact["_source_outcome"]["detail"] == f"{note}; SearXNG fallback throttled (429)"
+        assert artifact["_source_outcome_detail"] == "SearXNG fallback throttled (429)"
+
+    @staticmethod
+    def _searxng_refusal(status, after=None):
+        def refuse(*args, **kwargs):
+            failure = http.HTTPError(f"HTTP {status}: refused", status)
+            http._record_failure(failure)
+            if after is not None:
+                after()
+            raise failure
+
+        return refuse
+
+    def test_report_keeps_the_note_with_a_real_cutoff_timeout(self):
+        from lib import reddit_keyless
+
+        clock = [100.0]
+        lanes = []
+        real_lane = reddit_keyless.lane_deadline
+
+        def record_lane(deadline):
+            lanes.append(deadline)
+            return real_lane(deadline)
+
+        cfg = {"LAST30DAYS_SEARXNG_URL": "https://searx.example", "_research_deadline": 170.0}
+        refuse = self._searxng_refusal(403, after=lambda: clock.__setitem__(0, 158.0))
+        with mock.patch("time.monotonic", side_effect=lambda: clock[0]), \
+             mock.patch.object(reddit_keyless, "lane_deadline", side_effect=record_lane):
+            report, _, _ = self._run_pipeline_reddit_with_searxng(
+                cfg, html_fetch=lambda *a, **k: "", searxng_get=refuse, full_report=True,
+            )
+
+        outcome = report.source_status["reddit"]
+        assert lanes == [159.5]
+        assert outcome.state == health.TIMEOUT
+        assert outcome.detail == "Reddit ran out of search time before it found threads; SearXNG fallback refused (403)"
+
+    def test_report_keeps_a_captured_paid_429_and_its_reason_with_the_note(self):
+        def sc_search(*args, **kwargs):
+            http._record_failure(http.HTTPError("HTTP 429: paid primary throttled", 429))
+            return {}
+
+        cfg = {"SCRAPECREATORS_API_KEY": "sc-dummy-key", env.REDDIT_BACKEND_PIN_VAR: "scrapecreators",
+               "LAST30DAYS_SEARXNG_URL": "https://searx.example"}
+        report, _, _ = self._run_pipeline_reddit_with_searxng(
+            cfg, sc_search=sc_search, html_fetch=lambda *a, **k: "",
+            searxng_get=self._searxng_refusal(403), full_report=True,
+        )
+
+        outcome = report.source_status["reddit"]
+        assert outcome.state == health.RATE_LIMITED
+        assert outcome.detail == "HTTP 429: paid primary throttled; SearXNG fallback refused (403)"
+
+    def test_report_keeps_a_paid_backfill_timeout_and_its_note(self):
+        note = "paid backfill stopped at its deadline before completing"
+        cfg = {"SCRAPECREATORS_API_KEY": "sc-dummy-key", "LAST30DAYS_SEARXNG_URL": "https://searx.example"}
+        report, _, _ = self._run_pipeline_reddit_with_searxng(
+            cfg, sc_search=lambda *a, **k: {"items": [], "incomplete": True, "incomplete_note": note},
+            html_fetch=lambda *a, **k: "", searxng_get=self._searxng_refusal(429), full_report=True,
+        )
+
+        outcome = report.source_status["reddit"]
+        assert outcome.state == health.TIMEOUT
+        assert outcome.detail == f"{note}; SearXNG fallback throttled (429)"
+
+    def test_report_without_a_fallback_failure_has_no_note(self):
+        clock = [100.0]
+        cfg = {"LAST30DAYS_SEARXNG_URL": "https://searx.example", "_research_deadline": 170.0}
+
+        def html_past_cutoff(*args, **kwargs):
+            clock[0] = 158.0
+            return ""
+
+        with mock.patch("time.monotonic", side_effect=lambda: clock[0]):
+            cutoff, _, _ = self._run_pipeline_reddit_with_searxng(
+                cfg, html_fetch=html_past_cutoff, full_report=True,
+            )
+        clean, _, _ = self._run_pipeline_reddit_with_searxng(
+            {"LAST30DAYS_SEARXNG_URL": "https://searx.example"},
+            html_fetch=lambda *a, **k: "", searxng_get=lambda *a, **k: {"results": []}, full_report=True,
+        )
+
+        assert cutoff.source_status["reddit"].detail == "Reddit ran out of search time before it found threads"
+        assert "SearXNG" not in str(clean.source_status["reddit"].detail)
+
+    def test_report_for_a_served_run_keeps_the_note_and_the_ok_state(self):
+        site_hit = {
+            "title": "IQ3 quantization discussion",
+            "url": "https://www.reddit.com/r/LocalLLaMA/comments/site123/",
+            "date": "2026-05-20",
+            "engagement": {"score": 25, "num_comments": 3},
+            "relevance": 0.9,
+            "metadata": {"post_id": "site123"},
+        }
+        cfg = {"LAST30DAYS_SEARXNG_URL": "https://searx.example"}
+        report, _, _ = self._run_pipeline_reddit_with_searxng(
+            cfg, html_fetch=lambda *a, **k: "", site_hits=[site_hit],
+            searxng_get=self._searxng_refusal(403), full_report=True,
+        )
+
+        outcome = report.source_status["reddit"]
+        assert outcome.state == health.OK and outcome.items_returned >= 1
+        assert "SearXNG fallback refused (403)" in outcome.detail
+
+    @pytest.mark.parametrize("note_first", [True, False], ids=["note-first", "note-second"])
+    def test_report_keeps_the_note_from_either_stream_of_the_same_source(self, note_first):
+        import time
+
+        from lib import pipeline
+
+        reason = "Reddit ran out of search time before it found threads"
+        plain = {"_source_outcome": {"state": health.TIMEOUT, "detail": reason, "attempted": True}}
+        noted = {**plain, "_source_outcome_detail": "SearXNG fallback refused (403)"}
+
+        def stream(*args, **kwargs):
+            is_noted = kwargs["subquery"].label == "noted"
+            if is_noted != note_first:
+                time.sleep(0.4)  # Streams are recorded as they finish, so this one finishes second.
+            return [], dict(noted if is_noted else plain)
+
+        labels = ("noted", "plain") if note_first else ("plain", "noted")
+        with mock.patch.object(pipeline, "_retrieve_stream_impl", side_effect=stream):
+            report, _, _ = self._run_pipeline_reddit_with_searxng(
+                {"LAST30DAYS_SEARXNG_URL": "https://searx.example"}, full_report=True, labels=labels,
+                report_depth="default",
+            )
+
+        outcome = report.source_status["reddit"]
+        assert outcome.state == health.TIMEOUT
+        assert outcome.detail == f"{reason}; SearXNG fallback refused (403)"
+        assert report.errors_by_source["reddit"] == outcome.detail
+
+    def test_keep_lane_notes_helper_edge_cases(self):
+        from lib import pipeline, schema
+
+        def bundle_with(detail, failed=True):
+            bundle = schema.RetrievalBundle()
+            if failed:
+                bundle.record_failure("reddit", health.TIMEOUT, detail)
+            else:
+                bundle.add_items("primary", "reddit", [])
+            return bundle
+
+        nothing = schema.RetrievalBundle()
+        pipeline._keep_reddit_lane_notes(nothing, "a note")
+        assert "reddit" not in nothing.source_status
+
+        held = bundle_with("the reason")
+        pipeline._keep_reddit_lane_notes(held, "a note")
+        assert held.source_status["reddit"].detail == "the reason; a note"
+        assert held.source_status["reddit"].state == health.TIMEOUT
+        assert held.errors_by_source["reddit"] == "the reason; a note"
+
+        again = bundle_with("the reason; a note")
+        pipeline._keep_reddit_lane_notes(again, "a note")
+        assert again.source_status["reddit"].detail == "the reason; a note"
+
+        partly = bundle_with("the reason; one")
+        pipeline._keep_reddit_lane_notes(partly, "one; two")
+        assert partly.source_status["reddit"].detail == "the reason; one; two"
+
+        served = bundle_with(None, failed=False)
+        pipeline._keep_reddit_lane_notes(served, "a note")
+        assert served.source_status["reddit"].detail is None
+
+        # A delivered source that only carries a detail is not a failure and is left alone.
+        detailed = bundle_with(None, failed=False)
+        detailed.record_detail("reddit", "search served 1")
+        pipeline._keep_reddit_lane_notes(detailed, "a note")
+        assert detailed.source_status["reddit"].detail == "search served 1"
+        assert "reddit" not in detailed.errors_by_source
+
+        # The error text is only extended when it lacks the notes, and a missing entry is fine.
+        known = bundle_with("the reason")
+        known.errors_by_source["reddit"] = "the reason; a note"
+        pipeline._keep_reddit_lane_notes(known, "a note")
+        assert known.errors_by_source["reddit"] == "the reason; a note"
+        assert known.source_status["reddit"].detail == "the reason; a note"
+
+        unlisted = bundle_with("the reason")
+        unlisted.errors_by_source.pop("reddit")
+        pipeline._keep_reddit_lane_notes(unlisted, "a note")
+        assert "reddit" not in unlisted.errors_by_source
+        assert unlisted.source_status["reddit"].detail == "the reason; a note"
+
+    def test_another_sources_note_never_lands_on_reddit(self):
+        import time
+
+        from lib import pipeline
+
+        reason = "Reddit ran out of search time before it found threads"
+
+        def stream(*args, **kwargs):
+            if kwargs["source"] == "polymarket":
+                time.sleep(0.4)  # Recorded after Reddit's failure, so a leaked note would have a target.
+                return [], {
+                    "_source_outcome": {"state": health.ERROR, "detail": "market feed broke", "attempted": True},
+                    "_source_outcome_detail": "a market note",
+                }
+            return [], {"_source_outcome": {"state": health.TIMEOUT, "detail": reason, "attempted": True}}
+
+        with mock.patch.object(pipeline, "_retrieve_stream_impl", side_effect=stream):
+            report, _, _ = self._run_pipeline_reddit_with_searxng(
+                {"LAST30DAYS_SEARXNG_URL": "https://searx.example"}, full_report=True,
+                report_sources=("reddit", "polymarket"),
+            )
+
+        assert report.source_status["reddit"].detail == reason
+        assert "a market note" not in str(report.source_status["reddit"].detail)
+        assert report.source_status["polymarket"].state == health.ERROR
+        assert report.source_status["polymarket"].detail == "market feed broke"
+
+    def test_report_without_any_note_stays_unchanged_across_two_streams(self):
+        from lib import pipeline
+
+        reason = "Reddit ran out of search time before it found threads"
+        plain = {"_source_outcome": {"state": health.TIMEOUT, "detail": reason, "attempted": True}}
+        with mock.patch.object(pipeline, "_retrieve_stream_impl", side_effect=lambda *a, **k: ([], dict(plain))):
+            report, _, _ = self._run_pipeline_reddit_with_searxng(
+                {"LAST30DAYS_SEARXNG_URL": "https://searx.example"}, full_report=True, labels=("one", "two"),
+                report_depth="default",
+            )
+
+        assert report.source_status["reddit"].detail == reason
+
+    def test_fold_helper_edge_cases(self):
+        from lib import pipeline
+
+        typed = {"state": health.TIMEOUT, "detail": "ran out of time", "attempted": True}
+        served = {"_source_outcome_detail": "search served 1"}
+        no_note = {"_source_outcome": typed}
+        already = {"_source_outcome": {**typed, "detail": "ran out of time; a note"}, "_source_outcome_detail": "a note"}
+        original = {"_source_outcome": typed, "_source_outcome_detail": "a note"}
+
+        assert pipeline._fold_reddit_lane_notes(None) is None
+        assert pipeline._fold_reddit_lane_notes(served) is served
+        assert pipeline._fold_reddit_lane_notes(no_note) is no_note
+        assert pipeline._fold_reddit_lane_notes(already) is already
+        folded = pipeline._fold_reddit_lane_notes(original)
+        assert folded["_source_outcome"]["detail"] == "ran out of time; a note"
+        assert folded["_source_outcome"]["state"] == health.TIMEOUT
+        # The input is never changed, so a replayed artifact cannot pick up the note twice.
+        assert typed["detail"] == "ran out of time" and original["_source_outcome"] is typed
+        assert pipeline._fold_reddit_lane_notes(folded) is folded
+
+    @pytest.mark.parametrize("source, folded", [("reddit", True), ("hackernews", False)])
+    def test_only_reddit_outcomes_get_their_lane_notes_folded(self, source, folded):
+        from lib import pipeline
+
+        artifact = {
+            "_source_outcome": {"state": health.ERROR, "detail": "boom", "attempted": True},
+            "_source_outcome_detail": "a side note",
+        }
+        with mock.patch.object(pipeline, "_retrieve_stream_impl", return_value=([], dict(artifact))):
+            _, result = pipeline._retrieve_stream(source=source, config={})
+
+        assert result["_source_outcome"]["state"] == health.ERROR
+        assert result["_source_outcome"]["detail"] == ("boom; a side note" if folded else "boom")
+        assert result["_source_outcome_detail"] == "a side note"
+
+    @pytest.mark.parametrize("detail", [
+        "Reddit ran out of search time before it found threads",
+        "HTTP 429: paid primary throttled",
+        "paid backfill stopped at its deadline before completing",
+        "Reddit backup failed after 1 public items: HTTP 500; search blocked",
+        "Reddit primary failed; public fallback returned 1 items: connection error",
+    ])
+    @pytest.mark.parametrize("state", ["blocked", "throttled", "timeout", "error"])
+    def test_a_searxng_note_can_never_change_how_a_detail_is_classified(self, state, detail):
+        from lib import reddit_keyless
+
+        note = f"SearXNG fallback {reddit_keyless._SEARXNG_NOTES[state]}"
+
+        assert http.classify_failure(message=f"{detail}; {note}") == http.classify_failure(message=detail)
+        assert http.classify_failure(message=note) == health.ERROR
+
+    @pytest.mark.parametrize("with_partial", [True, False], ids=["partial", "empty"])
+    def test_paid_backfill_exception_keeps_the_searxng_note(self, with_partial):
+        site_hit = {
+            "title": "IQ3 quantization discussion",
+            "url": "https://www.reddit.com/r/LocalLLaMA/comments/site123/",
+            "date": "2026-05-20",
+            "engagement": {"score": 25, "num_comments": 3},
+            "relevance": 0.9,
+            "metadata": {"post_id": "site123"},
+        }
+
+        def failing_backfill(*args, **kwargs):
+            raise RuntimeError("paid lookup broke")
+
+        cfg = {"SCRAPECREATORS_API_KEY": "sc-dummy-key", "LAST30DAYS_SEARXNG_URL": "https://searx.example"}
+        items, artifact, _ = self._run_pipeline_reddit_with_searxng(
+            cfg, sc_search=failing_backfill, html_fetch=lambda *a, **k: "",
+            site_hits=[site_hit] if with_partial else [], searxng_get=self._searxng_refusal(403),
+        )
+
+        if with_partial:
+            # The retained partial, the chosen detail state and the paid failure all stay as they were.
+            assert [i["metadata"]["post_id"] for i in items] == ["site123"]
+            assert artifact["_source_outcome_detail_state"] == health.ERROR
+            assert artifact["_source_outcome_detail"] == (
+                "search served 1; ScrapeCreators backfill failed after 1 free items: paid lookup broke; "
+                "SearXNG fallback refused (403)"
+            )
+            assert "ScrapeCreators backfill failed" in artifact["_source_outcome_detail"]
+            assert "_source_outcome" not in artifact
+        else:
+            assert artifact["_source_outcome"]["detail"].startswith("Reddit backup failed after")
+        assert "SearXNG fallback refused (403)" in artifact["_source_outcome_detail"]
+
+    def test_paid_backfill_exception_without_a_searxng_failure_has_no_note(self):
+        def failing_backfill(*args, **kwargs):
+            raise RuntimeError("paid lookup broke")
+
+        for cfg in ({"SCRAPECREATORS_API_KEY": "sc-dummy-key"},
+                    {"SCRAPECREATORS_API_KEY": "sc-dummy-key", "LAST30DAYS_SEARXNG_URL": "https://searx.example"}):
+            reddit_discover.reset_run_state()
+            items, artifact, _ = self._run_pipeline_reddit_with_searxng(
+                cfg, sc_search=failing_backfill, html_fetch=lambda *a, **k: "",
+                searxng_get=lambda *a, **k: {"results": []},
+            )
+            assert "SearXNG" not in str(artifact)
 
     def test_cutoff_before_searxng_runs_fabricates_no_note(self):
         clock = [100.0]
@@ -1251,7 +1598,7 @@ class TestSearxngConfigHandoff:
             )
 
         assert sx.call_count == 2
-        assert notes == ["SearXNG fallback rate-limited (HTTP 429)"]
+        assert notes == ["SearXNG fallback throttled (429)"]
 
     def test_searxng_failure_is_kept_apart_from_the_latest_rung_and_deduplicated(self):
         floor = reddit_discover.WebFloor()

@@ -3554,6 +3554,8 @@ def run(
                     bundle.record_detail(
                         source, detail_note, state=lane_state
                     )
+                    if source == "reddit" and outcome_note is not None:
+                        _keep_reddit_lane_notes(bundle, detail_note)
                     if detail_rate_limited:
                         # Do not re-fan-out against a host still inside its window.
                         with rate_limit_lock:
@@ -5817,6 +5819,45 @@ def _with_reddit_lane_notes(artifact: dict[str, Any], notes: list[str]) -> dict[
     return artifact
 
 
+def _keep_reddit_lane_notes(bundle: schema.RetrievalBundle, note: str) -> None:
+    """Keep a later Reddit stream's lane notes on the failure the bundle already holds.
+
+    When two streams of one source fail alike, the bundle keeps the earlier failure's detail,
+    so a note carried by the later stream would be lost. The state and the reason it kept
+    are never touched. Only notes the detail does not already hold are added.
+    """
+    status = bundle.source_status.get("reddit")
+    if status is None or not status.detail or "reddit" not in bundle.failed_sources:
+        return
+    missing = [part for part in note.split("; ") if part and part not in status.detail]
+    if not missing:
+        return
+    status.detail = "; ".join([status.detail, *missing])
+    held = bundle.errors_by_source.get("reddit")
+    if held and not any(part in held for part in missing):
+        bundle.errors_by_source["reddit"] = "; ".join([held, *missing])
+
+
+def _fold_reddit_lane_notes(artifact: Any) -> Any:
+    """Append the Reddit lane's notes to a typed outcome's own detail.
+
+    A typed failure or timeout is recorded as a hard failure, and the bundle keeps its
+    detail rather than a separately staged note. The reason stays first and the state is
+    untouched. The notes are worded so they cannot change how a detail is classified.
+    """
+    if not isinstance(artifact, dict):
+        return artifact
+    outcome = artifact.get("_source_outcome")
+    note = artifact.get("_source_outcome_detail")
+    if not isinstance(outcome, dict) or not note or note in str(outcome.get("detail") or ""):
+        return artifact
+    folded = dict(artifact)
+    folded["_source_outcome"] = {
+        **outcome, "detail": "; ".join(filter(None, [str(outcome.get("detail") or ""), note])),
+    }
+    return folded
+
+
 def _reddit_sc_incomplete_notes(result: Any) -> list[str]:
     """Extract deadline-incompleteness notes from a ScrapeCreators Reddit result."""
     if not isinstance(result, dict):
@@ -7233,6 +7274,8 @@ def _retrieve_stream(*args, **kwargs) -> tuple[list[dict], dict]:
             artifact["_source_outcome_detail_state"] = min(
                 states, key=lambda state: _FAILURE_SPECIFICITY.get(state, 9)
             )
+    if source == "reddit":
+        artifact = _fold_reddit_lane_notes(artifact)
     publish_rate_limit((artifact.get("_source_outcome") or {}).get("state"))
     if _detail_rate_limits_source(source, artifact):
         publish_rate_limit(health.RATE_LIMITED)
@@ -7953,13 +7996,13 @@ def _retrieve_stream_impl(
                     # A ScrapeCreators rate limit says nothing about
                     # reddit.com (and the run memo already stops a retry).
                     artifact["_source_outcome_detail_state"] = state
-                return public_results, artifact
+                return public_results, _with_reddit_lane_notes(artifact, lane_notes)
             failed_paths = reddit_health.failures(lane_paths)
-            return public_results, _outcome_artifact(
+            return public_results, _with_reddit_lane_notes(_outcome_artifact(
                 state,
                 f"Reddit backup failed after {len(public_results)} public items: {exc}"
                 + "".join(f"; {failed}" for failed in failed_paths),
-            )
+            ), lane_notes)
         merged = _merge_reddit_items(public_results, sc_items)
         sc_notes = _reddit_sc_incomplete_notes(result)
         backfill_timeout = (

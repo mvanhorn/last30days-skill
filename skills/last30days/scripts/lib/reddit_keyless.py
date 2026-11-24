@@ -375,11 +375,12 @@ def _web_floor(
 
 # What the optional SearXNG fallback answered when it failed. This is a note on the
 # fallback itself. Its refusals say nothing about reddit.com, so they never become
-# a Reddit path state or touch the shared rung health.
+# a Reddit path state or touch the shared rung health. The wording avoids every phrase
+# that http.classify_failure reads, so a note can never change how a detail is classified.
 _SEARXNG_NOTES = {
-    web_search_keyless.BLOCKED: "refused (HTTP 403)",
-    web_search_keyless.THROTTLED: "rate-limited (HTTP 429)",
-    health.TIMEOUT: "timed out",
+    web_search_keyless.BLOCKED: "refused (403)",
+    web_search_keyless.THROTTLED: "throttled (429)",
+    health.TIMEOUT: "ran out of time",
     web_search_keyless.ERROR: "failed",
 }
 
