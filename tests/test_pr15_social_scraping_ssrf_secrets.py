@@ -342,9 +342,10 @@ class TestHigh183TokenValidationAndSecretScrubbing:
                 ) == []
 
                 # 6. Bluesky (search with malformed session JWT + refresh JWT)
-                assert bluesky._refresh_session(malformed_token) is None
-                assert "SECRET_TOK_12345" not in (bluesky._session_error or "")
-                with mock.patch.object(bluesky, "_create_session", return_value=malformed_token):
+                bs_refresh_tok, bs_refresh_err, _bs_refresh_status = bluesky._refresh_session(malformed_token)
+                assert bs_refresh_tok is None
+                assert "SECRET_TOK_12345" not in (bs_refresh_err or "")
+                with mock.patch.object(bluesky, "_create_session", return_value=(malformed_token, None, None)):
                     bs_res = bluesky.search_bluesky(
                         "ai agents", "2026-06-01", "2026-06-30",
                         config={"BSKY_HANDLE": "u.bsky.social", "BSKY_APP_PASSWORD": "abcd-efgh-ijkl-mnop"},
@@ -435,7 +436,7 @@ class TestHigh183TokenValidationAndSecretScrubbing:
                     "ai", "2026-06-01", "2026-06-30",
                     token=secret, config={"TELEGRAM_SOURCES": "aipost"},
                 )
-            with mock.patch.object(bluesky, "_create_session", return_value=secret), \
+            with mock.patch.object(bluesky, "_create_session", return_value=(secret, None, None)), \
                     mock.patch.object(bluesky.http, "request", side_effect=leaking_exc):
                 bs = bluesky.search_bluesky(
                     "ai", "2026-06-01", "2026-06-30",

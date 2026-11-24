@@ -2338,6 +2338,7 @@ def _config_fingerprint(config: Dict[str, Any]) -> str:
         "browser_consent": str(config.get("BROWSER_CONSENT") or ""),
         "from_browser": str(config.get("FROM_BROWSER") or ""),
         "agentcookie": str(config.get("AGENTCOOKIE") or env.read_secret_env("AGENTCOOKIE") or ""),
+        "x_api_opt_in": env.x_api_opt_in(),
     }
     canonical = json.dumps(signals, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()

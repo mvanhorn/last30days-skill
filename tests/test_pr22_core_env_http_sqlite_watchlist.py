@@ -409,16 +409,18 @@ def test_high062_bluesky_refresh_session_and_xquik_probe_work_with_retries_zero(
             json.dumps({"accessJwt": "fresh-access", "refreshJwt": "fresh-refresh"}).encode()
         ),
     )
-    token = bluesky._refresh_session("dummy-refresh-token")
+    token, err_msg, err_status = bluesky._refresh_session("dummy-refresh-token")
     assert token == "fresh-access"
-    assert bluesky._refresh_error_status is None
+    assert err_msg is None
+    assert err_status is None
 
     def fail_401(req, timeout):
         raise urllib.error.HTTPError(req.full_url, 401, "Unauthorized", {}, io.BytesIO(b"expired"))
 
     monkeypatch.setattr(http, "_open_request", fail_401)
-    assert bluesky._refresh_session("dummy-refresh-token") is None
-    assert bluesky._refresh_error_status == 401
+    token, _err_msg, err_status = bluesky._refresh_session("dummy-refresh-token")
+    assert token is None
+    assert err_status == 401
     bluesky._reset_session_cache()
 
     # xquik.probe_works passes retries=0; verify 200 -> True, 402 -> False, 401 -> False.

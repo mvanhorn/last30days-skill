@@ -2058,6 +2058,8 @@ def _cache_research_options(
                     relevant_config[key] = True
             elif key in research_keys or key.startswith("LAST30DAYS_") or key.endswith(("_BASE_URL", "_MODEL_PIN")):
                 relevant_config[key] = value
+        if env.x_api_opt_in():
+            relevant_config[env.X_API_OPT_IN_VAR] = True
         options["config_sha256"] = hashlib.sha256(
             json.dumps(relevant_config, sort_keys=True, default=str).encode("utf-8")
         ).hexdigest()

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import datetime
 import hashlib
+import json
 import re
 import time
 from typing import Any, Dict, List
@@ -49,6 +50,26 @@ DATE_POSTED_BUCKETS: tuple[tuple[int, str], ...] = (
 # it as an error marks a whole run partial and hides a legitimate null behind
 # what looks like an outage.
 EMPTY_RESULT_STATUS = 404
+
+
+def _is_no_posts_found_404(exc: http.HTTPError) -> bool:
+    """Recognize ScrapeCreators' documented empty-search 404, not arbitrary 404s."""
+    if exc.status_code != EMPTY_RESULT_STATUS or not isinstance(exc.body, str):
+        return False
+    body = exc.body.strip()
+    if not body:
+        return False
+    try:
+        payload = json.loads(body)
+    except ValueError:
+        return False
+    if not isinstance(payload, dict):
+        return False
+    for key in ("message", "error", "detail"):
+        val = payload.get(key)
+        if isinstance(val, str) and "no posts found" in val.lower():
+            return True
+    return False
 
 # Each cursor page returns ~10 posts; this bounds a runaway pagination loop.
 MAX_PAGES = 10
@@ -246,21 +267,25 @@ def search_linkedin(
             params: Dict[str, Any] = {"query": query, "date_posted": date_posted}
             if cursor:
                 params["cursor"] = cursor
+            local_failures: List[http.HTTPError] = []
             try:
-                response = http.get(
-                    f"{_sc_base()}/search/posts",
-                    params=params,
-                    headers=http.scrapecreators_headers(clean_token),
-                    timeout=page_timeout,
-                    retries=page_retries,
-                )
+                with http.capture_failures() as local_failures:
+                    response = http.get(
+                        f"{_sc_base()}/search/posts",
+                        params=params,
+                        headers=http.scrapecreators_headers(clean_token),
+                        timeout=page_timeout,
+                        retries=page_retries,
+                    )
             except http.HTTPError as exc:
-                if exc.status_code == EMPTY_RESULT_STATUS:
+                if _is_no_posts_found_404(exc):
                     # "No posts found" — a legitimate empty result, not a
-                    # failure. Recording it as an error would mark the whole
-                    # run partial and hide a real null behind a fake outage.
+                    # failure. Keep it out of the outer failure sink so an
+                    # empty search does not brand LinkedIn as ERROR.
                     stop = "no posts found"
                     break
+                for failure in (local_failures or [exc]):
+                    http._record_failure(failure)
                 safe_err = auth_safety.scrub_secrets(str(exc), (raw_token, clean_token))
                 _log(f"Search failed (HTTP {exc.status_code}, {date_posted}): {safe_err}")
                 errors.append(f"{date_posted}: {safe_err}")
@@ -271,6 +296,8 @@ def search_linkedin(
                     fatal = True
                 break
             except Exception as exc:
+                for failure in local_failures:
+                    http._record_failure(failure)
                 safe_err = auth_safety.scrub_secrets(str(exc), (raw_token, clean_token))
                 _log(f"Search failed ({date_posted}): {type(exc).__name__}: {safe_err}")
                 errors.append(f"{date_posted}: {type(exc).__name__}: {safe_err}")
@@ -596,13 +623,14 @@ def search_profile(profile_url: str, token: str) -> Dict[str, Any]:
         return {}
     clean_url = profile_url.strip()
     try:
-        response = http.get(
-            f"{_sc_base()}/profile",
-            params={"url": clean_url},
-            headers=http.scrapecreators_headers(clean_token),
-            timeout=30,
-            retries=2,
-        )
+        with http.capture_failures():
+            response = http.get(
+                f"{_sc_base()}/profile",
+                params={"url": clean_url},
+                headers=http.scrapecreators_headers(clean_token),
+                timeout=30,
+                retries=2,
+            )
     except http.HTTPError as exc:
         safe_err = auth_safety.scrub_secrets(str(exc), (raw_token, clean_token))
         _log(f"Profile fetch failed (HTTP {exc.status_code}): {safe_err}")

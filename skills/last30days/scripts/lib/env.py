@@ -1911,6 +1911,19 @@ def report_checklist_disabled(environ: Any = None) -> bool:
     source = os.environ if environ is None else environ
     return _truthy(source.get(NO_REPORT_CHECKLIST_VAR))
 
+
+# Set by the MCP wrapper when X_BEARER_TOKEN was explicitly configured in MCP
+# host config so xapi activates automatically when unpinned and no higher-
+# priority X backend (from env, .env, Keychain, or pass) is available.
+# Process environment only so a .env line cannot opt ambient tokens in.
+X_API_OPT_IN_VAR = 'LAST30DAYS_X_API_OPT_IN'
+
+
+def x_api_opt_in(environ: Any = None) -> bool:
+    """True when ``LAST30DAYS_X_API_OPT_IN`` allows fallback xapi selection."""
+    source = os.environ if environ is None else environ
+    return _truthy(source.get(X_API_OPT_IN_VAR))
+
 # Public routing definitions for the doctor/backend-descriptor layer
 # (lib/backends.py). These are aliases for knowledge this module already
 # owns — the declared X chain order and the pin/floor env var names — so
@@ -1990,10 +2003,11 @@ def x_backend_pin(config: dict[str, Any]) -> str:
 
 
 def x_policy(config: dict[str, Any]) -> XPolicy:
-    """Resolve the X policy from ``LAST30DAYS_HOST`` and the pin.
+    """Resolve the X policy from ``LAST30DAYS_HOST``, ``LAST30DAYS_X_API_OPT_IN``, and the pin.
 
     This is the ONLY place the Grok Bot host string is compared. It reads
-    just the host key, the pin, and the config dict: no platform, PATH, home
+    just the host key, the pin, the process-env ``LAST30DAYS_X_API_OPT_IN``
+    fallback signal, and the config dict: no platform, PATH, home
     directory, or agent env-var inspection (the same rule ``x_extras_enabled``
     follows), and nothing imported from ``lib``. The pin keeps its exclusive
     semantics on every host and may name any known backend; a ``bird`` pin
@@ -2002,10 +2016,13 @@ def x_policy(config: dict[str, Any]) -> XPolicy:
     host = str(config.get(X_HOST_VAR) or '').strip().lower()
     official_only = host == GROK_BOT_HOST
     pin = x_backend_pin(config)
+    auto_chain = _X_OFFICIAL if official_only else _X_BACKEND_ORDER
+    if not official_only and x_api_opt_in() and 'xapi' not in auto_chain:
+        auto_chain = auto_chain + ('xapi',)
     return XPolicy(
         host=host,
         official_only=official_only,
-        auto_chain=_X_OFFICIAL if official_only else _X_BACKEND_ORDER,
+        auto_chain=auto_chain,
         cookie_discovery=(not official_only) or pin == 'bird',
     )
 
