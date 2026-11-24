@@ -201,18 +201,20 @@ def _clears_topical_floor(topic: str, title: str, repo: str) -> bool:
 # a missing closer ("(created:>2025-03-20") is still stripped rather than
 # leaking into the query; qualifier-only wrapper residue is discarded below.
 QUALIFIER_KEYS = frozenset({
-    "archived", "assignee", "author", "base", "closed", "comments", "commenter",
-    "created", "fork", "forks", "head", "in", "interactions", "involves", "is",
-    "label", "language", "license", "linked", "mentions", "merged", "milestone",
-    "no", "org", "project", "pushed", "reactions", "repo", "review",
-    "review-requested", "reviewed-by", "size", "sort", "stars", "state", "team",
-    "topic", "topics", "type", "updated", "user",
+    "answered", "archived", "assignee", "author", "base", "category", "closed",
+    "comments", "commenter", "created", "draft", "fork", "forks", "head", "in",
+    "interactions", "involves", "is", "label", "language", "license", "linked",
+    "mentions", "merged", "milestone", "no", "org", "owner", "parent-issue",
+    "project", "pushed", "reactions", "reason", "repo", "review",
+    "review-requested", "reviewed-by", "sha", "size", "sort", "stars", "state",
+    "status", "sub-issue", "team", "topic", "topics", "type", "updated", "user",
+    "visibility",
 })
 
-_QUALIFIER_KEYS_ALT = "|".join(sorted(QUALIFIER_KEYS))
+_QUALIFIER_KEYS_ALT = "|".join(sorted(QUALIFIER_KEYS, key=lambda k: (-len(k), k)))
 
 _QUALIFIER_RE = re.compile(
-    r"(?:(?<=[\s,;(\[\"'])|^)(?:" + _QUALIFIER_KEYS_ALT + r"):(?:[<>]=?)?(?:\"[^\"]*\"|[^\s,;()\[\]]+)[,;]?",
+    r"(?:(?<=[\s,;(\[\"'])|^)[-+]*?(?:" + _QUALIFIER_KEYS_ALT + r"):(?:[<>]=?)?(?:\"[^\"]*\"|[^\s,;()\[\]]+)[,;]?",
     re.IGNORECASE,
 )
 
@@ -221,7 +223,7 @@ _QUALIFIER_RE = re.compile(
 # An unbalanced quote (e.g. `label:"bug`) is not a wrapper shape and is left
 # to _QUALIFIER_RE, which strips the qualifier as before.
 _WRAPPED_QUALIFIER_RE = re.compile(
-    r"[\(\[\"'](?:" + _QUALIFIER_KEYS_ALT + r"):(?:[<>]=?)?(?:\"[^\"]*\"|[^\s,;()\[\]]+)[\)\]\"']",
+    r"[\(\[\"'][-+]*(?:" + _QUALIFIER_KEYS_ALT + r"):(?:[<>]=?)?(?:\"[^\"]*\"|[^\s,;()\[\]\"']+)[\)\]\"']",
     re.IGNORECASE,
 )
 
@@ -229,6 +231,7 @@ _WRAPPED_QUALIFIER_RE = re.compile(
 # `()` from "((created:>2025-03-20))"). Removed to fixpoint; a pair enclosing
 # real text stays.
 _EMPTY_WRAPPER_RE = re.compile(r"\(\s*\)|\[\s*\]|\"\s*\"|'\s*'")
+_ESCAPED_QUOTE_RE = re.compile(r'\\+(?=")')
 
 
 def strip_search_qualifiers(text: str) -> str:
@@ -238,18 +241,38 @@ def strip_search_qualifiers(text: str) -> str:
     but qualifiers; callers must handle that rather than searching on an empty
     term, which would match the entire site.
     """
-    stripped = _WRAPPED_QUALIFIER_RE.sub(" ", text)
-    stripped = _QUALIFIER_RE.sub(" ", stripped)
+    stripped = _ESCAPED_QUOTE_RE.sub("", text)
+    had_qualifier = False
+
+    def _strip_to_fixpoint(value: str) -> tuple[str, bool]:
+        changed_qualifier = False
+        cur = value
+        while True:
+            after_wrap = _WRAPPED_QUALIFIER_RE.sub(" ", cur)
+            after_plain = _QUALIFIER_RE.sub(" ", after_wrap)
+            if after_plain != cur:
+                changed_qualifier = True
+            cleaned = _EMPTY_WRAPPER_RE.sub("", after_plain)
+            if cleaned == cur:
+                return cur, changed_qualifier
+            cur = cleaned
+
+    stripped, found = _strip_to_fixpoint(stripped)
+    had_qualifier = had_qualifier or found
+
+    # Drop an unmatched trailing double quote so an unclosed phrase in `core`
+    # cannot swallow engine-added qualifiers (`created:...`, `is:issue`).
+    if stripped.count('"') % 2 == 1:
+        idx = stripped.rfind('"')
+        stripped = stripped[:idx] + stripped[idx + 1:]
+        stripped, found = _strip_to_fixpoint(stripped)
+        had_qualifier = had_qualifier or found
+
     # Malformed/nested wrappers can leave only punctuation after a qualifier
     # is removed (#969). There is no subject to search in that case. Keep
     # wrappers around actual topic text, including unbalanced ones like "ai (foo".
-    if stripped != text and re.fullmatch(r"[\s()\[\]\"']*", stripped):
+    if had_qualifier and re.fullmatch(r"[\s()\[\]\"'-]*", stripped):
         return ""
-    while True:
-        cleaned = _EMPTY_WRAPPER_RE.sub("", stripped)
-        if cleaned == stripped:
-            break
-        stripped = cleaned
     return " ".join(stripped.split())
 
 
@@ -764,7 +787,7 @@ def refetch_datum(item: schema.SourceItem | None, datum_key: str) -> dict[str, A
         repo = item.container or ""
         if not _REPO_SLUG.fullmatch(repo):
             match = re.match(r"https?://github\.com/([^/]+/[^/#?]+)", item.url)
-            repo = match.group(1).removesuffix(".git") if match else ""
+            repo = _normalize_repo_slug(match.group(1)) if match else ""
         if not _REPO_SLUG.fullmatch(repo):
             raise ValueError("GitHub item has no owner/repository reference")
     headers = {"Accept": "application/vnd.github+json"}
@@ -1364,6 +1387,14 @@ _REPO_URL_PATTERN = re.compile(r"github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)")
 _SKIP_PATHS = {"topics", "search", "orgs", "settings", "features", "about", "pricing", "enterprise", "explore", "marketplace", "sponsors"}
 
 
+def _normalize_repo_slug(match: str) -> str:
+    """Strip trailing sentence punctuation and a literal case-insensitive .git suffix."""
+    slug = (match or "").rstrip(".")
+    if slug.lower().endswith(".git"):
+        slug = slug[:-4]
+    return slug.rstrip(".")
+
+
 def extract_repo_refs(candidates: List[Any]) -> List[str]:
     """Extract unique owner/repo strings from candidate URLs, titles, and snippets."""
     seen: set = set()
@@ -1379,14 +1410,16 @@ def extract_repo_refs(candidates: List[Any]) -> List[str]:
             texts.append(str(evidence))
         for text in texts:
             for match in _REPO_URL_PATTERN.findall(text):
-                # Normalize: strip trailing .git, lowercase
-                repo = match.rstrip(".git").lower()
+                slug = _normalize_repo_slug(match)
+                if not _REPO_SLUG.fullmatch(slug):
+                    continue
+                repo = slug.lower()
                 owner = repo.split("/")[0]
                 if owner in _SKIP_PATHS:
                     continue
                 if repo not in seen:
                     seen.add(repo)
-                    repos.append(match)  # preserve original case
+                    repos.append(slug)  # preserve original case
     return repos
 
 
@@ -1454,7 +1487,10 @@ def apply_star_map(candidates: List[Any], star_map: Dict[str, int]) -> int:
             texts.append(str(evidence))
         combined = " ".join(texts)
         for match in _REPO_URL_PATTERN.findall(combined):
-            repo_lower = match.rstrip(".git").lower()
+            slug = _normalize_repo_slug(match)
+            if not _REPO_SLUG.fullmatch(slug):
+                continue
+            repo_lower = slug.lower()
             if repo_lower in star_map:
                 stars = star_map[repo_lower]
                 stars_str = _format_stars(stars)
@@ -1463,7 +1499,7 @@ def apply_star_map(candidates: List[Any], star_map: Dict[str, int]) -> int:
                     continue
                 if "github_stars" not in c.metadata:
                     c.metadata["github_stars"] = {}
-                c.metadata["github_stars"][match] = stars
+                c.metadata["github_stars"][slug] = stars
                 # Append to evidence if present
                 if hasattr(c, "evidence") and c.evidence and f"(live:" not in c.evidence:
                     c.evidence = c.evidence + f" (live: {stars_str} stars)"

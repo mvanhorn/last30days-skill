@@ -14,7 +14,7 @@ import os
 import re
 from typing import Any
 
-from . import dates, http, log
+from . import auth_safety, dates, http, log
 from .relevance import token_overlap_relevance as _compute_relevance
 
 SCRAPECREATORS_BASE = "https://api.scrapecreators.com/v1/telegram"
@@ -188,6 +188,12 @@ def _fetch_channel_posts(
     max_pages: int,
 ) -> list[dict[str, Any]]:
     """Fetch posts from a single channel, paginating until date cutoff."""
+    raw_token = token
+    clean_token, token_err = auth_safety.normalize_header_token(raw_token)
+    if token_err or not clean_token:
+        _log(f"Skipping @{handle}: {token_err or 'No SCRAPECREATORS_API_KEY configured'}")
+        return []
+
     items: list[dict[str, Any]] = []
     cursor: str | None = None
     pages_fetched = 0
@@ -203,12 +209,17 @@ def _fetch_channel_posts(
             data = http.get(
                 f"{_sc_base()}/channel/posts",
                 params=params,
-                headers=http.scrapecreators_headers(token),
+                headers=http.scrapecreators_headers(clean_token),
                 timeout=30,
                 retries=2,
             )
         except http.HTTPError as exc:
-            _log(f"HTTP error fetching @{handle}: {exc}")
+            safe_err = auth_safety.scrub_secrets(str(exc), (raw_token, clean_token))
+            _log(f"HTTP error fetching @{handle}: {safe_err}")
+            break
+        except Exception as exc:
+            safe_err = auth_safety.scrub_secrets(str(exc), (raw_token, clean_token))
+            _log(f"Error fetching @{handle}: {type(exc).__name__}: {safe_err}")
             break
 
         if not data.get("success"):
@@ -266,7 +277,12 @@ def search_telegram(
     """
     config = config or {}
 
-    if not token:
+    raw_token = token
+    clean_token, token_err = auth_safety.normalize_header_token(raw_token)
+    if token_err:
+        _log(f"ScrapeCreators error: {token_err}")
+        return {"items": [], "error": token_err}
+    if not clean_token:
         return {"items": [], "error": "No SCRAPECREATORS_API_KEY configured"}
 
     channels = _get_channel_sources(config)
@@ -289,7 +305,7 @@ def search_telegram(
     for handle in channels:
         channel_items = _fetch_channel_posts(
             handle,
-            token,
+            clean_token,
             from_date=from_date,
             topic=topic,
             max_pages=max_pages,

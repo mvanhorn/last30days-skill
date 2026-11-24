@@ -329,33 +329,37 @@ class TestProfileArticles(unittest.TestCase):
 
 
 class TestBestAuthorMatch(unittest.TestCase):
+    _MVH = "https://www.linkedin.com/in/mattvanhorn"
+    _DT = "https://www.linkedin.com/in/daisuketanaka"
+    _ERIC = "https://www.linkedin.com/in/ericosiu"
+
     def test_exact_person_topic_matches(self):
-        items = [{"author": "Matt Van Horn", "author_url": "u-mvh"}]
-        self.assertEqual("u-mvh", _best_author_match(items, "Matt Van Horn"))
+        items = [{"author": "Matt Van Horn", "author_url": self._MVH}]
+        self.assertEqual(self._MVH, _best_author_match(items, "Matt Van Horn"))
 
     def test_name_contained_in_longer_topic(self):
-        items = [{"author": "Matt Van Horn", "author_url": "u-mvh"}]
+        items = [{"author": "Matt Van Horn", "author_url": self._MVH}]
         self.assertEqual(
-            "u-mvh", _best_author_match(items, "what is Matt Van Horn building")
+            self._MVH, _best_author_match(items, "what is Matt Van Horn building")
         )
 
     def test_single_word_topic_never_enriches(self):
         # "AI" is one token — a keyword topic, not a person.
-        items = [{"author": "Daisuke Tanaka", "author_url": "u-dt"}]
+        items = [{"author": "Daisuke Tanaka", "author_url": self._DT}]
         self.assertEqual("", _best_author_match(items, "AI"))
 
     def test_no_substring_false_positive_across_token_boundaries(self):
         # Regression for the Greptile finding: a topic token must not match
         # inside an unrelated author's name. "ai" must not hit "daisuke".
-        items = [{"author": "Daisuke Tanaka", "author_url": "u-dt"}]
+        items = [{"author": "Daisuke Tanaka", "author_url": self._DT}]
         self.assertEqual("", _best_author_match(items, "AI agents"))
 
     def test_picks_matching_author_not_first(self):
         items = [
-            {"author": "Eric Siu", "author_url": "u-eric"},
-            {"author": "Matt Van Horn", "author_url": "u-mvh"},
+            {"author": "Eric Siu", "author_url": self._ERIC},
+            {"author": "Matt Van Horn", "author_url": self._MVH},
         ]
-        self.assertEqual("u-mvh", _best_author_match(items, "Matt Van Horn loops"))
+        self.assertEqual(self._MVH, _best_author_match(items, "Matt Van Horn loops"))
 
 
 class TestEnrichArticles(unittest.TestCase):
