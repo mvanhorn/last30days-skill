@@ -18,6 +18,7 @@ Reset once per command (``last30days.py``) and between tests (``conftest``).
 
 from __future__ import annotations
 
+from collections import OrderedDict
 import copy
 import threading
 import time
@@ -26,6 +27,8 @@ from typing import Any, Callable, Hashable, TypeVar
 from . import health, http
 
 T = TypeVar("T")
+
+MAX_ENTRIES = 512
 
 
 class MemoWaitTimeout(TimeoutError):
@@ -43,13 +46,13 @@ class _Slot:
         self.outcome: tuple[bool, Any, list] | None = None
 
 
-_CACHE: dict[Hashable, Any] = {}
+_CACHE: OrderedDict[Hashable, Any] = OrderedDict()
 _INFLIGHT: dict[Hashable, _Slot] = {}
 _LOCK = threading.Lock()
 
 
 def reset() -> None:
-    """Forget cached and in-flight fetches. Called once per command, and by tests."""
+    """Forget cached and in-flight fetches. Called at run/fanout/enrichment boundaries and by tests."""
     with _LOCK:
         _CACHE.clear()
         _INFLIGHT.clear()
@@ -93,6 +96,7 @@ def fetch_once(
         with _LOCK:
             hit = key in _CACHE
             if hit:
+                _CACHE.move_to_end(key)
                 cached = _CACHE[key]
             else:
                 slot = _INFLIGHT.get(key)
@@ -136,7 +140,11 @@ def fetch_once(
         with _LOCK:
             # Slot identity guards against a reset() during the fetch.
             if clean and _INFLIGHT.get(key) is slot:
-                _CACHE[key] = shared
+                if MAX_ENTRIES > 0:
+                    _CACHE[key] = shared
+                    _CACHE.move_to_end(key)
+                    while len(_CACHE) > MAX_ENTRIES:
+                        _CACHE.popitem(last=False)
     finally:
         with _LOCK:
             if _INFLIGHT.get(key) is slot:

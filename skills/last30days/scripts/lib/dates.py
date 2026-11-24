@@ -1,6 +1,8 @@
 """Date utilities for last30days skill."""
 
 from datetime import date, datetime, timedelta, timezone
+import math
+import re
 from typing import Optional, Tuple
 
 
@@ -114,50 +116,69 @@ def format_window(from_date: str, to_date: str, now: Optional[datetime] = None) 
     return f"{start_text} to {end:%b} {end.day}, {end.year}"
 
 
+# Epoch-second guard for ambiguous string parsing: 9-10 integer digits
+# (1973-03-03 to 2286-11-20), so compact YYYYMMDD dates (8 digits), bare
+# 4-digit years, "0", and huge numeric IDs are never misread as 1970 epochs.
+_UNIX_SECONDS_RE = re.compile(r"^\d{9,10}(?:\.\d+)?$")
+_MIN_UNIX_SECONDS = 100_000_000.0
+_MAX_UNIX_SECONDS = 10_000_000_000.0
+
+
 def parse_date(date_str: Optional[str]) -> Optional[datetime]:
     """Parse a date string in various formats.
 
-    Supports: YYYY-MM-DD, ISO 8601, Unix timestamp
+    Supports: YYYY-MM-DD, YYYYMMDD, ISO 8601 (with Z, offsets, fractional
+    seconds, or space separator), and plausible Unix epoch-second timestamps.
     """
-    if not date_str:
+    if date_str is None or isinstance(date_str, bool):
         return None
 
-    # Try Unix timestamp (from Reddit)
-    try:
+    if isinstance(date_str, (int, float)):
         ts = float(date_str)
-        return datetime.fromtimestamp(ts, tz=timezone.utc)
-    except (ValueError, TypeError):
-        pass
-
-    # Try ISO formats
-    formats = [
-        "%Y-%m-%d",
-        "%Y-%m-%dT%H:%M:%S",
-        "%Y-%m-%dT%H:%M:%SZ",
-        "%Y-%m-%dT%H:%M:%S%z",
-        "%Y-%m-%dT%H:%M:%S.%f%z",
-    ]
-
-    for fmt in formats:
+        if not math.isfinite(ts) or not (_MIN_UNIX_SECONDS <= ts < _MAX_UNIX_SECONDS):
+            return None
         try:
-            dt = datetime.strptime(date_str, fmt)
-            if dt.tzinfo is not None:
-                return dt.astimezone(timezone.utc)
-            return dt.replace(tzinfo=timezone.utc)
-        except ValueError:
-            continue
+            return datetime.fromtimestamp(ts, tz=timezone.utc)
+        except (ValueError, TypeError, OverflowError, OSError):
+            return None
 
-    return None
+    if not isinstance(date_str, str):
+        return None
+
+    cleaned = date_str.strip()
+    if not cleaned:
+        return None
+
+    # Plausible Unix epoch seconds (e.g. Reddit created_utc as string)
+    if _UNIX_SECONDS_RE.match(cleaned):
+        try:
+            ts = float(cleaned)
+            if math.isfinite(ts) and _MIN_UNIX_SECONDS <= ts < _MAX_UNIX_SECONDS:
+                return datetime.fromtimestamp(ts, tz=timezone.utc)
+        except (ValueError, TypeError, OverflowError, OSError):
+            return None
+
+    # ISO 8601 (Python 3.12 handles YYYY-MM-DD, YYYYMMDD, Z, ±HH:MM, ±HHMM,
+    # naive/aware fractional seconds, and space-separated date/time)
+    try:
+        dt = datetime.fromisoformat(cleaned)
+        if dt.tzinfo is not None:
+            return dt.astimezone(timezone.utc)
+        return dt.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
 
 
 def timestamp_to_date(ts: Optional[float]) -> Optional[str]:
     """Convert Unix timestamp to YYYY-MM-DD string."""
-    if ts is None:
+    if ts is None or isinstance(ts, bool):
+        return None
+    if not isinstance(ts, (int, float)) or not math.isfinite(ts):
         return None
     try:
         dt = datetime.fromtimestamp(ts, tz=timezone.utc)
         return dt.date().isoformat()
-    except (ValueError, TypeError, OSError):
+    except (ValueError, TypeError, OverflowError, OSError):
         return None
 
 

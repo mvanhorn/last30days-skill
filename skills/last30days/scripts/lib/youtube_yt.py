@@ -565,6 +565,21 @@ def classify_run_failure(detail: str) -> str:
     return http.classify_failure(message=detail)
 
 
+_ssh_host_override: contextvars.ContextVar[Optional[str]] = (
+    contextvars.ContextVar("youtube_ssh_host_override", default=None)
+)
+
+
+@contextlib.contextmanager
+def ssh_host_scope(host: Optional[str]) -> Iterator[None]:
+    """Scope a config-supplied LAST30DAYS_YOUTUBE_SSH_HOST to this call tree."""
+    token = _ssh_host_override.set(host)
+    try:
+        yield
+    finally:
+        _ssh_host_override.reset(token)
+
+
 def is_ytdlp_installed() -> bool:
     """Check if yt-dlp is available locally, or if SSH routing is configured.
 
@@ -608,7 +623,10 @@ def _ytdlp_ssh_host() -> Optional[str]:
         set -a; source ~/.config/last30days/.env; set +a
         python3 last30days.py "..."
     """
-    host = os.environ.get("LAST30DAYS_YOUTUBE_SSH_HOST", "").strip()
+    if "LAST30DAYS_YOUTUBE_SSH_HOST" in os.environ:
+        host = os.environ.get("LAST30DAYS_YOUTUBE_SSH_HOST", "").strip()
+    else:
+        host = str(_ssh_host_override.get() or "").strip()
     if not host:
         return None
     if not _SSH_HOST_ALIAS_RE.match(host):
