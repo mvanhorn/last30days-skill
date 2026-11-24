@@ -47,9 +47,7 @@ JSON never names a non-official backend there unless it is pinned.
 from __future__ import annotations
 
 import os
-import stat
 from dataclasses import dataclass
-from pathlib import Path
 from shutil import which
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -395,41 +393,6 @@ def _probe_xapi(config: Dict[str, Any]) -> BackendFinding:
     )
 
 
-def _xurl_store_lacks_bearer(store_detail: str) -> bool:
-    """Return True when a real on-disk xurl token store has no app-only bearer token."""
-    from . import xurl_x
-
-    if " in " not in store_detail:
-        return False
-    candidate = Path(store_detail.rsplit(" in ", 1)[-1].strip())
-    try:
-        if os.name == "posix":
-            flags = (
-                os.O_RDONLY
-                | getattr(os, "O_NOFOLLOW", 0)
-                | getattr(os, "O_NONBLOCK", 0)
-                | getattr(os, "O_CLOEXEC", 0)
-            )
-            fd = os.open(candidate, flags)
-            try:
-                if not stat.S_ISREG(os.fstat(fd).st_mode):
-                    return False
-                with os.fdopen(fd, "r", encoding="utf-8", errors="replace") as stream:
-                    fd = -1
-                    content = stream.read(65536)
-            finally:
-                if fd != -1:
-                    os.close(fd)
-        else:
-            if not candidate.is_file():
-                return False
-            with candidate.open("r", encoding="utf-8", errors="replace") as stream:
-                content = stream.read(65536)
-    except OSError:
-        return False
-    return not xurl_x._content_has_bearer_token(content)
-
-
 def _probe_xurl(config: Dict[str, Any]) -> BackendFinding:
     """xurl = official X API v2 CLI (app-only bearer). Free lane; LOCAL-ONLY probe.
 
@@ -455,17 +418,6 @@ def _probe_xurl(config: Dict[str, Any]) -> BackendFinding:
         )
     store_status, store_detail = xurl_x.stored_auth_status()
     if store_status == xurl_x.AUTH_OK:
-        if _xurl_store_lacks_bearer(store_detail):
-            return BackendFinding(
-                name="xurl",
-                status=health.MISSING,
-                detail=(
-                    "xurl token store has OAuth user tokens only; "
-                    "search requires app-only bearer auth"
-                ),
-                prescription="xurl auth app-only <bearer-token>",
-                requires=requires,
-            )
         return BackendFinding(
             name="xurl",
             status=health.OK,

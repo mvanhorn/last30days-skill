@@ -1030,12 +1030,14 @@ class TestReviewRound2Regressions:
         fifo_dir.mkdir()
         fifo_store = fifo_dir / "auth.yml"
         os.mkfifo(fifo_store)
-        with mock.patch("lib.xurl_x.token_store_path", return_value=fifo_store):
+        with mock.patch("lib.xurl_x.token_store_path", return_value=fifo_store), \
+             mock.patch("lib.backends.which", side_effect=lambda n: "/usr/bin/xurl" if n == "xurl" else None):
             status, _ = xurl_x.stored_auth_status()
-        assert status == xurl_x.AUTH_MISSING
-        with pytest.raises(OSError, match="regular"):
-            xurl_x._read_token_store_text(fifo_store)
-        assert backends._xurl_store_lacks_bearer(f"stored creds in {fifo_store}") is False
+            assert status == xurl_x.AUTH_MISSING
+            with pytest.raises(OSError, match="regular"):
+                xurl_x._read_token_store_text(fifo_store)
+            finding = backends._probe_xurl({})
+            assert finding.status == health.MISSING
 
         cfg_dir = tmp_path / "cfg"
         cfg_dir.mkdir()
@@ -1091,3 +1093,156 @@ class TestReviewRound2Regressions:
         path = setup_wizard._device_handle_path()
         assert path.parent == Path(tempfile.gettempdir()) / "last30days-Alice_Bob"
         assert path.name == "github-device-handle.json"
+
+
+class TestGreptileRound3Regressions:
+    """Regressions for PR 13 Greptile findings."""
+
+    def test_preflight_deep_research_and_default_search_with_corpus_disable_hosted_mode(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("LAST30DAYS_API_BASE", "https://hosted.example/api/v1")
+        monkeypatch.setenv("LAST30DAYS_API_KEY", "dummy-hosted-key-r3")
+
+        # --deep-research runs locally in CLI, so preflight must report hosted_mode=False.
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["last30days.py", "--preflight", "--emit=json", "--deep-research"],
+        )
+        assert cli.main() == 0
+        deep_payload = json.loads(capsys.readouterr().out)
+        assert deep_payload["network"]["hosted_mode"] is False
+        assert "hosted" not in deep_payload["network"]["available_sources"]
+
+        # Configured corpus keeps CLI local even when LAST30DAYS_DEFAULT_SEARCH=reddit
+        # omits corpus from planned local_reads.corpus_dirs.
+        notes = tmp_path / "notes"
+        notes.mkdir()
+        monkeypatch.setenv("LAST30DAYS_CORPUS_DIRS", str(notes))
+        monkeypatch.setenv("LAST30DAYS_DEFAULT_SEARCH", "reddit")
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["last30days.py", "--preflight", "--emit=json"],
+        )
+        assert cli.main() == 0
+        reddit_payload = json.loads(capsys.readouterr().out)
+        assert reddit_payload["local_reads"]["corpus_dirs"] == []
+        assert reddit_payload["network"]["hosted_mode"] is False
+        assert "hosted" not in reddit_payload["network"]["available_sources"]
+
+        # EXCLUDE_SOURCES=corpus disables corpus completely and restores hosted mode.
+        monkeypatch.setenv("EXCLUDE_SOURCES", "corpus")
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["last30days.py", "--preflight", "--emit=json"],
+        )
+        assert cli.main() == 0
+        excluded_payload = json.loads(capsys.readouterr().out)
+        assert excluded_payload["local_reads"]["corpus_dirs"] == []
+        assert excluded_payload["network"]["hosted_mode"] is True
+        assert excluded_payload["network"]["available_sources"] == ["hosted"]
+
+    def test_doctor_cache_fingerprint_tracks_hosted_key_endpoint_and_corpus_without_leaking(
+        self, tmp_path, monkeypatch
+    ):
+        cfg_dir = tmp_path / "cfg"
+        notes = tmp_path / "notes"
+        notes.mkdir()
+        monkeypatch.setattr(env, "CONFIG_DIR", cfg_dir)
+
+        base_fp = doctor._config_fingerprint({})
+
+        monkeypatch.setenv("LAST30DAYS_API_KEY", "dummy-hosted-fp-secret-r3")
+        key_fp = doctor._config_fingerprint({})
+        assert key_fp != base_fp
+
+        monkeypatch.setenv("LAST30DAYS_API_BASE", "http://cleartext.example/api/v1")
+        invalid_ep_fp = doctor._config_fingerprint({})
+        assert invalid_ep_fp != key_fp
+
+        monkeypatch.setenv("LAST30DAYS_API_BASE", "https://hosted.example/api/v1")
+        valid_ep_fp = doctor._config_fingerprint({})
+        assert valid_ep_fp != invalid_ep_fp
+
+        monkeypatch.setenv("LAST30DAYS_API_MODE", "proxy")
+        proxy_fp = doctor._config_fingerprint({})
+        assert proxy_fp != valid_ep_fp
+
+        monkeypatch.delenv("LAST30DAYS_API_MODE", raising=False)
+        corpus_fp = doctor._config_fingerprint({"LAST30DAYS_CORPUS_DIRS": str(notes)})
+        assert corpus_fp != valid_ep_fp
+
+        report = TestHigh071DoctorCacheHardening._sample_report("ok")
+        assert doctor._write_cache(report, {}) is True
+        raw_cache = (cfg_dir / doctor.CACHE_FILENAME).read_text(encoding="utf-8")
+        assert "dummy-hosted-fp-secret-r3" not in raw_cache
+        assert "hosted.example" not in raw_cache
+
+    def test_preflight_discloses_secret_stores_even_in_hosted_mode(self, monkeypatch):
+        monkeypatch.setenv("LAST30DAYS_API_BASE", "https://hosted.example/api/v1")
+        monkeypatch.setenv("LAST30DAYS_API_KEY", "dummy-hosted-key-r3")
+        monkeypatch.delenv(env.KEYCHAIN_DISABLE_ENV, raising=False)
+        with mock.patch.object(permission_preflight.platform, "system", return_value="Darwin"), \
+             mock.patch.object(
+                 permission_preflight.shutil,
+                 "which",
+                 side_effect=lambda cmd: f"/usr/bin/{cmd}" if cmd in {"security", "pass"} else None,
+             ):
+            preflight = permission_preflight.build(
+                {},
+                _diag(config_source="global:/Users/tester/.config/last30days/.env"),
+            )
+        assert preflight["network"]["hosted_mode"] is True
+        assert preflight["local_reads"]["secret_stores"] == ["keychain", "pass"]
+        assert "Secret stores: keychain, pass" in permission_preflight.render_text(preflight)
+
+    def test_probe_xurl_reads_token_store_once_without_redundant_reread(self, tmp_path):
+        store = tmp_path / ".xurl" / "auth.yml"
+        store.parent.mkdir()
+        store.write_text("apps:\n  app:\n    bearer_token:\n      bearer: dummy-bearer-r3\n", encoding="utf-8")
+
+        assert not hasattr(backends, "_xurl_store_lacks_bearer")
+        with mock.patch("lib.backends.which", side_effect=lambda n: "/usr/bin/xurl" if n == "xurl" else None), \
+             mock.patch("lib.xurl_x.token_store_path", return_value=store), \
+             mock.patch.object(
+                 xurl_x, "_read_token_store_text", wraps=xurl_x._read_token_store_text
+             ) as read_spy:
+            finding = backends._probe_xurl({})
+        assert finding.status == health.OK
+        assert read_spy.call_count == 1
+
+    def test_preflight_does_not_report_proxy_sentinels_as_direct_xai_or_scrapecreators_keys(
+        self, monkeypatch
+    ):
+        monkeypatch.setenv("LAST30DAYS_API_MODE", "proxy")
+        monkeypatch.setenv("LAST30DAYS_API_BASE", "https://proxy.example/api/v1")
+        monkeypatch.setenv("LAST30DAYS_API_KEY", "dummy-proxy-key-r3")
+        config = {
+            "XAI_API_KEY": proxy.SENTINEL,
+            "SCRAPECREATORS_API_KEY": proxy.SENTINEL,
+            "SERPER_API_KEY": proxy.SENTINEL,
+            "PARALLEL_API_KEY": proxy.SENTINEL,
+        }
+        diag = _diag(
+            providers={
+                "google": False,
+                "openai": False,
+                "xai": True,
+                "openrouter": False,
+                "perplexity": False,
+            },
+            has_scrapecreators=True,
+        )
+        preflight = permission_preflight.build(config, diag)
+        assert preflight["credentials"]["xai"]["present"] is False
+        assert preflight["credentials"]["scrapecreators"]["present"] is False
+        assert preflight["credentials"]["serper"]["present"] is False
+        assert preflight["credentials"]["parallel"]["present"] is False
+        assert preflight["credentials"]["hosted_api"]["present"] is True
+        text = permission_preflight.render_text(preflight)
+        assert "xAI API key" not in text
+        assert "ScrapeCreators API key" not in text
+        assert "last30days hosted/proxy API key" in text

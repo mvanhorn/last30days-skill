@@ -2151,9 +2151,29 @@ def _config_fingerprint(config: Dict[str, Any]) -> str:
             raw = os.environ.get(key)
         return str(raw or "")
 
+    from . import permission_preflight
+
+    raw_hosted_key = config.get("LAST30DAYS_API_KEY")
+    if raw_hosted_key is None:
+        raw_hosted_key = env.read_secret_env("LAST30DAYS_API_KEY")
+    hosted_key_present = (
+        bool(str(raw_hosted_key or "").strip()) and not proxy.is_sentinel(raw_hosted_key)
+    )
+    hosted_api_base = _cfg_or_env("LAST30DAYS_API_BASE").strip()
+    if not hosted_api_base:
+        hosted_endpoint_state = "unset"
+    elif permission_preflight._valid_hosted_api_base(hosted_api_base):
+        hosted_endpoint_state = "valid"
+    else:
+        hosted_endpoint_state = "invalid"
+
     signals = {
         "keys_present": _setup_block(config)["keys_present"],
         "via_api_key": proxy.via_api_key(config),
+        "hosted_key_present": hosted_key_present,
+        "hosted_api_mode": _cfg_or_env("LAST30DAYS_API_MODE").strip().lower(),
+        "hosted_endpoint_state": hosted_endpoint_state,
+        "corpus_dirs": permission_preflight._configured_corpus_dirs(config),
         "pins": {var: str(config.get(var) or "") for var in _FINGERPRINT_PIN_VARS},
         "include_sources": str(config.get("INCLUDE_SOURCES") or ""),
         "exclude_sources": str(config.get("EXCLUDE_SOURCES") or ""),

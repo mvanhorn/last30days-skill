@@ -88,13 +88,9 @@ def _valid_hosted_api_base(value: str) -> bool:
     return True
 
 
-def _configured_corpus_dirs(
-    config: dict[str, Any],
-    requested_sources: list[str] | None = None,
-) -> list[str]:
+def _configured_corpus_dirs(config: dict[str, Any]) -> list[str]:
+    """Resolve configured corpus dirs respecting EXCLUDE_SOURCES (matches runtime hosted bypass)."""
     if "corpus" in env.exclude_sources(config):
-        return []
-    if requested_sources and "corpus" not in requested_sources:
         return []
     cli_dirs = config.get("_CORPUS_DIRS")
     if isinstance(cli_dirs, str):
@@ -109,20 +105,28 @@ def _configured_corpus_dirs(
     return [str(path) for path in corpus.resolve_directories(cli_list, raw)]
 
 
-def _active_secret_stores(config_source: str, *, hosted_mode: bool) -> list[str]:
+def _planned_corpus_dirs(
+    configured_dirs: list[str],
+    requested_sources: list[str] | None = None,
+) -> list[str]:
+    if requested_sources and "corpus" not in requested_sources:
+        return []
+    return list(configured_dirs)
+
+
+def _active_secret_stores(config_source: str) -> list[str]:
     stores: list[str] = []
     if config_source == "keychain":
         stores.append("keychain")
     elif (
-        not hosted_mode
-        and platform.system() == "Darwin"
+        platform.system() == "Darwin"
         and not _truthy(os.environ.get(env.KEYCHAIN_DISABLE_ENV))
         and shutil.which("security")
     ):
         stores.append("keychain")
     if config_source == "pass":
         stores.append("pass")
-    elif not hosted_mode and shutil.which("pass"):
+    elif shutil.which("pass"):
         stores.append("pass")
     return stores
 
@@ -180,6 +184,8 @@ def build(
     planned_save_dir: str | None = None,
     report_on_save_dir: str | None = None,
     requested_sources: list[str] | None = None,
+    deep_research: bool = False,
+    local_only_run: bool = False,
 ) -> dict[str, Any]:
     """Build a stable, secret-free permission preflight object."""
     browser = dict(diagnose.get("browser_cookies") or {})
@@ -228,10 +234,16 @@ def build(
         raw_hosted_key = env.read_secret_env("LAST30DAYS_API_KEY")
     hosted_api_key_present = _has_secret(raw_hosted_key)
     proxy_mode = _config_or_env(config, "LAST30DAYS_API_MODE").lower() == "proxy"
-    corpus_dirs = _configured_corpus_dirs(config, requested_sources)
+    configured_corpus_dirs = _configured_corpus_dirs(config)
+    corpus_dirs = _planned_corpus_dirs(configured_corpus_dirs, requested_sources)
     hosted_base_valid = bool(api_base) and _valid_hosted_api_base(api_base)
     hosted_mode = bool(
-        hosted_base_valid and hosted_api_key_present and not proxy_mode and not corpus_dirs
+        hosted_base_valid
+        and hosted_api_key_present
+        and not proxy_mode
+        and not configured_corpus_dirs
+        and not deep_research
+        and not local_only_run
     )
 
     providers = dict(diagnose.get("providers") or {})
@@ -246,11 +258,22 @@ def build(
             "label": PROVIDER_CREDENTIALS["google"],
         },
         "openai": {"present": bool(providers.get("openai")), "label": PROVIDER_CREDENTIALS["openai"]},
-        "xai": {"present": bool(providers.get("xai")), "label": PROVIDER_CREDENTIALS["xai"]},
+        "xai": {
+            "present": (
+                _has_secret(config.get("XAI_API_KEY"))
+                if "XAI_API_KEY" in config
+                else bool(providers.get("xai"))
+            ),
+            "label": PROVIDER_CREDENTIALS["xai"],
+        },
         "openrouter": {"present": bool(providers.get("openrouter")), "label": PROVIDER_CREDENTIALS["openrouter"]},
         "perplexity": {"present": bool(providers.get("perplexity")), "label": PROVIDER_CREDENTIALS["perplexity"]},
         "scrapecreators": {
-            "present": bool(diagnose.get("has_scrapecreators")),
+            "present": (
+                _has_secret(config.get("SCRAPECREATORS_API_KEY"))
+                if "SCRAPECREATORS_API_KEY" in config
+                else bool(diagnose.get("has_scrapecreators"))
+            ),
             "label": PROVIDER_CREDENTIALS["scrapecreators"],
         },
         "github": {"present": bool(diagnose.get("has_github")), "label": PROVIDER_CREDENTIALS["github"]},
@@ -344,7 +367,7 @@ def build(
             + ". Use HTTPS, or HTTP on loopback."
         )
 
-    secret_stores = _active_secret_stores(config_source, hosted_mode=hosted_mode)
+    secret_stores = _active_secret_stores(config_source)
     available_sources = ["hosted"] if hosted_mode else list(diagnose.get("available_sources") or [])
 
     return {

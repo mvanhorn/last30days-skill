@@ -4839,6 +4839,17 @@ def _main(
         requested_sources = resolve_requested_sources(args.search, config)
         preflight_config = pipeline.with_plan_source_omissions(config, external_plan)
         diag = pipeline.diagnose(preflight_config, requested_sources, safe=True)
+        hosted_bypassed = bool(
+            args.cached_report
+            or args.mock
+            or args.record_fixtures
+            or args.discover is not None
+            or args.drill
+            or (
+                args.perplexity_search_type is not None
+                and bool(config.get("PERPLEXITY_API_KEY"))
+            )
+        )
         preflight = permission_preflight.build(
             preflight_config,
             diag,
@@ -4847,6 +4858,8 @@ def _main(
                 None if args.no_research_persistence else args.preflight_report_on_save_dir
             ),
             requested_sources=requested_sources,
+            deep_research=bool(getattr(args, "deep_research", False)),
+            local_only_run=hosted_bypassed,
         )
         _add_preflight_research_writes(preflight, args, config)
         if args.emit == "json":
