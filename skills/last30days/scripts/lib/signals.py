@@ -107,20 +107,22 @@ def freshness(
 
 
 def log1p_safe(value: float | int | None) -> float:
-    if value is None:
+    if value is None or isinstance(value, bool):
         return 0.0
     try:
         numeric = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 0.0
-    if numeric <= 0:
+    if not math.isfinite(numeric) or numeric <= 0:
         return 0.0
     return math.log1p(numeric)
 
 
 def _top_comment_score(item: schema.SourceItem) -> float:
-    comments = item.metadata.get("top_comments") or []
-    if not comments or not isinstance(comments[0], dict):
+    if not isinstance(item.metadata, dict):
+        return 0.0
+    comments = item.metadata.get("top_comments")
+    if not isinstance(comments, (list, tuple)) or not comments or not isinstance(comments[0], dict):
         return 0.0
     return log1p_safe(comments[0].get("score"))
 
@@ -170,7 +172,11 @@ def top_comment_vote_signal(candidate: schema.Candidate) -> float:
     """
     best_log = 0.0
     for item in candidate.source_items:
-        comments = item.metadata.get("top_comments") or []
+        if not isinstance(item.metadata, dict):
+            continue
+        comments = item.metadata.get("top_comments")
+        if not isinstance(comments, (list, tuple)):
+            continue
         for comment in comments[:3]:
             if isinstance(comment, dict):
                 best_log = max(best_log, log1p_safe(comment.get("score")))
