@@ -515,7 +515,10 @@ def _web_search_with(
         # never receives the proxy-lane placeholder.
         mcp_kwargs: dict = {}
         if effective_deadline is not None:
-            mcp_kwargs["deadline_monotonic"] = effective_deadline
+            mcp_kwargs["deadline_monotonic"] = min(
+                effective_deadline,
+                time.monotonic() + parallel_mcp._DEFAULT_SEARCH_TIMEOUT,
+            )
         if effective_cancel is not None:
             mcp_kwargs["cancel"] = effective_cancel
         items, artifact = parallel_mcp.search(
@@ -545,8 +548,13 @@ def _web_search_with(
         # reddit.com fetch failure (e.g. a 403 on a datacenter IP) is not
         # attributed to the web/grounding source itself — which would otherwise
         # discard the successfully retrieved results and report the source failed.
+        enrich_kwargs: dict = {}
+        if effective_deadline is not None:
+            enrich_kwargs["deadline_monotonic"] = effective_deadline
+        if effective_cancel is not None:
+            enrich_kwargs["cancel"] = effective_cancel
         with http.capture_failures():
-            items = _enrich_reddit_items(items)
+            items = _enrich_reddit_items(items, **enrich_kwargs)
     return items, artifact
 
 
@@ -561,7 +569,12 @@ def _reddit_excluded(config: dict) -> bool:
     return any(s.strip().lower() == "reddit" for s in raw)
 
 
-def _enrich_reddit_items(items: list[dict]) -> list[dict]:
+def _enrich_reddit_items(
+    items: list[dict],
+    *,
+    deadline_monotonic: float | None = None,
+    cancel: threading.Event | None = None,
+) -> list[dict]:
     """Enrich web search results that are Reddit threads with body and comments.
 
     Claude Code's WebFetch blocks reddit.com, so the model can't retrieve
@@ -576,6 +589,10 @@ def _enrich_reddit_items(items: list[dict]) -> list[dict]:
     """
     from . import reddit_hydrate, reddit_refs
 
+    if (cancel is not None and cancel.is_set()) or (
+        deadline_monotonic is not None and time.monotonic() >= deadline_monotonic
+    ):
+        return items
     refs_by_item: list[tuple[dict, reddit_refs.ThreadRef]] = []
     for item in items:
         ref = reddit_refs.canonical_thread(str(item.get("url") or ""))
@@ -584,8 +601,17 @@ def _enrich_reddit_items(items: list[dict]) -> list[dict]:
             refs_by_item.append((item, ref))
     if not refs_by_item:
         return items
+    hydrate_kwargs: dict = {}
+    if deadline_monotonic is not None:
+        hydrate_kwargs["deadline"] = deadline_monotonic
     try:
-        hydrated = reddit_hydrate.hydrate([ref for _item, ref in refs_by_item])
+        hydrated = reddit_hydrate.hydrate(
+            [ref for _item, ref in refs_by_item],
+            **hydrate_kwargs,
+        )
+    except (http.DeadlineExceeded, TimeoutError) as exc:
+        sys.stderr.write(f"[Web] Reddit enrichment timed out: {exc}\n")
+        return items
     except Exception as exc:  # enrichment is best-effort on results already in hand
         sys.stderr.write(f"[Web] Reddit enrichment failed: {exc}\n")
         return items

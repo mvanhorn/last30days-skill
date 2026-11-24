@@ -1216,4 +1216,79 @@ def test_keyless_search_reports_timeout_when_cancelled_or_expired_and_keeps_foun
     assert "_source_outcome" not in artifact
 
 
+def test_grounding_enrich_reddit_items_forwards_deadline_and_preserves_items_on_timeout():
+    from lib import reddit_hydrate
+
+    web_items = [
+        {
+            "url": "https://www.reddit.com/r/python/comments/abc123/test_post/",
+            "title": "Original Web Title",
+            "snippet": "Original web snippet",
+        },
+        {
+            "url": "https://example.com/non-reddit",
+            "title": "Example Article",
+            "snippet": "Non-reddit snippet",
+        },
+    ]
+    seen_deadlines: list[float | None] = []
+
+    def timeout_hydrate(refs, **kwargs):
+        seen_deadlines.append(kwargs.get("deadline"))
+        raise http.DeadlineExceeded()
+
+    deadline = time.monotonic() + 12.0
+    with patch.object(reddit_hydrate, "hydrate", side_effect=timeout_hydrate):
+        kept = grounding._enrich_reddit_items(list(web_items), deadline_monotonic=deadline)
+
+    assert seen_deadlines == [deadline]
+    assert kept == web_items
+
+    # Live path through grounding.web_search() forwards `_research_deadline` into hydrate()
+    # and keeps web results intact when optional Reddit enrichment times out.
+    seen_deadlines.clear()
+    with patch.object(web_search_keyless, "keyless_search", return_value=(list(web_items), {"keyless_backend": "ddg"})), \
+         patch.object(reddit_hydrate, "hydrate", side_effect=timeout_hydrate):
+        items, artifact = grounding.web_search(
+            "python",
+            ("2026-10-01", "2026-11-01"),
+            {"_research_deadline": deadline},
+            backend="keyless",
+        )
+    assert seen_deadlines == [deadline]
+    assert items == web_items
+    assert artifact["keyless_backend"] == "ddg"
+
+
+def test_keyless_search_counts_searxng_attempt_when_html_rungs_skipped_and_searxng_times_out():
+    web_search_keyless.reset_rung_health()
+    try:
+        web_search_keyless.seed_rung_health({"ddg": "blocked", "startpage": "throttled"})
+
+        def searxng_timeout(*_args, **_kwargs):
+            err = http.DeadlineExceeded()
+            http._record_failure(err)
+            raise err
+
+        with patch.object(web_search_keyless.http, "get_text") as mock_get_text, \
+             patch.object(web_search_keyless.http, "get", side_effect=searxng_timeout) as mock_get:
+            items, artifact = web_search_keyless.keyless_search(
+                "topic",
+                ("2026-10-01", "2026-11-01"),
+                {"LAST30DAYS_SEARXNG_URL": "https://searxng.example"},
+                deadline_monotonic=time.monotonic() + 5.0,
+            )
+        mock_get_text.assert_not_called()
+        mock_get.assert_called_once()
+        assert items == []
+        assert artifact["keyless_backend"] == "searxng"
+        assert artifact["keyless_rungs"] == {"ddg": "skipped", "startpage": "skipped"}
+        assert artifact["reason"] == "keyless-search-timeout"
+        assert artifact["_source_outcome"]["state"] == health.TIMEOUT
+        assert artifact["_source_outcome"]["attempted"] is True
+    finally:
+        web_search_keyless.reset_rung_health()
+
+
+
 

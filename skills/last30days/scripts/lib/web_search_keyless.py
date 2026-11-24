@@ -429,6 +429,7 @@ def keyless_search(
             return True
         return deadline_monotonic is not None and time.monotonic() >= deadline_monotonic
 
+    searxng_attempted = False
     with http.tee_failures() as run_failures:
         for rung, search in ladder:
             if stopped():
@@ -448,6 +449,7 @@ def keyless_search(
         if not items:
             searxng_url = (config.get("LAST30DAYS_SEARXNG_URL") or "").strip()
             if searxng_url and not stopped():
+                searxng_attempted = True
                 items = _search_searxng(query, count, searxng_url, **bound)
                 used = "searxng"
     # These backends never return a publish date, so normalize's grounding
@@ -472,7 +474,7 @@ def keyless_search(
             artifact["_source_outcome"] = {
                 "state": health.TIMEOUT,
                 "detail": "Keyless web search cancelled or timed out",
-                "attempted": any(state != SKIPPED for state in tried.values()),
+                "attempted": searxng_attempted or any(state != SKIPPED for state in tried.values()),
             }
         else:
             artifact["reason"] = "keyless-search-unavailable"
