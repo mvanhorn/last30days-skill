@@ -1334,6 +1334,7 @@ def request(
     public_only: bool = False,
     local_bridge_only: bool = False,
     max_bytes: Optional[int] = None,
+    decode_errors: str = "strict",
 ) -> Union[Dict[str, Any], str, tuple[Union[Dict[str, Any], str], ResponseHeaders]]:
     """Make an HTTP request and return JSON response.
 
@@ -1375,6 +1376,8 @@ def request(
     """
     if max_bytes is not None and max_bytes <= 0:
         raise ValueError("max_bytes must be positive")
+    if decode_errors not in ("strict", "replace", "ignore"):
+        raise ValueError(f"unsupported decode_errors mode: {decode_errors!r}")
     effective_max_bytes = MAX_RESPONSE_BYTES if max_bytes is None else max_bytes
     if owned_get and (method != "GET" or json_data is not None):
         raise ValueError("owned transport requires a bodyless GET")
@@ -1535,7 +1538,7 @@ def request(
                     response_headers.url = final if isinstance(final, str) else ""
                 return (
                     response.status,
-                    _read_bounded(response, effective_max_bytes).decode('utf-8'),
+                    _read_bounded(response, effective_max_bytes).decode('utf-8', errors=decode_errors),
                     None,
                 )
         except urllib.error.HTTPError as error:
@@ -1596,7 +1599,7 @@ def request(
                 elif error is not None:
                     decoded = body.decode("utf-8", errors="replace")
                 else:
-                    decoded = body.decode("utf-8")
+                    decoded = body.decode("utf-8", errors=decode_errors)
             except UnicodeDecodeError:
                 if error is None:
                     raise
@@ -1854,6 +1857,7 @@ def get_text(
     redirect_guard: Optional[Callable[[str], bool]] = None,
     public_only: bool = False,
     max_bytes: Optional[int] = None,
+    decode_errors: str = "strict",
 ) -> Optional[str]:
     """Fetch a URL and return decoded text, or None on any failure.
 
@@ -1900,6 +1904,8 @@ def get_text(
         bounds["public_only"] = True
     if max_bytes is not None:
         bounds["max_bytes"] = max_bytes
+    if decode_errors != "strict":
+        bounds["decode_errors"] = decode_errors
     try:
         answer = request(
             "GET", url, headers=merged, timeout=timeout, retries=retries, raw=True,

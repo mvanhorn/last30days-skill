@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
+from html.parser import HTMLParser
 from typing import Optional
 from urllib.parse import urlsplit
 
@@ -232,7 +233,6 @@ def _extract_official_domain(topic: str, items: list[dict]) -> str:
     return ""
 
 
-_HREF = re.compile(r"""href\s*=\s*["']([^"']+)["']""", re.IGNORECASE)
 # Profile links only: x.com/{handle} with nothing after the handle but a slash,
 # query or fragment. /status/, /intent/ and /share links name someone else's
 # post or a share widget, never the site's own account.
@@ -262,9 +262,46 @@ def _official_site_url(site: str) -> str:
     return f"https://{host}/" if host else ""
 
 
-_CHROME_REGION = re.compile(
-    r"<(header|footer|nav)\b[^>]*>(.*?)</\1\s*>", re.IGNORECASE | re.DOTALL,
-)
+_CHROME_TAGS = frozenset({"header", "footer", "nav"})
+_MAX_OFFICIAL_SITE_HTML_BYTES = 1 * 1024 * 1024
+
+
+class _SocialLinkParser(HTMLParser):
+    """Single-pass O(N) HTML link extractor tracking header/footer/nav depth."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._chrome_depths = {tag: 0 for tag in _CHROME_TAGS}
+        self._chrome_active = 0
+        self.hrefs: list[tuple[str, bool]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, Optional[str]]]) -> None:
+        tag_lower = tag.lower()
+        if tag_lower in _CHROME_TAGS:
+            self._chrome_depths[tag_lower] += 1
+            self._chrome_active += 1
+        in_chrome = self._chrome_active > 0
+        for name, value in attrs:
+            if name.lower() == "href" and value:
+                href = value.strip()
+                if href:
+                    self.hrefs.append((href, in_chrome))
+
+    def handle_endtag(self, tag: str) -> None:
+        tag_lower = tag.lower()
+        if tag_lower in _CHROME_TAGS and self._chrome_depths[tag_lower] > 0:
+            self._chrome_depths[tag_lower] -= 1
+            self._chrome_active -= 1
+
+
+def _extract_homepage_hrefs(html_text: str) -> list[tuple[str, bool]]:
+    """Extract (href, in_chrome) pairs from homepage HTML in a single linear pass."""
+    if not html_text:
+        return []
+    parser = _SocialLinkParser()
+    parser.feed(html_text[:_MAX_OFFICIAL_SITE_HTML_BYTES])
+    parser.close()
+    return parser.hrefs
 
 
 def _site_label(url: str) -> str:
@@ -324,6 +361,8 @@ def official_site_socials(site: str, *, timeout: int = 10) -> dict[str, str]:
                 accept="text/html",
                 public_only=True,
                 redirect_guard=_official_site_redirect_guard,
+                max_bytes=_MAX_OFFICIAL_SITE_HTML_BYTES,
+                decode_errors="replace",
             ),
             url,
         )
@@ -333,16 +372,9 @@ def official_site_socials(site: str, *, timeout: int = 10) -> dict[str, str]:
     if not html:
         _log(f"Official site {url} could not be fetched")
         return result
-    chrome_hrefs = {
-        href.strip()
-        for match in _CHROME_REGION.finditer(html)
-        for href in _HREF.findall(match.group(2))
-    }
     x_links: list[tuple[str, bool]] = []
     github_links: list[tuple[str, bool]] = []
-    for href in _HREF.findall(html):
-        href = href.strip()
-        in_chrome = href in chrome_hrefs
+    for href, in_chrome in _extract_homepage_hrefs(html):
         x_match = _X_PROFILE_LINK.match(href)
         if x_match and x_match.group(1).lower() not in _X_NON_ACCOUNTS:
             x_links.append((x_match.group(1), in_chrome))

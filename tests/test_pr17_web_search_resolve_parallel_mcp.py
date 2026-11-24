@@ -1,0 +1,675 @@
+"""Regression tests for PR 17: keyless web search, entity resolve, and Parallel MCP hardening.
+
+Covers:
+- HIGH-091: O(N) HTMLParser chrome-region link parsing & bounded body size in resolve.py
+- HIGH-202: Linear-time _BRAVE_AGE_RE, _strip_html, and SERP parsers in web_search_keyless.py
+- HIGH-203: LAST30DAYS_SEARXNG_URL scheme/host/metadata validation & redirect_guard on HTML rungs/SearXNG
+- HIGH-204: Bounded SERP/SearXNG reads and errors="replace" decoding without UnicodeDecodeError
+- HIGH-205: Parallel MCP SSE wall-clock deadline, cancellation, line/event/request caps, and short DELETE cleanup
+"""
+
+from __future__ import annotations
+
+import datetime as _dt
+import io
+import json
+import threading
+import time
+import urllib.error
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+from urllib.request import Request
+
+import pytest
+
+from lib import http, parallel_mcp, resolve, web_search_keyless
+
+
+def _start_server(handler_cls):
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
+    server.daemon_threads = True
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
+    thread.start()
+    return server, thread, f"http://127.0.0.1:{server.server_port}"
+
+
+def _stop_server(server, thread):
+    server.shutdown()
+    server.server_close()
+    thread.join(2)
+
+
+# ---------------------------------------------------------------------------
+# HIGH-091: resolve.py HTMLParser chrome region extraction & body cap
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_removes_quadratic_chrome_region_regex():
+    assert not hasattr(resolve, "_CHROME_REGION")
+
+
+@pytest.mark.parametrize(
+    "adversarial_html",
+    [
+        "<nav>" * 20_000,
+        "<header>" * 20_000,
+        "<footer>" * 20_000,
+        "<nav>" * 15_000 + "<footer><a href='https://x.com/acme'>X</a></footer>",
+        "<header " * 20_000,
+        "<nav>" * 20_000 + "</nav>",
+    ],
+)
+def test_resolve_official_site_socials_is_linear_on_adversarial_html(adversarial_html: str):
+    started = time.monotonic()
+    with patch.object(resolve.http, "get_text", return_value=adversarial_html):
+        socials = resolve.official_site_socials("acme.com")
+    elapsed = time.monotonic() - started
+    assert elapsed < 0.25, f"official_site_socials took {elapsed:.4f}s (possible ReDoS)"
+    if "x.com/acme" in adversarial_html:
+        assert socials["x_handle"] == "acme"
+    else:
+        assert socials == {"x_handle": "", "github_user": ""}
+
+
+def test_resolve_html_parser_tracks_nested_chrome_ignores_comments_and_scripts():
+    page = """
+    <html><body>
+      <!-- <a href="https://x.com/commentedout">Ignored</a> -->
+      <script>const link = '<a href="https://x.com/inscript">Ignored</a>';</script>
+      <nav/>
+      <a href="https://x.com/customer1">Customer</a>
+      <a href="https://x.com/customer2">Customer 2</a>
+      <header><nav><a href="https://x.com/BrandHQ?ref=top&amp;src=1">X</a></nav></header>
+      </footer>
+      <footer><a href="https://github.com/brand-hq">GitHub</a></footer>
+    </body></html>
+    """
+    with patch.object(resolve.http, "get_text", return_value=page):
+        socials = resolve.official_site_socials("brand.example")
+    assert socials == {"x_handle": "BrandHQ", "github_user": "brand-hq"}
+
+
+def test_resolve_official_site_socials_bounds_response_size_and_decodes_invalid_utf8():
+    with patch.object(resolve.http, "get_text", return_value="<html></html>") as mock_get:
+        resolve.official_site_socials("typesafe.ai")
+    assert mock_get.call_args.kwargs.get("max_bytes") == resolve._MAX_OFFICIAL_SITE_HTML_BYTES
+    assert mock_get.call_args.kwargs.get("decode_errors") == "replace"
+
+    # A homepage with non-UTF-8 bytes (e.g. Latin-1 accent) still decodes with replacement
+    # instead of raising UnicodeDecodeError, and extracts the brand's footer handle.
+    latin1_page = (
+        b"<html><head><title>Caf\xe9 Corp</title></head>"
+        b"<body><footer><a href='https://x.com/cafecorp'>X</a></footer></body></html>"
+    )
+    resp = MagicMock()
+    resp.__enter__.return_value = resp
+    resp.__exit__.return_value = False
+    resp.status = 200
+    resp.headers = {}
+    resp.read.return_value = latin1_page
+    with patch.object(resolve.http, "_open_request", return_value=resp):
+        assert resolve.official_site_socials("cafecorp.example") == {
+            "x_handle": "cafecorp",
+            "github_user": "",
+        }
+
+    # Oversized HTML returned by a mocked get_text is sliced to _MAX_OFFICIAL_SITE_HTML_BYTES.
+    huge_html = (" " * (resolve._MAX_OFFICIAL_SITE_HTML_BYTES + 1024)) + (
+        '<footer><a href="https://x.com/pastlimit">X</a></footer>'
+    )
+    with patch.object(resolve.http, "get_text", return_value=huge_html):
+        assert resolve.official_site_socials("example.com") == {"x_handle": "", "github_user": ""}
+
+
+# ---------------------------------------------------------------------------
+# HIGH-202: web_search_keyless.py ReDoS elimination
+# ---------------------------------------------------------------------------
+
+
+def test_brave_age_re_is_linear_on_adversarial_unclosed_spans():
+    adversarial_cases = [
+        '<span class="t-secondary">' + (" " * 100_000),
+        '<span class="t-secondary">' + ("- " * 50_000),
+        '<span class="t-secondary">' * 20_000,
+        ('<span class="t-secondary">' + (" " * 50)) * 2_000,
+    ]
+    started = time.monotonic()
+    for payload in adversarial_cases:
+        assert web_search_keyless._BRAVE_AGE_RE.search(payload) is None
+    elapsed = time.monotonic() - started
+    assert elapsed < 0.1, f"_BRAVE_AGE_RE took {elapsed:.4f}s (possible ReDoS)"
+
+    # Valid Brave age spans still match and parse identically.
+    now = _dt.datetime(2026, 11, 15, tzinfo=_dt.timezone.utc)
+    for raw, expected in (
+        ('<span class="t-secondary"> 2 weeks ago - </span>', "2026-11-01"),
+        ('<span class="t-secondary">Nov 3, 2026 -</span>', "2026-11-03"),
+        ('<span class="t-secondary">3 days ago</span>', "2026-11-12"),
+    ):
+        match = web_search_keyless._BRAVE_AGE_RE.search(raw)
+        assert match is not None
+        assert web_search_keyless._brave_date(match.group("age"), now) == expected
+
+
+def test_strip_html_and_serp_parsers_are_linear_on_adversarial_inputs():
+    assert not hasattr(web_search_keyless, "_STYLE_SCRIPT_RE")
+
+    started = time.monotonic()
+    assert web_search_keyless._strip_html("<script>" * 20_000) == ""
+    assert web_search_keyless._strip_html("<style>" * 20_000) == ""
+    assert web_search_keyless._strip_html("<script>" * 15_000 + "</script>ok") == "ok"
+    assert web_search_keyless._strip_html(
+        "<style>.a{color:red}</style><script>alert(1)</script>Hello &amp; <b>World</b>"
+    ) == "Hello & World"
+
+    # Unclosed and single-trailing-close SERP inputs across all three HTML parsers.
+    ddg_unclosed = '<a class="result__a" href="https://example.com/a">' * 5_000
+    ddg_trailing = ddg_unclosed + "</a>"
+    sp_unclosed = '<a class="result-title" href="https://example.com/a">' * 5_000
+    sp_trailing = sp_unclosed + "</a>"
+    brave_hostile = (
+        '<div class="snippet" data-type="web"><a href="https://example.com/a">x</a>'
+        + ('<div class="search-snippet-title">' * 5_000)
+        + "</div>"
+        + '<span class="t-secondary">'
+        + (" " * 50_000)
+    )
+
+    assert web_search_keyless.parse_ddg(ddg_unclosed, 10) == []
+    web_search_keyless.parse_ddg(ddg_trailing, 10)
+    assert web_search_keyless.parse_startpage(sp_unclosed, 10) == []
+    web_search_keyless.parse_startpage(sp_trailing, 10)
+    assert web_search_keyless.parse_brave(brave_hostile, 10) == []
+
+    elapsed = time.monotonic() - started
+    assert elapsed < 0.3, f"SERP parsers took {elapsed:.4f}s (possible ReDoS)"
+
+    # Real Brave fixture still parses cleanly.
+    fixture = (
+        Path(__file__).resolve().parent.parent / "fixtures" / "brave_reddit_serp.html"
+    ).read_text(encoding="utf-8")
+    now = _dt.datetime(2026, 11, 15, tzinfo=_dt.timezone.utc)
+    items = web_search_keyless.parse_brave(fixture, 20, now=now)
+    assert len(items) >= 10
+    assert any("1xattdz" in item["url"] and item["date"] == "2026-10-16" for item in items)
+
+
+# ---------------------------------------------------------------------------
+# HIGH-203: LAST30DAYS_SEARXNG_URL validation & redirect_guard on rungs/SearXNG
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "bad_url",
+    [
+        "",
+        "   ",
+        "file:///etc/passwd",
+        "ftp://searxng.example/search",
+        "data:text/html,hello",
+        "javascript:alert(1)",
+        "gopher://127.0.0.1:70/_",
+        "http://[::1",
+        "http://searxng.example:99999",
+        "http:///no-host",
+        "https://user:pass@searxng.example",
+        "https://searxng.example\r\nX-Injected: 1",
+        "https://searxng.example\\evil",
+        "https://searxng.example?injected=1",
+        "https://searxng.example#frag",
+        "http://169.254.169.254",
+        "http://169.254.169.254/latest/meta-data",
+        "http://169.254.1.1:8080",
+        "http://2852039166/",
+        "http://0251.0376.0251.0376/",
+        "http://[::ffff:169.254.169.254]/",
+        "http://[64:ff9b::169.254.169.254]/",
+        "http://[fe80::1]:8080/",
+        "http://[fd00:ec2::254]/",
+        "http://100.100.100.200/",
+        "http://metadata.google.internal/",
+        "http://metadata.goog/",
+        "http://0.0.0.0:8080/",
+        "http://[::]:8080/",
+    ],
+)
+def test_searxng_rejects_unsafe_or_malformed_urls_without_raising(bad_url: str):
+    assert web_search_keyless._validate_searxng_url(bad_url) is None
+    with patch.object(web_search_keyless.http, "get_text", return_value=None), \
+         patch.object(web_search_keyless.http, "get") as mock_get:
+        items, artifact = web_search_keyless.keyless_search(
+            "topic", ("2026-10-01", "2026-11-01"), {"LAST30DAYS_SEARXNG_URL": bad_url}
+        )
+    assert items == []
+    assert artifact["reason"] == "keyless-search-unavailable"
+    mock_get.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "good_url",
+    [
+        "http://127.0.0.1:8080",
+        "http://localhost:8888",
+        "http://[::1]:8080",
+        "http://192.168.1.50:8080",
+        "http://10.0.0.5:8080/searx",
+        "https://searxng.example",
+        "https://search.example.org/searxng/",
+    ],
+)
+def test_searxng_allows_self_hosted_loopback_lan_and_public_urls(good_url: str):
+    validated = web_search_keyless._validate_searxng_url(good_url)
+    assert validated is not None
+    normalized, origin = validated
+    assert normalized.startswith(("http://", "https://"))
+    assert origin[0] in ("http", "https")
+
+
+def test_fetch_page_attaches_public_only_strict_redirect_guard_and_bounds():
+    with patch.object(web_search_keyless.http, "get_text", return_value="") as mock_get:
+        web_search_keyless._fetch_page("ddg", "https://html.duckduckgo.com/html/?q=test")
+    kwargs = mock_get.call_args.kwargs
+    assert kwargs["public_only"] is True
+    assert kwargs["max_bytes"] == web_search_keyless._MAX_SERP_BYTES
+    assert kwargs["decode_errors"] == "replace"
+    guard = kwargs["redirect_guard"]
+    assert callable(guard)
+    assert guard("https://html.duckduckgo.com/html/?q=test2") is True
+    assert guard("http://html.duckduckgo.com/html/?q=test2") is False
+    assert guard("https://evil.example/phish") is False
+    assert guard("http://127.0.0.1:8080/admin") is False
+    assert guard("http://169.254.169.254/latest/meta-data/") is False
+    assert guard("file:///etc/passwd") is False
+
+    # Verify http redirect handler blocks private/off-host redirects with this guard.
+    handler = http._StripAuthOnCrossOriginRedirect()
+    req = Request("https://html.duckduckgo.com/html/?q=test")
+    setattr(req, http._PUBLIC_ONLY_ATTR, True)
+    setattr(req, http._REDIRECT_GUARD_ATTR, guard)
+    for target in (
+        "http://169.254.169.254/latest/meta-data/",
+        "http://127.0.0.1:8080/",
+        "http://html.duckduckgo.com/downgrade",
+        "https://evil.example/redirect",
+    ):
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            handler.redirect_request(req, None, 302, "Found", {}, target)
+        assert exc_info.value.code == 403
+
+
+def test_searxng_live_server_allows_same_origin_and_blocks_cross_origin_redirects():
+    target_hits: list[str] = []
+
+    class TargetHandler(BaseHTTPRequestHandler):
+        def log_message(self, *_args):
+            pass
+
+        def do_GET(self):
+            target_hits.append(self.path)
+            payload = json.dumps({"results": [{"url": "https://secret.example/1", "title": "Leaked", "content": "x"}]}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+    target_srv, target_t, target_base = _start_server(TargetHandler)
+
+    class SearxHandler(BaseHTTPRequestHandler):
+        def log_message(self, *_args):
+            pass
+
+        def do_GET(self):
+            if "evil_redirect" in self.path:
+                self.send_response(302)
+                self.send_header("Location", f"{target_base}/secret")
+                self.end_headers()
+                return
+            if "meta_redirect" in self.path:
+                self.send_response(302)
+                self.send_header("Location", "http://169.254.169.254/latest/meta-data/")
+                self.end_headers()
+                return
+            if "same_origin_redir" in self.path:
+                self.send_response(302)
+                self.send_header("Location", "/search?q=final&format=json")
+                self.end_headers()
+                return
+            payload = json.dumps({
+                "results": [{"url": "https://docs.example.org/post", "title": "OK", "content": "snippet"}]
+            }).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+    searx_srv, searx_t, searx_base = _start_server(SearxHandler)
+    try:
+        # Legitimate local self-hosted SearXNG works, including same-origin redirect.
+        items = web_search_keyless._search_searxng("same_origin_redir", 5, searx_base)
+        assert len(items) == 1
+        assert items[0]["url"] == "https://docs.example.org/post"
+
+        # Cross-port localhost redirect is blocked before connecting to target_srv.
+        assert web_search_keyless._search_searxng("evil_redirect", 5, searx_base) == []
+        assert target_hits == []
+
+        # Redirect to cloud metadata IP is blocked cleanly without raising.
+        assert web_search_keyless._search_searxng("meta_redirect", 5, searx_base) == []
+    finally:
+        _stop_server(searx_srv, searx_t)
+        _stop_server(target_srv, target_t)
+
+
+# ---------------------------------------------------------------------------
+# HIGH-204: Bounded reads & errors="replace" decoding without UnicodeDecodeError
+# ---------------------------------------------------------------------------
+
+
+def test_keyless_search_bounds_reads_and_decodes_invalid_utf8_without_raising(monkeypatch):
+    class MixedHandler(BaseHTTPRequestHandler):
+        def log_message(self, *_args):
+            pass
+
+        def do_GET(self):
+            if "oversized" in self.path:
+                body = b'{"results":[' + (b" " * 4096) + b"]}"
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                try:
+                    self.wfile.write(body)
+                except OSError:
+                    pass
+                return
+            if "latin1_json" in self.path:
+                body = b'{"results":[{"url":"https://example.com/cafe","title":"Caf\xe9","content":"ok"}]}'
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            if "latin1_html" in self.path:
+                body = (
+                    b'<a class="result__a" href="https://example.com/cafe">Caf\xe9 Guide</a>'
+                    b'<a class="result__snippet" href="//x">Best caf\xe9 spots</a>'
+                )
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            if "bad_shape" in self.path:
+                body = b'{"results": 42}'
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            self.send_response(404)
+            self.end_headers()
+
+    srv, thread, base = _start_server(MixedHandler)
+    try:
+        # 1. Oversized SearXNG response rejected by max_bytes without raising.
+        monkeypatch.setattr(web_search_keyless, "_MAX_SEARXNG_BYTES", 512)
+        assert web_search_keyless._search_searxng("oversized", 5, base) == []
+
+        # 2. Non-UTF-8 byte in SearXNG JSON decoded with replacement, no UnicodeDecodeError.
+        items = web_search_keyless._search_searxng("latin1_json", 5, base)
+        assert len(items) == 1
+        assert items[0]["url"] == "https://example.com/cafe"
+        assert items[0]["title"] == "Caf\ufffd"
+
+        # 3. Non-UTF-8 byte in HTML fetched with http.get_text(..., decode_errors="replace").
+        html_text = http.get_text(
+            f"{base}/latin1_html", retries=1, max_bytes=4096, decode_errors="replace",
+        )
+        assert html_text is not None
+        parsed = web_search_keyless.parse_ddg(html_text, 5)
+        assert len(parsed) == 1
+        assert parsed[0]["title"] == "Caf\ufffd Guide"
+        assert parsed[0]["snippet"] == "Best caf\ufffd spots"
+
+        # 4. Hostile JSON shape degrades cleanly.
+        assert web_search_keyless._search_searxng("bad_shape", 5, base) == []
+
+        # 5. Even if a mocked transport raises UnicodeDecodeError or ValueError,
+        # _fetch_page and keyless_search never raise.
+        with patch.object(
+            web_search_keyless.http,
+            "get_text",
+            side_effect=UnicodeDecodeError("utf-8", b"\xff", 0, 1, "bad byte"),
+        ):
+            items, artifact = web_search_keyless.keyless_search(
+                "topic", ("2026-10-01", "2026-11-01"), {}
+            )
+        assert items == []
+        assert artifact["reason"] == "keyless-search-unavailable"
+        assert artifact["keyless_rungs"]["ddg"] == web_search_keyless.ERROR
+    finally:
+        _stop_server(srv, thread)
+
+
+# ---------------------------------------------------------------------------
+# HIGH-205: Parallel MCP SSE slow-loris deadline, cancel, caps & DELETE cleanup
+# ---------------------------------------------------------------------------
+
+
+def test_parallel_mcp_sse_slow_loris_heartbeats_and_trickle_hit_wall_deadline(monkeypatch):
+    stop_server_writes = threading.Event()
+
+    class SlowSSEHandler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *_args):
+            pass
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            chunk = b":\n" if "lines" in self.path else b":"
+            while not stop_server_writes.is_set():
+                try:
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
+                except OSError:
+                    break
+                stop_server_writes.wait(0.04)
+
+    srv, thread, base = _start_server(SlowSSEHandler)
+    try:
+        for mode in ("lines", "bytes"):
+            monkeypatch.setattr(parallel_mcp, "PARALLEL_MCP_URL", f"{base}/{mode}")
+            started = time.monotonic()
+            with pytest.raises(http.DeadlineExceeded):
+                parallel_mcp._request(
+                    {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+                    None,
+                    deadline_monotonic=started + 0.25,
+                )
+            elapsed = time.monotonic() - started
+            assert elapsed < 1.0, f"slow-loris ({mode}) stalled for {elapsed:.2f}s"
+    finally:
+        stop_server_writes.set()
+        _stop_server(srv, thread)
+
+
+def test_parallel_mcp_cancel_event_aborts_in_flight_sse_promptly(monkeypatch):
+    release = threading.Event()
+
+    class HangingSSEHandler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *_args):
+            pass
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(b": heartbeat\n\n")
+            self.wfile.flush()
+            release.wait(10)
+
+    srv, thread, base = _start_server(HangingSSEHandler)
+    try:
+        monkeypatch.setattr(parallel_mcp, "PARALLEL_MCP_URL", f"{base}/mcp")
+        cancel = threading.Event()
+        threading.Timer(0.15, cancel.set).start()
+        started = time.monotonic()
+        with pytest.raises(http.DeadlineExceeded):
+            parallel_mcp.search(
+                "topic",
+                ("2026-10-01", "2026-11-01"),
+                deadline_monotonic=started + 10.0,
+                cancel=cancel,
+            )
+        elapsed = time.monotonic() - started
+        assert elapsed < 1.0, f"cancel took {elapsed:.2f}s"
+    finally:
+        release.set()
+        _stop_server(srv, thread)
+
+
+def test_parallel_mcp_sse_enforces_line_and_event_caps(monkeypatch):
+    class FakeSSEResp:
+        headers = {"Content-Type": "text/event-stream"}
+
+        def __init__(self, raw: bytes):
+            self._bio = io.BytesIO(raw)
+
+        def readline(self, size=-1):
+            return self._bio.readline(size)
+
+    monkeypatch.setattr(parallel_mcp, "_MAX_SSE_LINES", 20)
+    with pytest.raises(RuntimeError, match="line limit"):
+        parallel_mcp._read_response(FakeSSEResp(b":\n" * 25), 3)
+
+    monkeypatch.setattr(parallel_mcp, "_MAX_SSE_LINES", 500)
+    monkeypatch.setattr(parallel_mcp, "_MAX_SSE_EVENTS", 5)
+    notif = b'data: {"jsonrpc":"2.0","method":"notifications/progress"}\n\n'
+    with pytest.raises(RuntimeError, match="event limit"):
+        parallel_mcp._read_response(FakeSSEResp(notif * 10), 3)
+
+
+def test_parallel_mcp_bounds_tools_list_pagination_and_total_requests():
+    calls: list[dict | None] = []
+
+    def fake_request(message, _api_key, _session_id=None):
+        calls.append(message)
+        if message is None:
+            return {}, None
+        method = message.get("method")
+        if method == "initialize":
+            return {"result": {"protocolVersion": parallel_mcp._PROTOCOL_VERSION}}, "sess-1"
+        if method == "notifications/initialized":
+            return {}, "sess-1"
+        if method == "tools/list":
+            idx = len(calls)
+            return {"result": {"tools": [{"name": "other"}], "nextCursor": f"cursor-{idx}"}}, "sess-1"
+        raise AssertionError(f"unexpected method {method}")
+
+    with patch.object(parallel_mcp, "_request", side_effect=fake_request):
+        with pytest.raises(RuntimeError, match="did not advertise web_search"):
+            parallel_mcp.search("topic", ("2026-10-01", "2026-11-01"))
+
+    tools_list_calls = [m for m in calls if m is not None and m.get("method") == "tools/list"]
+    assert len(tools_list_calls) == parallel_mcp._MAX_TOOLS_LIST_PAGES
+    assert len(calls) <= parallel_mcp._MAX_SESSION_REQUESTS
+    assert calls[-1] is None  # DELETE cleanup still ran within budget
+
+
+def test_parallel_mcp_cleanup_delete_is_short_bounded_and_skipped_after_deadline(monkeypatch):
+    delete_seen: list[str] = []
+    release_delete = threading.Event()
+
+    class HangingDeleteHandler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *_args):
+            pass
+
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
+            method = body.get("method")
+            if method == "initialize":
+                reply = {"jsonrpc": "2.0", "id": body["id"], "result": {"protocolVersion": parallel_mcp._PROTOCOL_VERSION}}
+                raw = json.dumps(reply).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Mcp-Session-Id", "sess-hang")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+                return
+            if method == "notifications/initialized":
+                self.send_response(202)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            if method == "tools/list":
+                if "slow_tools" in self.path:
+                    release_delete.wait(5)
+                    return
+                reply = {"jsonrpc": "2.0", "id": body["id"], "error": {"message": "upstream boom"}}
+                raw = json.dumps(reply).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+                return
+
+        def do_DELETE(self):
+            delete_seen.append(self.path)
+            release_delete.wait(10)
+
+    srv, thread, base = _start_server(HangingDeleteHandler)
+    try:
+        # Case 1: Upstream fails before deadline, DELETE hangs -> capped at _CLEANUP_TIMEOUT.
+        monkeypatch.setattr(parallel_mcp, "_CLEANUP_TIMEOUT", 0.25)
+        monkeypatch.setattr(parallel_mcp, "PARALLEL_MCP_URL", f"{base}/fast_fail")
+        started = time.monotonic()
+        with pytest.raises(RuntimeError, match="upstream boom"):
+            parallel_mcp.search(
+                "topic", ("2026-10-01", "2026-11-01"), deadline_monotonic=started + 5.0,
+            )
+        elapsed = time.monotonic() - started
+        assert elapsed < 1.0, f"hanging DELETE stalled for {elapsed:.2f}s"
+        assert len(delete_seen) == 1
+
+        # Case 2: Search itself exceeds deadline -> DELETE is skipped completely.
+        delete_seen.clear()
+        monkeypatch.setattr(parallel_mcp, "PARALLEL_MCP_URL", f"{base}/slow_tools")
+        started = time.monotonic()
+        with pytest.raises(http.DeadlineExceeded):
+            parallel_mcp.search(
+                "topic", ("2026-10-01", "2026-11-01"), deadline_monotonic=started + 0.25,
+            )
+        elapsed = time.monotonic() - started
+        assert elapsed < 1.0, f"expired deadline search stalled for {elapsed:.2f}s"
+        assert delete_seen == []
+    finally:
+        release_delete.set()
+        _stop_server(srv, thread)
+
+
+def test_parallel_mcp_scrubs_api_key_in_errors_and_rejects_bad_utf8_json():
+    with pytest.raises(RuntimeError) as exc_info:
+        parallel_mcp._result(
+            {"error": {"message": "Invalid key secret-parallel-token-999"}},
+            redactions=frozenset({"secret-parallel-token-999"}),
+        )
+    assert "secret-parallel-token-999" not in str(exc_info.value)
+    assert "<redacted>" in str(exc_info.value)
+
+    with pytest.raises(RuntimeError, match="invalid JSON-RPC response"):
+        parallel_mcp._matching_response(b"\xff\xfe", 1)
