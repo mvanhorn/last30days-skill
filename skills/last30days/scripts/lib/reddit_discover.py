@@ -145,6 +145,8 @@ class _QueryAttempt:
 # Waiters keep the attempt they joined, even if the slot becomes retryable.
 # Direct callers that omit ``config`` read the approved SearXNG URL once per run.
 _LOCK = threading.Lock()
+# Held while the standalone config is read. Each run gets its own, so a read that is still
+# blocked when a run is reset can neither stall the next run nor seed it.
 _CONFIG_LOAD_LOCK = threading.Lock()
 _ASKED: dict[str, dict[str, Optional[_QueryAttempt]]] = {}
 _SEARXNG_URL: Optional[str] = None
@@ -154,10 +156,11 @@ _WAIT_SECONDS = 30.0
 
 def reset_run_state() -> None:
     """Forget the queries and SearXNG setting this run asked (call between runs in one process)."""
-    global _SEARXNG_URL, _RUN_GENERATION
+    global _SEARXNG_URL, _RUN_GENERATION, _CONFIG_LOAD_LOCK
     with _LOCK:
         _ASKED.clear()
         _SEARXNG_URL = None
+        _CONFIG_LOAD_LOCK = threading.Lock()
         _RUN_GENERATION += 1
 
 
@@ -171,15 +174,25 @@ def _normalize_searxng_url(config: Optional[Mapping[str, Any]]) -> str:
     return raw.strip()
 
 
-def _standalone_searxng_url(generation: int) -> Optional[str]:
-    """Load the approved URL; return '' if absent or None if unavailable."""
+def _standalone_searxng_url(generation: int, deadline: Optional[float] = None) -> Optional[str]:
+    """Load the approved URL. The answer is '' if absent and None if unavailable.
+
+    ``deadline`` (``time.monotonic()``) bounds the wait for another caller's load of the same
+    run. Out of time the answer is None, exactly as for a config that could not be read, and
+    nothing is cached, so the caller's query stays retryable.
+    """
     global _SEARXNG_URL
     with _LOCK:
         if generation != _RUN_GENERATION:
             return None
         if _SEARXNG_URL is not None:
             return _SEARXNG_URL
-    with _CONFIG_LOAD_LOCK:
+        load_lock = _CONFIG_LOAD_LOCK
+    wait = -1 if deadline is None else max(0.0, deadline - time.monotonic())
+    if not load_lock.acquire(timeout=wait):
+        _log("config load wait ran out")
+        return None
+    try:
         with _LOCK:
             if generation != _RUN_GENERATION:
                 return None
@@ -195,6 +208,8 @@ def _standalone_searxng_url(generation: int) -> Optional[str]:
                 return None
             _SEARXNG_URL = url
             return url
+    finally:
+        load_lock.release()
 
 
 def _log(msg: str) -> None:
@@ -274,7 +289,8 @@ def _ask(
     url: Optional[str] = ""
     try:
         url = (
-            _standalone_searxng_url(generation) if config is None else _normalize_searxng_url(config)
+            _standalone_searxng_url(generation, deadline)
+            if config is None else _normalize_searxng_url(config)
         )
         with _LOCK:
             if generation != _RUN_GENERATION:

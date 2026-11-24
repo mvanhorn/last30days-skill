@@ -5959,6 +5959,15 @@ def _outcome_artifact(
     }
 
 
+def _captured_failures_are_only_timeouts() -> bool:
+    """True when nothing is captured, or every captured failure is a timeout.
+
+    A timeout's own note is then the more specific account of the same failure. A failure of
+    another kind, such as a 429, keeps its priority and its kind through the stream resolver.
+    """
+    return all(failure.outcome_state == health.TIMEOUT for failure in http.captured_failures())
+
+
 def _reddit_timeout_artifact() -> dict[str, Any]:
     # Give the stream resolver first choice of any recorded transport failure.
     if http.has_captured_failures():
@@ -8113,9 +8122,9 @@ def _retrieve_stream_impl(
             if isinstance(result, dict) and result.get("incomplete") else None
         )
         if not merged and free_cut_off:
-            # Both stages ran out of time: the paid backfill's own note is the specific
-            # one, unless a captured HTTP failure is left to the stream resolver.
-            if backfill_timeout is not None and not http.has_captured_failures():
+            # Both stages ran out of time, so the paid backfill's own note is the specific
+            # one. Only a captured failure of another kind is left to the stream resolver.
+            if backfill_timeout is not None and _captured_failures_are_only_timeouts():
                 return [], _with_reddit_lane_notes(backfill_timeout, lane_notes)
             return [], _with_reddit_lane_notes(_reddit_timeout_artifact(), lane_notes)
         if not merged and free_failed:

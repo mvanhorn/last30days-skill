@@ -1319,6 +1319,11 @@ def has_captured_failures() -> bool:
     return bool(_failure_sink.get())
 
 
+def captured_failures() -> tuple["HTTPError", ...]:
+    """The failures captured so far in the current context, without replacing or consuming them."""
+    return tuple(_failure_sink.get() or ())
+
+
 @contextmanager
 def tee_failures():
     """Observe failures locally WITHOUT hiding them from the enclosing sink.

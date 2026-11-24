@@ -1,5 +1,6 @@
 """Tests for scripts/lib/reddit_discover.py: the keyless web floor and topic bar."""
 
+import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from pathlib import Path
@@ -1607,6 +1608,182 @@ class TestSearxngConfigHandoff:
         outcome = report.source_status["reddit"]
         assert outcome.state == health.PARTIAL and outcome.items_returned >= 1
         assert outcome.detail.endswith(f"; {self._NOTE}") and outcome.detail.count(self._NOTE) == 1
+
+    @staticmethod
+    def _blocked_first_config_load():
+        """A config resolver whose first call blocks until released and whose later calls answer at once."""
+        started, release, calls = Event(), Event(), []
+
+        def resolve():
+            calls.append(1)
+            if len(calls) == 1:
+                started.set()
+                assert release.wait(10)
+                return "https://old.example"
+            return "https://new.example"
+
+        return resolve, started, release, calls
+
+    def test_a_blocked_old_config_load_neither_stalls_nor_seeds_the_next_run(self):
+        resolve, started, release, calls = self._blocked_first_config_load()
+        with mock.patch.object(env, "resolve_searxng_url", side_effect=resolve), ThreadPoolExecutor(2) as pool:
+            old = pool.submit(reddit_discover._standalone_searxng_url, reddit_discover._RUN_GENERATION)
+            assert started.wait(5)
+            try:
+                reddit_discover.reset_run_state()
+                new_generation = reddit_discover._RUN_GENERATION
+                new = pool.submit(reddit_discover._standalone_searxng_url, new_generation)
+                assert new.result(timeout=3) == "https://new.example"
+            finally:
+                release.set()
+            # The old load finishes after the reset and must not seed the new run.
+            assert old.result(timeout=5) is None
+        assert reddit_discover._standalone_searxng_url(new_generation) == "https://new.example"
+        assert len(calls) == 2
+
+    def test_two_callers_of_one_run_share_a_single_config_load(self):
+        resolve, started, release, calls = self._blocked_first_config_load()
+        with mock.patch.object(env, "resolve_searxng_url", side_effect=resolve), ThreadPoolExecutor(2) as pool:
+            generation = reddit_discover._RUN_GENERATION
+            first = pool.submit(reddit_discover._standalone_searxng_url, generation)
+            assert started.wait(5)
+            second = pool.submit(reddit_discover._standalone_searxng_url, generation)
+            release.set()
+            assert first.result(timeout=5) == second.result(timeout=5) == "https://old.example"
+        assert len(calls) == 1
+
+    def test_contention_for_the_config_load_honors_the_callers_deadline(self):
+        resolve, started, release, calls = self._blocked_first_config_load()
+        with mock.patch.object(env, "resolve_searxng_url", side_effect=resolve), ThreadPoolExecutor(1) as pool:
+            generation = reddit_discover._RUN_GENERATION
+            first = pool.submit(reddit_discover._standalone_searxng_url, generation)
+            assert started.wait(5)
+            began = time.monotonic()
+            try:
+                waiting = reddit_discover._standalone_searxng_url(generation, deadline=began + 0.3)
+                waited = time.monotonic() - began
+            finally:
+                release.set()
+            assert first.result(timeout=5) == "https://old.example"
+        # Out of time, the caller gets "unavailable" without caching anything as a miss.
+        assert waiting is None and waited < 2.0
+        # The load that was in progress still completes for the run, and nobody loaded twice.
+        assert reddit_discover._standalone_searxng_url(generation) == "https://old.example"
+        assert len(calls) == 1
+
+    def test_a_query_stays_retryable_when_its_config_load_wait_runs_out(self):
+        resolve, started, release, calls = self._blocked_first_config_load()
+        searched = []
+
+        def search(query, date_range, config, count=5, **kwargs):
+            searched.append(dict(config))
+            return [], {}
+
+        with mock.patch.object(env, "resolve_searxng_url", side_effect=resolve), ThreadPoolExecutor(2) as pool:
+            generation = reddit_discover._RUN_GENERATION
+            first = pool.submit(reddit_discover._standalone_searxng_url, generation)
+            assert started.wait(5)
+            ask = pool.submit(
+                reddit_discover._ask, generation, "topic", "site:reddit.com topic", search,
+                ("2026-05-01", "2026-05-31"), None, None, time.monotonic() + 0.3,
+            )
+            try:
+                items, artifact, timed_out = ask.result(timeout=3)
+            finally:
+                release.set()
+            first.result(timeout=5)
+        # It searched without the fallback and left the slot retryable, as for any unavailable config.
+        assert searched == [{}] and items == []
+        assert reddit_discover._ASKED["topic"]["site:reddit.com topic"] is None
+
+    def _cutoff_then_paid_backfill(self, captured, *, items=False, refuse_searxng=False, full_report=False):
+        """A real free cutoff followed by a paid backfill that ends incomplete with the given captured failures."""
+        clock = [100.0]
+        note = "paid backfill stopped at its deadline before completing"
+        thread = "https://www.reddit.com/r/LocalLLaMA/comments/paid123/"
+        cfg = {"SCRAPECREATORS_API_KEY": "sc-dummy-key", "_research_deadline": 170.0,
+               "LAST30DAYS_SEARXNG_URL": "https://searx.example"}
+
+        def html(*args, **kwargs):
+            if not refuse_searxng:
+                clock[0] = 128.0  # Past the discovery cutoff (127), before the lane end (135).
+            return ""
+
+        def sc_search(*args, **kwargs):
+            for failure in captured:
+                http._record_failure(failure)
+            return {"items": [_hit(thread)] if items else [], "incomplete": True, "incomplete_note": note}
+
+        def run_inline(_wait_until, _stage, _default, call, /, *args, **kwargs):
+            return call(*args, **kwargs)
+
+        from lib import reddit_keyless
+
+        # With a refusal wanted, SearXNG is asked first and its refusal is what moves the clock past the cutoff.
+        searxng_get = (
+            self._searxng_refusal(403, after=lambda: clock.__setitem__(0, 128.0)) if refuse_searxng else None
+        )
+        with mock.patch("time.monotonic", side_effect=lambda: clock[0]), \
+             mock.patch.object(reddit_keyless, "_within", side_effect=run_inline):
+            result = self._run_pipeline_reddit_with_searxng(
+                cfg, sc_search=sc_search, html_fetch=html, searxng_get=searxng_get, full_report=full_report,
+            )
+        return result, note, thread
+
+    @pytest.mark.parametrize("captured_kind", ["deadline", "transport-timeout"])
+    def test_a_same_class_timeout_keeps_the_paid_backfills_specific_note(self, captured_kind):
+        failure = (
+            http.DeadlineExceeded() if captured_kind == "deadline"
+            else http.HTTPError("request timed out", outcome_state=health.TIMEOUT)
+        )
+        (items, artifact, _), note, _ = self._cutoff_then_paid_backfill([failure])
+
+        assert not items
+        assert artifact["_source_outcome"]["state"] == health.TIMEOUT
+        assert artifact["_source_outcome"]["detail"] == note
+
+    def test_a_distinct_captured_failure_still_takes_priority_over_the_paid_note(self):
+        (items, artifact, _), note, _ = self._cutoff_then_paid_backfill(
+            [http.HTTPError("HTTP 429: paid backfill throttled", 429)],
+        )
+
+        assert not items
+        assert artifact["_source_outcome"]["state"] == health.RATE_LIMITED
+        assert artifact["_source_outcome"]["detail"].startswith("HTTP 429")
+        assert note not in str(artifact)
+
+    def test_one_distinct_failure_among_timeouts_still_takes_priority(self):
+        (items, artifact, _), note, _ = self._cutoff_then_paid_backfill(
+            [http.DeadlineExceeded(), http.HTTPError("HTTP 429: paid backfill throttled", 429)],
+        )
+
+        assert artifact["_source_outcome"]["state"] == health.RATE_LIMITED
+        assert note not in str(artifact)
+
+    def test_without_a_captured_failure_the_paid_note_is_reported_as_before(self):
+        (items, artifact, _), note, _ = self._cutoff_then_paid_backfill([])
+
+        assert artifact["_source_outcome"]["state"] == health.TIMEOUT
+        assert artifact["_source_outcome"]["detail"] == note
+
+    def test_a_genuine_paid_partial_result_is_served_and_not_reported_as_a_timeout(self):
+        (items, artifact, _), note, thread = self._cutoff_then_paid_backfill(
+            [http.DeadlineExceeded()], items=True,
+        )
+
+        assert [i["url"] for i in items] == [thread]
+        assert "_source_outcome" not in artifact
+
+    def test_the_final_report_shows_the_paid_note_once_beside_a_searxng_note(self):
+        (report, _, _), note, _ = self._cutoff_then_paid_backfill(
+            [http.DeadlineExceeded()], refuse_searxng=True, full_report=True,
+        )
+
+        outcome = report.source_status["reddit"]
+        assert outcome.state == health.TIMEOUT
+        assert outcome.detail == f"{note}; {self._NOTE}"
+        assert outcome.detail.count(note) == 1 and outcome.detail.count(self._NOTE) == 1
+        assert report.errors_by_source["reddit"] == note
 
     def test_public_first_failure_without_a_paid_key_carries_the_observed_notes(self):
         from lib import pipeline, reddit_keyless
