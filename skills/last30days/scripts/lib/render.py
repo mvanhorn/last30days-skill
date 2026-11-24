@@ -2209,8 +2209,8 @@ def render_full(report: schema.Report, save_path: str | None = None) -> str:
                     )
                 if odds_parts:
                     lines.append(f"  Odds: {' | '.join(odds_parts)}")
-                remaining = metadata.get("outcomes_remaining") or 0
-                if remaining:
+                remaining = metadata.get("outcomes_remaining")
+                if isinstance(remaining, int) and _is_finite_number(remaining) and remaining > 0:
                     lines.append(f"  (+{remaining} more outcomes)")
                 end_date = metadata.get("end_date")
                 if end_date:
@@ -2266,8 +2266,24 @@ def _ranked_job_items(
 def _format_item_engagement(item: schema.SourceItem) -> str:
     """Format engagement metrics for a SourceItem in the full dump."""
     eng = item.engagement
-    if not eng:
+    if not isinstance(eng, dict) or not eng:
         return ""
+
+    def _safe_val(val: object) -> str:
+        if val in (None, 0, 0.0, "") or isinstance(val, bool):
+            return ""
+        if isinstance(val, (int, float)):
+            if not _is_finite_number(val):
+                return ""
+            return _format_number(val)
+        numeric = _coerce_numeric(val)
+        if numeric is not None:
+            return _format_number(numeric) if numeric != 0 else ""
+        try:
+            return _safe_title(str(val))
+        except ValueError:
+            return ""
+
     parts = []
     for key in [
         "score",
@@ -2287,8 +2303,9 @@ def _format_item_engagement(item: schema.SourceItem) -> str:
         if key == "score" and item.source == "reddit" and reddit_refs.score_pending(item.metadata):
             parts.append("score pending")
             continue
-        if val is not None and val != 0:
-            parts.append(f"{val} {key}")
+        formatted = _safe_val(val)
+        if formatted:
+            parts.append(f"{formatted} {key}")
     # Same drift as the source list above: this allowlist silently blanks the
     # engagement of any source whose metric is not on it (trustpilot's
     # `reviews`/`trustScore` today), so the item renders an empty `[]` in the
@@ -2297,8 +2314,9 @@ def _format_item_engagement(item: schema.SourceItem) -> str:
     # already render fine.
     if not parts:
         for key, val in sorted(eng.items()):
-            if val not in (None, 0, ""):
-                parts.append(f"{val} {key}")
+            formatted = _safe_val(val)
+            if formatted:
+                parts.append(f"{formatted} {key}")
     return ", ".join(parts) if parts else ""
 
 
@@ -3881,13 +3899,14 @@ _FOOTER_SOURCES: list[tuple[str, str, str, str, list[tuple[str, str]]]] = [
 def _sum_engagement(items: list[schema.SourceItem], key: str) -> int:
     total = 0
     for item in items:
-        value = item.engagement.get(key) if item.engagement else None
-        if value in (None, ""):
+        engagement = item.engagement if isinstance(item.engagement, dict) else {}
+        numeric = _coerce_numeric(engagement.get(key))
+        if numeric is None:
             continue
-        try:
-            total += int(value)
-        except (TypeError, ValueError):
-            continue
+        next_total = total + int(numeric)
+        if not _is_finite_number(next_total):
+            return 0
+        total = next_total
     return total
 
 
@@ -3973,7 +3992,7 @@ def _build_source_footer_lines(
         counted = _on_topic_items(report, items)
         for eng_key, word in engagement_fields:
             total = _sum_engagement(counted, eng_key)
-            if total > 0:
+            if total > 0 and _is_finite_number(total):
                 total_str = f"{total:,}" if total >= 1000 else str(total)
                 parts.append(f"{total_str} {word}")
         # YouTube: always append "M/N with transcripts" so a zero-transcript run
@@ -4849,15 +4868,18 @@ def _voice_post_engagement(item: schema.SourceItem) -> int | None:
     Sources name reposts and replies differently (TikTok ``shares``, Instagram
     ``comments``); the first key present in each group counts.
     """
-    engagement = item.engagement or {}
+    engagement = item.engagement if isinstance(item.engagement, dict) else {}
     total = 0
     found = False
     for keys in _VOICE_ENGAGEMENT_KEYS:
         for key in keys:
             value = engagement.get(key)
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
+            if not _is_finite_number(value):
                 continue
-            total += max(int(value), 0)
+            next_total = total + max(int(value), 0)
+            if not _is_finite_number(next_total):
+                continue
+            total = next_total
             found = True
             break
     return total if found else None
@@ -4907,7 +4929,16 @@ def _rank_voice_handles(
         is_subject = bool(subject) and key.lstrip("@") == subject
         if measured and sum(counted) < _VOICE_MIN_ENGAGEMENT and not is_subject:
             continue
-        score = sum(math.log1p(v) for v in counted)
+        score = 0.0
+        for v in counted:
+            if not _is_finite_number(v) or v < 0:
+                continue
+            try:
+                term = math.log1p(float(v))
+            except (ValueError, OverflowError):
+                continue
+            if math.isfinite(term):
+                score += term
         ranked.append((score, min(len(values), _VOICE_POSTS_PER_HANDLE), spelling[key]))
     ranked.sort(key=lambda entry: (-entry[0], -entry[1], entry[2].lower()))
     return [handle for _, _, handle in ranked]
@@ -5512,8 +5543,9 @@ def _subject_x_handle(report: schema.Report) -> str:
 
 
 def _post_likes(item: schema.SourceItem):
-    likes = (item.engagement or {}).get("likes")
-    return likes if isinstance(likes, (int, float)) and not isinstance(likes, bool) else None
+    engagement = item.engagement if isinstance(item.engagement, dict) else {}
+    likes = engagement.get("likes")
+    return likes if _is_finite_number(likes) else None
 
 
 def _render_subject_posts(
@@ -5564,7 +5596,7 @@ def _render_subject_posts(
 
 
 def _polymarket_percent(price: float) -> str:
-    return f"{price * 100:.0f}%" if price >= 0.1 else f"{price * 100:.1f}%"
+    return _format_polymarket_pct(price) or ""
 
 
 # An outcome under this is left off an odds line after the first: it says
@@ -5578,9 +5610,9 @@ def _odds_points(move) -> str:
     if not (isinstance(move, (list, tuple)) and len(move) == 2):
         return ""
     points, period = move
-    if isinstance(points, bool) or not isinstance(points, (int, float)) or not points:
+    if not _is_finite_number(points) or not points:
         return ""
-    size = f"{abs(points):.1f}".rstrip("0").rstrip(".")
+    size = f"{abs(float(points)):.1f}".rstrip("0").rstrip(".")
     unit = "pt" if size == "1" else "pts"
     return f" ({'up' if points > 0 else 'down'} {size} {unit} {_one_line_quote(period, 12)})"
 
@@ -5607,35 +5639,40 @@ def _odds_subject(text: str) -> str:
 def _polymarket_odds(item: schema.SourceItem) -> dict | None:
     """The stored odds summary, or one built from the listed outcomes for an
     item saved before the parser stored it."""
-    odds = item.metadata.get("odds")
+    metadata = item.metadata if isinstance(item.metadata, dict) else {}
+    odds = metadata.get("odds")
     if isinstance(odds, dict) and isinstance(odds.get("parts"), list) and odds["parts"]:
         return odds
+    raw_outcomes = metadata.get("outcome_prices")
     pairs = [
         (name, price)
         for name, price in (
-            pair for pair in item.metadata.get("outcome_prices") or []
+            pair for pair in (raw_outcomes if isinstance(raw_outcomes, (list, tuple)) else [])
             if isinstance(pair, (list, tuple)) and len(pair) == 2
         )
-        if isinstance(price, (int, float)) and not isinstance(price, bool)
+        if _format_polymarket_pct(price) is not None
     ]
     if not pairs:
         return None
-    question = str(item.metadata.get("question") or item.title or "")
-    by_name = {str(name).casefold(): price for name, price in pairs}
+    question = str(metadata.get("question") or item.title or "")
+    by_name = {("" if name is None else str(name)).casefold(): price for name, price in pairs}
     if set(by_name) == {"yes", "no"}:
         # The snippet is this market's own movement, worded "up 2.5% this
         # week" for what is a change in points.
         match = _POLYMARKET_MOVEMENT_PARTS.match(" ".join((item.snippet or "").split()))
-        move = (
-            [float(match["size"]) * (1 if match["direction"] == "up" else -1), match["period"]]
-            if match
-            else None
-        )
+        move = None
+        if match:
+            delta = float(match["size"]) * (1 if match["direction"] == "up" else -1)
+            if _is_finite_number(delta):
+                move = [delta, match["period"]]
         return {"kind": "single", "subject": question,
                 "parts": [{"price": by_name["yes"], "move": move}]}
     return {
         "kind": "outcomes", "subject": item.title or question,
-        "parts": [{"label": str(name), "price": price, "move": None} for name, price in pairs[:3]],
+        "parts": [
+            {"label": "" if name is None else str(name), "price": price, "move": None}
+            for name, price in pairs[:3]
+        ],
     }
 
 
@@ -5654,11 +5691,18 @@ def _polymarket_matched_part(
     already listed among the outcomes that is neither a top contender nor
     matched through a related name.
     """
-    matched = item.metadata.get("matched_market")
+    metadata = item.metadata if isinstance(item.metadata, dict) else {}
+    matched = metadata.get("matched_market")
     if not isinstance(matched, dict):
         return None
     price = matched.get("price")
-    if isinstance(price, bool) or not isinstance(price, (int, float)):
+    if not _is_finite_number(price):
+        return None
+    try:
+        scaled_price = float(price) * 100.0
+    except OverflowError:
+        return None
+    if not math.isfinite(scaled_price):
         return None
     label = " ".join(str(matched.get("label") or "").split())
     same = next(
@@ -5672,12 +5716,18 @@ def _polymarket_matched_part(
     relation = str(matched.get("relation") or "").strip()
     related = bool(label and matched.get("related_name") and relation)
     rank, size = matched.get("rank"), matched.get("race_size")
-    contender = bool(matched.get("contender")) and isinstance(rank, int) and isinstance(size, int)
+    contender = (
+        bool(matched.get("contender"))
+        and isinstance(rank, int)
+        and _is_finite_number(rank)
+        and isinstance(size, int)
+        and _is_finite_number(size)
+    )
     if same is not None and not (related or contender):
         return None
     if related:
         label = f"{label} ({relation})"
-    percent = f"{price * 100:.1f}".removesuffix(".0") + "%"
+    percent = f"{scaled_price:.1f}".removesuffix(".0") + "%"
     text = f"{_odds_label(label)} {percent}" if label else percent
     if contender:
         text += f", #{rank} of {size}"
@@ -5699,13 +5749,16 @@ def _polymarket_odds_line(item: schema.SourceItem, window_year: str) -> str:
     is a top contender, and the relation when a related name matched
     (``Yaxel Lendeborg (player) 34.6%``).
     """
+    metadata = item.metadata if isinstance(item.metadata, dict) else {}
     odds = _polymarket_odds(item)
     if not odds:
         # The race's other odds were withheld; the subject's own outcome of
         # the race (the only kind that carries a rank) is still priced on its
         # own book.
-        own = item.metadata.get("matched_market")
-        if not isinstance(own, dict) or not isinstance(own.get("rank"), int):
+        own = metadata.get("matched_market")
+        if not isinstance(own, dict) or not (
+            isinstance(own.get("rank"), int) and _is_finite_number(own.get("rank"))
+        ):
             return ""
         matched = _polymarket_matched_part(item, [])
         subject = _odds_subject(str(item.title or ""))
@@ -5725,11 +5778,11 @@ def _polymarket_odds_line(item: schema.SourceItem, window_year: str) -> str:
         if not isinstance(entry, dict):
             continue
         price = entry.get("price")
-        if isinstance(price, bool) or not isinstance(price, (int, float)):
+        percent = _format_polymarket_pct(price)
+        if percent is None:
             continue
-        if (index or matched) and odds.get("kind") != "ladder" and price < _ODDS_LINE_MIN_PRICE:
+        if (index or matched) and odds.get("kind") != "ladder" and float(price) < _ODDS_LINE_MIN_PRICE:
             continue
-        percent = _polymarket_percent(price)
         by = entry.get("by")
         if odds.get("kind") == "ladder" and isinstance(by, (list, tuple)) and len(by) == 3:
             month, day, year = by
@@ -5777,8 +5830,8 @@ def _render_polymarket_markets(
         end_date = str(item.metadata.get("end_date") or "").strip()
         if end_date and odds.get("kind") != "ladder":
             parts.append(f"closes {_one_line_quote(end_date, 20)}")
-        remaining = item.metadata.get("outcomes_remaining") or 0
-        if isinstance(remaining, int) and remaining > 0:
+        remaining = item.metadata.get("outcomes_remaining")
+        if isinstance(remaining, int) and _is_finite_number(remaining) and remaining > 0:
             parts.append(f"+{remaining} more outcome{'s' if remaining != 1 else ''}")
         lines.append("- " + " — ".join(parts))
         if len(lines) >= limit:
@@ -5790,8 +5843,9 @@ def _quote_pool_item_floor(item: schema.SourceItem) -> int:
     """Votes an item's top community comment needs for the item to join the pool."""
     if item.source != "reddit":
         return _QUOTE_POOL_ITEM_MIN_TOP_VOTES
-    score = (item.engagement or {}).get("score")
-    if not isinstance(score, (int, float)) or isinstance(score, bool):
+    engagement = item.engagement if isinstance(item.engagement, dict) else {}
+    score = engagement.get("score")
+    if not _is_finite_number(score):
         return _QUOTE_POOL_ITEM_MIN_TOP_VOTES
     return min(
         _QUOTE_POOL_ITEM_MIN_TOP_VOTES,
@@ -5833,11 +5887,7 @@ def _quote_pool_has_vote(source: str, score) -> bool:
     """Whether a comment clears the one-vote floor of a vote-counting platform."""
     if source not in _QUOTE_POOL_VOTE_COUNTING_SOURCES:
         return True
-    return (
-        isinstance(score, (int, float))
-        and not isinstance(score, bool)
-        and score >= _QUOTE_POOL_MIN_VOTES
-    )
+    return _is_finite_number(score) and score >= _QUOTE_POOL_MIN_VOTES
 
 
 _BOT_AUTHOR = re.compile(

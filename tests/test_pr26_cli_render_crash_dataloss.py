@@ -1008,3 +1008,153 @@ def test_review_comparison_store_handles_none_or_partial_persist_report_return(
     rc = cli._main(parser, args, extra, command_started=1000.0)
     assert rc == 0
     assert "[last30days] Stored 3 new, 0 updated findings" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# Round 2 adversarial review regressions: Polymarket Markets helpers,
+# voice ranking overflow/NaN/Inf, _sum_engagement, _format_item_engagement
+# ---------------------------------------------------------------------------
+
+
+def test_review2_polymarket_markets_helpers_and_render_compact_handle_huge_and_none_metadata():
+    huge_400 = 10**400
+    huge_5000 = 10**5000
+    near_max = 10**308
+
+    # Direct calls with metadata=None must not crash.
+    none_meta = _make_item("pm-none", "polymarket", "Will Acme ship?")
+    none_meta.metadata = None  # type: ignore[assignment]
+    assert render._polymarket_odds(none_meta) is None
+    assert render._polymarket_matched_part(none_meta, []) is None
+    assert render._polymarket_odds_line(none_meta, "2026") == ""
+
+    # Pre-stored odds + matched_market + move with huge / overflowing / NaN values.
+    pm_stored = _make_item(
+        "pm-stored",
+        "polymarket",
+        "Will Acme launch v5?",
+        metadata={
+            "odds": {
+                "kind": "outcomes",
+                "subject": "Acme launch v5",
+                "parts": [
+                    {"label": "Overflow", "price": near_max, "move": [huge_400, "today"]},
+                    {"label": "Huge", "price": huge_400, "move": [float("nan"), "today"]},
+                    {"label": "Yes", "price": 0.5, "move": [2.0, "today"]},
+                ],
+            },
+            "matched_market": {
+                "label": "Acme",
+                "price": near_max,
+                "contender": True,
+                "rank": huge_5000,
+                "race_size": huge_5000,
+            },
+            "outcomes_remaining": huge_5000,
+        },
+    )
+    assert render._polymarket_matched_part(pm_stored, []) is None
+    assert render._odds_points([huge_400, "today"]) == ""
+    assert render._odds_points([float("nan"), "today"]) == ""
+    assert render._odds_points([float("inf"), "today"]) == ""
+    odds_line = render._polymarket_odds_line(pm_stored, "2026")
+    assert "Yes at 50% (up 2 pts today)" in odds_line
+    assert "Overflow" not in odds_line
+
+    # Compact + full rendering on outcome_prices with 10**400 and outcomes_remaining=10**5000.
+    pm_raw = _make_item(
+        "pm-raw",
+        "polymarket",
+        "Will Acme hit target?",
+        metadata={
+            "question": "Will Acme hit target?",
+            "outcome_prices": [("Huge", huge_400), ("Overflow", near_max), ("Yes", 0.5)],
+            "outcomes_remaining": huge_5000,
+        },
+    )
+    report = _make_report("Acme", items_by_source={"polymarket": [pm_raw, pm_stored, none_meta]})
+    compact = render.render_compact(report)
+    assert "## Polymarket Markets" in compact
+    assert "Yes at 50%" in compact
+    assert "more outcome" not in compact
+
+    full = render.render_full(report)
+    assert "Odds: Yes: 50%" in full
+    assert "more outcomes" not in full
+
+
+def test_review2_voice_ranking_handles_huge_nan_inf_and_overflowing_engagement():
+    huge_400 = 10**400
+    near_max = 10**308
+
+    items = [
+        _make_item("x1", "x", "Acme news 1", author="huge_voice", engagement={"likes": huge_400}),
+        _make_item("x2", "x", "Acme news 2", author="nan_voice", engagement={"likes": float("nan")}),
+        _make_item("x3", "x", "Acme news 3", author="inf_voice", engagement={"likes": float("inf")}),
+        _make_item(
+            "x4",
+            "x",
+            "Acme news 4",
+            author="sum_overflow",
+            engagement={"likes": near_max, "reposts": near_max},
+        ),
+        _make_item("x5", "x", "Acme news 5", author="normal_voice", engagement={"likes": 120}),
+    ]
+    assert render._voice_post_engagement(items[0]) is None
+    assert render._voice_post_engagement(items[1]) is None
+    assert render._voice_post_engagement(items[2]) is None
+    assert render._voice_post_engagement(items[3]) == near_max
+    assert render._voice_post_engagement(items[4]) == 120
+
+    report = _make_report("Acme", items_by_source={"x": items})
+    ranked = render._rank_voice_handles(items)
+    assert "@normal_voice" in ranked
+    assert "@sum_overflow" in ranked
+    compact = render.render_compact(report)
+    assert "@normal_voice" in compact
+
+
+def test_review2_sum_engagement_footer_and_format_item_engagement_handle_huge_ints():
+    huge_5000 = 10**5000
+    near_max = 10**308
+
+    hn_huge = _make_item(
+        "hn-huge",
+        "hackernews",
+        "Acme on HN",
+        engagement={"points": huge_5000, "comments": 12},
+    )
+    hn_ok = _make_item(
+        "hn-ok",
+        "hackernews",
+        "Acme HN follow-up",
+        engagement={"points": 45, "comments": 3},
+    )
+    x_overflow_a = _make_item("xa", "x", "Acme A", author="alice", engagement={"likes": near_max})
+    x_overflow_b = _make_item("xb", "x", "Acme B", author="bob", engagement={"likes": near_max})
+    custom_huge = _make_item(
+        "tp1",
+        "trustpilot",
+        "Acme Trustpilot",
+        engagement={"custom_metric": huge_5000, "other": 7},
+    )
+
+    assert render._sum_engagement([hn_huge, hn_ok], "points") == 45
+    assert render._sum_engagement([x_overflow_a, x_overflow_b], "likes") == 0
+    assert render._format_item_engagement(hn_huge) == "12 comments"
+    assert render._format_item_engagement(custom_huge) == "7 other"
+
+    report = _make_report(
+        "Acme",
+        items_by_source={
+            "hackernews": [hn_huge, hn_ok],
+            "x": [x_overflow_a, x_overflow_b],
+            "trustpilot": [custom_huge],
+        },
+    )
+    footer_lines = "\n".join(render._build_source_footer_lines(report))
+    assert "45 points" in footer_lines
+    assert "15 comments" in footer_lines
+    full = render.render_full(report)
+    assert "[12 comments]" in full
+    assert "[7 other]" in full
