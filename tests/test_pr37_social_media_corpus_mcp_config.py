@@ -196,7 +196,7 @@ class TestHigh180BlueskySessionConcurrency:
         keys = list(bluesky._session_cache.keys())
         assert keys == [("alice.bsky.social", expected_digest)]
         assert all(secret_pw not in str(k) for k in keys)
-        assert all(secret_pw not in str(k) for k in bluesky._key_locks.keys())
+        assert all(secret_pw not in str(k) for k in bluesky._inflight_auth.keys())
 
     def test_cross_account_and_password_change_isolation(self) -> None:
         issued = iter([
@@ -286,7 +286,7 @@ class TestHigh180BlueskySessionConcurrency:
             assert create_calls == 1
             assert elapsed < 1.0
             assert all(r["posts"] == [] and "503" in r["error"] for r in results)
-            assert bluesky._inflight_logins == {}
+            assert bluesky._inflight_auth == {}
 
             # A subsequent search after the in-flight attempt completes tries again.
             fail_first = False
@@ -335,7 +335,7 @@ class TestHigh180BlueskySessionConcurrency:
         assert len(leader_exc) == 1 and isinstance(leader_exc[0], KeyboardInterrupt)
         assert waiter_result[0][0] is None
         assert "KeyboardInterrupt" in (waiter_result[0][1] or "")
-        assert bluesky._inflight_logins == {}
+        assert bluesky._inflight_auth == {}
 
     def test_concurrent_401_single_use_refresh_rotation_reuses_fresh_token(self) -> None:
         cfg = {"BSKY_HANDLE": "alice.bsky.social", "BSKY_APP_PASSWORD": "abcd-efgh-ijkl-mnop"}
@@ -456,6 +456,144 @@ class TestHigh180BlueskySessionConcurrency:
         assert result["posts"] == []
         assert "remained unauthorized" in result["error"]
         assert cred_key not in bluesky._session_cache
+
+    def test_401_recovery_joins_inflight_login_without_overwriting_newer_session(self) -> None:
+        cfg = {"BSKY_HANDLE": "alice.bsky.social", "BSKY_APP_PASSWORD": "abcd-efgh-ijkl-mnop"}
+        cred_key = bluesky._credential_key(cfg["BSKY_HANDLE"], cfg["BSKY_APP_PASSWORD"])
+        bluesky._session_cache[cred_key] = bluesky._SessionEntry(
+            access_token="tok-old",
+            refresh_token="ref-old",
+            created_at=time.monotonic() - bluesky._TOKEN_MAX_AGE_SECONDS - 10,
+        )
+
+        login_entered = threading.Event()
+        release_login = threading.Event()
+        state_lock = threading.Lock()
+        session_calls = 0
+        refresh_calls = 0
+
+        def fake_request(method, url, **kwargs):
+            nonlocal session_calls, refresh_calls
+            if url == bluesky.BSKY_SESSION_URL:
+                with state_lock:
+                    session_calls += 1
+                login_entered.set()
+                assert release_login.wait(timeout=5)
+                return {"accessJwt": "tok-newer-login", "refreshJwt": "ref-newer-login"}
+            if url == bluesky.BSKY_REFRESH_URL:
+                with state_lock:
+                    refresh_calls += 1
+                raise AssertionError("refreshSession must not race an in-flight createSession")
+            assert kwargs["headers"] == {"Authorization": "Bearer tok-newer-login"}
+            return {"posts": [{"uri": "at://did/app.bsky.feed.post/ok", "author": {"handle": "u"}, "record": {"text": "fresh"}}]}
+
+        login_result: list[dict] = []
+        recovery_result: list[tuple] = []
+
+        def run_expired_search() -> None:
+            login_result.append(
+                bluesky.search_bluesky("ai", "2026-08-01", "2026-09-01", config=cfg)
+            )
+
+        def run_401_recovery() -> None:
+            assert login_entered.wait(timeout=5)
+            recovery_result.append(
+                bluesky._recover_session(
+                    cfg["BSKY_HANDLE"], cfg["BSKY_APP_PASSWORD"], cred_key, "tok-old"
+                )
+            )
+
+        with mock.patch.object(bluesky.http, "request", side_effect=fake_request):
+            t_login = threading.Thread(target=run_expired_search)
+            t_recover = threading.Thread(target=run_401_recovery)
+            t_login.start()
+            t_recover.start()
+            assert login_entered.wait(timeout=5)
+            # Wait briefly so t_recover enters _recover_session and awaits _inflight_auth.
+            time.sleep(0.05)
+            release_login.set()
+            t_login.join(timeout=5)
+            t_recover.join(timeout=5)
+
+        assert not t_login.is_alive() and not t_recover.is_alive()
+        assert session_calls == 1
+        assert refresh_calls == 0
+        assert "error" not in login_result[0]
+        assert len(login_result[0]["posts"]) == 1
+        assert recovery_result == [("tok-newer-login", None, True)]
+        entry = bluesky._session_cache[cred_key]
+        assert entry.access_token == "tok-newer-login"
+        assert entry.refresh_token == "ref-newer-login"
+        assert bluesky._inflight_auth == {}
+
+    def test_expired_login_joins_inflight_401_recovery_without_racing_refresh(self) -> None:
+        cfg = {"BSKY_HANDLE": "alice.bsky.social", "BSKY_APP_PASSWORD": "abcd-efgh-ijkl-mnop"}
+        cred_key = bluesky._credential_key(cfg["BSKY_HANDLE"], cfg["BSKY_APP_PASSWORD"])
+        bluesky._session_cache[cred_key] = bluesky._SessionEntry(
+            access_token="tok-old",
+            refresh_token="ref-old",
+            created_at=time.monotonic() - bluesky._TOKEN_MAX_AGE_SECONDS - 10,
+        )
+
+        refresh_entered = threading.Event()
+        release_refresh = threading.Event()
+        state_lock = threading.Lock()
+        session_calls = 0
+        refresh_calls = 0
+
+        def fake_request(method, url, **kwargs):
+            nonlocal session_calls, refresh_calls
+            if url == bluesky.BSKY_REFRESH_URL:
+                with state_lock:
+                    refresh_calls += 1
+                refresh_entered.set()
+                assert release_refresh.wait(timeout=5)
+                return {"accessJwt": "tok-refreshed", "refreshJwt": "ref-refreshed"}
+            if url == bluesky.BSKY_SESSION_URL:
+                with state_lock:
+                    session_calls += 1
+                raise AssertionError("createSession must not race an in-flight 401 refresh")
+            assert kwargs["headers"] == {"Authorization": "Bearer tok-refreshed"}
+            return {"posts": [{"uri": "at://did/app.bsky.feed.post/ok", "author": {"handle": "u"}, "record": {"text": "refreshed"}}]}
+
+        recovery_result: list[tuple] = []
+        search_result: list[dict] = []
+
+        def run_401_recovery() -> None:
+            recovery_result.append(
+                bluesky._recover_session(
+                    cfg["BSKY_HANDLE"], cfg["BSKY_APP_PASSWORD"], cred_key, "tok-old"
+                )
+            )
+
+        def run_expired_search() -> None:
+            assert refresh_entered.wait(timeout=5)
+            search_result.append(
+                bluesky.search_bluesky("ai", "2026-08-01", "2026-09-01", config=cfg)
+            )
+
+        with mock.patch.object(bluesky.http, "request", side_effect=fake_request):
+            t_recover = threading.Thread(target=run_401_recovery)
+            t_search = threading.Thread(target=run_expired_search)
+            t_recover.start()
+            t_search.start()
+            assert refresh_entered.wait(timeout=5)
+            # Wait briefly so t_search enters _create_session and awaits _inflight_auth.
+            time.sleep(0.05)
+            release_refresh.set()
+            t_recover.join(timeout=5)
+            t_search.join(timeout=5)
+
+        assert not t_recover.is_alive() and not t_search.is_alive()
+        assert refresh_calls == 1
+        assert session_calls == 0
+        assert recovery_result == [("tok-refreshed", None, False)]
+        assert "error" not in search_result[0]
+        assert len(search_result[0]["posts"]) == 1
+        entry = bluesky._session_cache[cred_key]
+        assert entry.access_token == "tok-refreshed"
+        assert entry.refresh_token == "ref-refreshed"
+        assert bluesky._inflight_auth == {}
 
 
 # ---------------------------------------------------------------------------

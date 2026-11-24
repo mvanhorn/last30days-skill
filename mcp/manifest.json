@@ -153,14 +153,14 @@
     "x_bearer_token": {
       "type": "string",
       "title": "X_BEARER_TOKEN",
-      "description": "X API v2 app-only bearer token. Searches X through the official X API (recent posts, about the last week, unless your X developer project has full-archive access). Setting this in Claude Desktop selects the xapi backend automatically unless LAST30DAYS_X_BACKEND or a higher-priority X backend (XAI_API_KEY, XQUIK_API_KEY, or AUTH_TOKEN+CT0) is configured. Create an app in the X developer console at https://developer.x.com/ and copy its bearer token.",
+      "description": "X API v2 app-only bearer token. Searches X through the official X API (recent posts, about the last week, unless your X developer project has full-archive access). Without a LAST30DAYS_X_BACKEND pin, setting this in Claude Desktop enables xapi as a paid fallback. It can spend X API credits if higher-priority routes (AUTH_TOKEN+CT0, XAI_API_KEY, xurl, or XQUIK_API_KEY) are unavailable, fail, or return no results. Create an app in the X developer console at https://developer.x.com/ and copy its bearer token.",
       "sensitive": true,
       "required": false
     },
     "last30days_x_backend": {
       "type": "string",
       "title": "LAST30DAYS_X_BACKEND",
-      "description": "Optional X search backend override (xapi, xai, bird, xurl, xquik, grok). Leave blank or set to auto for automatic selection (uses xapi when X_BEARER_TOKEN is configured without a usable higher-priority X backend such as XAI_API_KEY, XQUIK_API_KEY, or AUTH_TOKEN+CT0).",
+      "description": "Optional X search backend override (xapi, xai, bird, xurl, xquik, grok). Leave blank or set to auto for automatic selection (enables xapi as a paid fallback when X_BEARER_TOKEN is set and higher-priority routes like AUTH_TOKEN+CT0, XAI_API_KEY, xurl, or XQUIK_API_KEY are unavailable, fail, or return no results).",
       "sensitive": false,
       "required": false
     }

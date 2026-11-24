@@ -179,31 +179,20 @@ class _SessionEntry:
 
 
 @dataclass
-class _InflightLogin:
+class _InflightAuth:
     event: threading.Event
-    result: tuple[Optional[str], Optional[str], Optional[int]] = (
-        None,
-        "Bluesky session creation failed (unknown error)",
-        None,
-    )
+    token: Optional[str] = None
+    error_msg: Optional[str] = "Bluesky authentication failed (unknown error)"
+    error_status: Optional[int] = None
+    did_reauth: bool = False
 
 
-@dataclass
-class _InflightRecovery:
-    event: threading.Event
-    result: tuple[Optional[str], Optional[str], bool] = (
-        None,
-        "Bluesky session refresh failed (unknown error)",
-        False,
-    )
-
-
-# Module-level session cache keyed by (handle, sha256(app_password)).
+# Module-level session cache and unified singleflight auth slots keyed by
+# (handle, sha256(app_password)). _session_lock guards in-memory state only and
+# is never held across network I/O or event waits.
 _session_lock = threading.Lock()
-_key_locks: Dict[tuple[str, str], threading.Lock] = {}
 _session_cache: Dict[tuple[str, str], _SessionEntry] = {}
-_inflight_logins: Dict[tuple[str, str], _InflightLogin] = {}
-_inflight_recoveries: Dict[tuple[tuple[str, str], str], _InflightRecovery] = {}
+_inflight_auth: Dict[tuple[str, str], _InflightAuth] = {}
 _cache_generation: int = 0
 _TOKEN_MAX_AGE_SECONDS = 5400  # 90 minutes (conservative, tokens last ~2 hours)
 
@@ -215,15 +204,6 @@ def _log(msg: str):
 def _credential_key(handle: str, app_password: str) -> tuple[str, str]:
     digest = hashlib.sha256(app_password.encode("utf-8")).hexdigest()
     return (handle, digest)
-
-
-def _get_key_lock(cred_key: tuple[str, str]) -> threading.Lock:
-    with _session_lock:
-        lock = _key_locks.get(cred_key)
-        if lock is None:
-            lock = threading.Lock()
-            _key_locks[cred_key] = lock
-        return lock
 
 
 def _evict_session(
@@ -283,86 +263,12 @@ def _execute_create_session_request(
         return None, error_msg, None
 
 
-def _create_session(
-    handle: str,
-    app_password: str,
-    *,
-    force_new: bool = False,
-) -> tuple[Optional[str], Optional[str], Optional[int]]:
-    """Create or reuse a cached AT Protocol session for ``(handle, app_password)``.
-
-    Uses per-account singleflight coordination so concurrent callers share a
-    single in-flight login attempt (both success and failure) instead of
-    queuing sequential retries behind a lock.
-
-    Returns:
-        ``(access_token, error_msg, error_status)`` tuple.
-    """
-    cred_key = _credential_key(handle, app_password)
-    with _session_lock:
-        generation = _cache_generation
-        entry = _session_cache.get(cred_key)
-        if not force_new and entry is not None:
-            if time.monotonic() - entry.created_at < _TOKEN_MAX_AGE_SECONDS:
-                return entry.access_token, None, None
-            _log("Session token expired, re-authenticating")
-            _session_cache.pop(cred_key, None)
-        elif force_new and entry is not None:
-            _session_cache.pop(cred_key, None)
-
-        existing = _inflight_logins.get(cred_key)
-        if existing is not None:
-            inflight = existing
-            is_leader = False
-        else:
-            inflight = _InflightLogin(event=threading.Event())
-            _inflight_logins[cred_key] = inflight
-            is_leader = True
-
-    if not is_leader:
-        inflight.event.wait()
-        return inflight.result
-
-    result: tuple[Optional[str], Optional[str], Optional[int]] = (
-        None,
-        "Bluesky session creation failed (unknown error)",
-        None,
-    )
-    try:
-        result = _execute_create_session_request(handle, app_password, cred_key, generation)
-        return result
-    except BaseException as exc:
-        result = (None, f"Session request failed: {type(exc).__name__}", None)
-        raise
-    finally:
-        inflight.result = result
-        with _session_lock:
-            if _inflight_logins.get(cred_key) is inflight:
-                _inflight_logins.pop(cred_key, None)
-        inflight.event.set()
-
-
-def _refresh_session_locked(
+def _execute_refresh_request(
     refresh_jwt: Optional[str],
     *,
     cred_key: Optional[tuple[str, str]] = None,
-    failed_token: Optional[str] = None,
+    generation: Optional[int] = None,
 ) -> tuple[Optional[str], Optional[str], Optional[int]]:
-    generation: Optional[int] = None
-    if cred_key is not None:
-        with _session_lock:
-            generation = _cache_generation
-            entry = _session_cache.get(cred_key)
-            if (
-                failed_token is not None
-                and entry is not None
-                and entry.access_token != failed_token
-                and time.monotonic() - entry.created_at < _TOKEN_MAX_AGE_SECONDS
-            ):
-                return entry.access_token, None, None
-            if refresh_jwt is None and entry is not None:
-                refresh_jwt = entry.refresh_token
-
     clean_refresh, token_err = auth_safety.normalize_header_token(refresh_jwt)
     if token_err:
         error_msg = f"Bluesky session refresh failed: {token_err}"
@@ -385,7 +291,7 @@ def _refresh_session_locked(
         new_refresh = response.get("refreshJwt") or clean_refresh
         if cred_key is not None:
             with _session_lock:
-                if _cache_generation == generation:
+                if generation is None or _cache_generation == generation:
                     _session_cache[cred_key] = _SessionEntry(
                         access_token=token,
                         refresh_token=new_refresh,
@@ -406,6 +312,72 @@ def _refresh_session_locked(
         return None, error_msg, None
 
 
+def _create_session(
+    handle: str,
+    app_password: str,
+    *,
+    force_new: bool = False,
+) -> tuple[Optional[str], Optional[str], Optional[int]]:
+    """Create or reuse a cached AT Protocol session for ``(handle, app_password)``.
+
+    Shares a unified per-account singleflight slot with 401 recovery so login
+    and refresh never run concurrently for the same account and concurrent
+    callers share both success and failure outcomes.
+
+    Returns:
+        ``(access_token, error_msg, error_status)`` tuple.
+    """
+    cred_key = _credential_key(handle, app_password)
+    expired_cached = False
+    with _session_lock:
+        generation = _cache_generation
+        existing = _inflight_auth.get(cred_key)
+        if existing is not None:
+            inflight = existing
+            is_leader = False
+        else:
+            entry = _session_cache.get(cred_key)
+            if not force_new and entry is not None:
+                if time.monotonic() - entry.created_at < _TOKEN_MAX_AGE_SECONDS:
+                    return entry.access_token, None, None
+            if entry is not None:
+                expired_cached = not force_new
+                _session_cache.pop(cred_key, None)
+            inflight = _InflightAuth(event=threading.Event())
+            _inflight_auth[cred_key] = inflight
+            is_leader = True
+
+    if not is_leader:
+        inflight.event.wait()
+        return inflight.token, inflight.error_msg, inflight.error_status
+
+    if expired_cached:
+        _log("Session token expired, re-authenticating")
+
+    token: Optional[str] = None
+    error_msg: Optional[str] = "Bluesky session creation failed (unknown error)"
+    error_status: Optional[int] = None
+    try:
+        token, error_msg, error_status = _execute_create_session_request(
+            handle, app_password, cred_key, generation,
+        )
+        return token, error_msg, error_status
+    except BaseException as exc:
+        token = None
+        error_msg = f"Session request failed: {type(exc).__name__}"
+        error_status = None
+        raise
+    finally:
+        inflight.token = token
+        inflight.error_msg = error_msg
+        inflight.error_status = error_status
+        inflight.did_reauth = True
+        with _session_lock:
+            if _inflight_auth.get(cred_key) is inflight:
+                _inflight_auth.pop(cred_key, None)
+        inflight.event.set()
+
+
 def _refresh_session(
     refresh_jwt: Optional[str],
     *,
@@ -415,24 +387,60 @@ def _refresh_session(
     """Refresh an access token using an AT Protocol refresh JWT.
 
     Returns:
-        ``(access_token, error_msg, error_status)`` tuple. When ``cred_key`` and
-        ``failed_token`` are supplied and another thread already rotated the
-        cached token past ``failed_token``, returns that fresh token without
-        re-sending the consumed single-use refresh JWT.
+        ``(access_token, error_msg, error_status)`` tuple. When ``cred_key`` is
+        supplied, coordinates via the unified per-account singleflight slot so
+        refresh never races a concurrent login or another refresh.
     """
-    if cred_key is not None:
-        key_lock = _get_key_lock(cred_key)
-        with key_lock:
-            return _refresh_session_locked(
-                refresh_jwt,
-                cred_key=cred_key,
-                failed_token=failed_token,
-            )
-    return _refresh_session_locked(
-        refresh_jwt,
-        cred_key=None,
-        failed_token=failed_token,
-    )
+    if cred_key is None:
+        return _execute_refresh_request(refresh_jwt, cred_key=None, generation=None)
+
+    with _session_lock:
+        generation = _cache_generation
+        entry = _session_cache.get(cred_key)
+        if (
+            failed_token is not None
+            and entry is not None
+            and entry.access_token != failed_token
+            and time.monotonic() - entry.created_at < _TOKEN_MAX_AGE_SECONDS
+        ):
+            return entry.access_token, None, None
+        existing = _inflight_auth.get(cred_key)
+        if existing is not None:
+            inflight = existing
+            is_leader = False
+        else:
+            if refresh_jwt is None and entry is not None:
+                refresh_jwt = entry.refresh_token
+            inflight = _InflightAuth(event=threading.Event())
+            _inflight_auth[cred_key] = inflight
+            is_leader = True
+
+    if not is_leader:
+        inflight.event.wait()
+        return inflight.token, inflight.error_msg, inflight.error_status
+
+    token: Optional[str] = None
+    error_msg: Optional[str] = "Bluesky session refresh failed (unknown error)"
+    error_status: Optional[int] = None
+    try:
+        token, error_msg, error_status = _execute_refresh_request(
+            refresh_jwt, cred_key=cred_key, generation=generation,
+        )
+        return token, error_msg, error_status
+    except BaseException as exc:
+        token = None
+        error_msg = f"Bluesky session refresh failed: {type(exc).__name__}"
+        error_status = None
+        raise
+    finally:
+        inflight.token = token
+        inflight.error_msg = error_msg
+        inflight.error_status = error_status
+        inflight.did_reauth = False
+        with _session_lock:
+            if _inflight_auth.get(cred_key) is inflight:
+                _inflight_auth.pop(cred_key, None)
+        inflight.event.set()
 
 
 def _recover_session(
@@ -441,15 +449,14 @@ def _recover_session(
     cred_key: tuple[str, str],
     failed_token: str,
 ) -> tuple[Optional[str], Optional[str], bool]:
-    """Refresh or re-authenticate once after a 401, with singleflight coalescing.
+    """Refresh or re-authenticate once after a 401 via the unified auth slot.
 
-    Returns ``(new_token, error_msg, did_reauth)``. Concurrent 401 callers for
-    the same ``(cred_key, failed_token)`` share a single recovery attempt (both
-    success and failure) without re-sending consumed refresh JWTs or queuing
-    sequential retries.
+    Returns ``(new_token, error_msg, did_reauth)``. Because login and recovery
+    share ``_inflight_auth[cred_key]``, a slow refresh can never run
+    concurrently with or overwrite a newer login for the same account.
     """
-    recovery_key = (cred_key, failed_token)
     with _session_lock:
+        generation = _cache_generation
         entry = _session_cache.get(cred_key)
         if (
             entry is not None
@@ -457,75 +464,81 @@ def _recover_session(
             and time.monotonic() - entry.created_at < _TOKEN_MAX_AGE_SECONDS
         ):
             return entry.access_token, None, False
-        existing = _inflight_recoveries.get(recovery_key)
+        existing = _inflight_auth.get(cred_key)
         if existing is not None:
             inflight = existing
             is_leader = False
         else:
-            inflight = _InflightRecovery(event=threading.Event())
-            _inflight_recoveries[recovery_key] = inflight
+            inflight = _InflightAuth(event=threading.Event())
+            _inflight_auth[cred_key] = inflight
+            refresh_jwt = entry.refresh_token if entry is not None else None
             is_leader = True
 
     if not is_leader:
         inflight.event.wait()
-        return inflight.result
+        if inflight.token and inflight.token != failed_token:
+            return inflight.token, None, inflight.did_reauth
+        with _session_lock:
+            entry = _session_cache.get(cred_key)
+            if (
+                entry is not None
+                and entry.access_token != failed_token
+                and time.monotonic() - entry.created_at < _TOKEN_MAX_AGE_SECONDS
+            ):
+                return entry.access_token, None, inflight.did_reauth
+        if inflight.token is not None:
+            return inflight.token, None, inflight.did_reauth
+        return (
+            None,
+            inflight.error_msg or "Bluesky session refresh failed (unknown error)",
+            inflight.did_reauth,
+        )
 
-    result: tuple[Optional[str], Optional[str], bool] = (
-        None,
-        "Bluesky session refresh failed (unknown error)",
-        False,
-    )
+    token: Optional[str] = None
+    error_msg: Optional[str] = "Bluesky session refresh failed (unknown error)"
+    error_status: Optional[int] = None
+    did_reauth = False
     try:
-        key_lock = _get_key_lock(cred_key)
-        with key_lock:
-            with _session_lock:
-                entry = _session_cache.get(cred_key)
-                if (
-                    entry is not None
-                    and entry.access_token != failed_token
-                    and time.monotonic() - entry.created_at < _TOKEN_MAX_AGE_SECONDS
-                ):
-                    result = (entry.access_token, None, False)
-                    return result
-                refresh_jwt = entry.refresh_token if entry is not None else None
-
-            _log("Session expired; refreshing access token and retrying once")
-            if refresh_jwt:
-                refreshed_token, refresh_error, refresh_status = _refresh_session_locked(
-                    refresh_jwt,
-                    cred_key=cred_key,
-                    failed_token=failed_token,
-                )
-                if refreshed_token:
-                    result = (refreshed_token, None, False)
-                    return result
-                if refresh_status not in (400, 401):
-                    result = (None, refresh_error, False)
-                    return result
-
-            _log("Refresh token missing or rejected; recreating session once")
-            new_token, create_error, _create_status = _create_session(
-                handle,
-                app_password,
-                force_new=True,
+        _log("Session expired; refreshing access token and retrying once")
+        if refresh_jwt:
+            refreshed_token, refresh_error, refresh_status = _execute_refresh_request(
+                refresh_jwt, cred_key=cred_key, generation=generation,
             )
-            if not new_token:
-                result = (
-                    None,
-                    create_error or "Bluesky session creation failed (unknown error)",
-                    True,
-                )
-                return result
-            result = (new_token, None, True)
-            return result
+            if refreshed_token:
+                token, error_msg, error_status, did_reauth = refreshed_token, None, None, False
+                return token, error_msg, did_reauth
+            if refresh_status not in (400, 401):
+                token, error_msg, error_status, did_reauth = None, refresh_error, refresh_status, False
+                return token, error_msg, did_reauth
+
+        _log("Refresh token missing or rejected; recreating session once")
+        did_reauth = True
+        with _session_lock:
+            if _cache_generation == generation:
+                _session_cache.pop(cred_key, None)
+        new_token, create_error, create_status = _execute_create_session_request(
+            handle, app_password, cred_key, generation,
+        )
+        if not new_token:
+            token = None
+            error_msg = create_error or "Bluesky session creation failed (unknown error)"
+            error_status = create_status
+            return token, error_msg, did_reauth
+        token, error_msg, error_status = new_token, None, None
+        return token, error_msg, did_reauth
     except BaseException as exc:
-        result = (None, f"Bluesky session refresh failed: {type(exc).__name__}", False)
+        token = None
+        error_msg = f"Bluesky session refresh failed: {type(exc).__name__}"
+        error_status = None
         raise
     finally:
-        inflight.result = result
+        inflight.token = token
+        inflight.error_msg = error_msg
+        inflight.error_status = error_status
+        inflight.did_reauth = did_reauth
         with _session_lock:
-            if _inflight_recoveries.get(recovery_key) is inflight:
-                _inflight_recoveries.pop(recovery_key, None)
+            if _inflight_auth.get(cred_key) is inflight:
+                _inflight_auth.pop(cred_key, None)
         inflight.event.set()
 
 
@@ -533,8 +546,7 @@ def _reset_session_cache() -> None:
     global _cache_generation
     with _session_lock:
         _session_cache.clear()
-        _inflight_logins.clear()
-        _inflight_recoveries.clear()
+        _inflight_auth.clear()
         _cache_generation += 1
 
 
