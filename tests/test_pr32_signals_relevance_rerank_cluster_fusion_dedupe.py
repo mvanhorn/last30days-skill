@@ -877,6 +877,127 @@ class TestHigh109DedupeUrlNormalization:
         # Caller input was not mutated in place.
         assert "matched_market" not in unmatched.metadata
 
+    def test_polymarket_unmatched_merged_with_matched_keeps_full_bundle_coherent_and_ranked(self):
+        from lib import polymarket
+
+        fresh_unmatched = _source_item(
+            "pm-fresh",
+            "polymarket",
+            title="Pro Football: 2027 Champion (lead market)",
+            body="Wrong lead market text that is much longer than the matched copy body",
+            snippet="Down 9% on unrelated favorite",
+            url="https://polymarket.com/event/nfl-2027?utm_source=drill",
+            engagement={"volume": 900_000, "liquidity": 250_000},
+            metadata={
+                "event_id": "evt-2027",
+                "question": "Will the Chiefs win the 2027 championship?",
+                "end_date": "2026-12-01",
+                "odds": {"kind": "outcomes", "subject": "Chiefs", "entries": [{"label": "Chiefs", "price": 0.42}]},
+                "headline": "Chiefs 42%",
+                "outcome_prices": [("Chiefs", 0.42)],
+                "outcome_questions": ["Will the Chiefs win?"],
+                "outcome_market_ids": ["m-chiefs"],
+                "outcomes_remaining": 15,
+                "price_movement": "Down 9% on unrelated favorite",
+            },
+        )
+        saved_matched = _source_item(
+            "pm-saved",
+            "polymarket",
+            title="Pro Football: 2027 Champion",
+            body="Pro Football: 2027 Champion\nWill the San Francisco 49ers win?",
+            snippet="Up 3% this week",
+            url="https://www.polymarket.com/event/nfl-2027/",
+            engagement={"volume": 500_000, "liquidity": 200_000},
+            metadata={
+                "event_id": "evt-2027",
+                "question": "Will the San Francisco 49ers win?",
+                "end_date": "2027-02-14",
+                "odds": {"kind": "outcomes", "subject": "49ers", "entries": [{"label": "49ers", "price": 0.14}]},
+                "headline": "49ers 14%",
+                "outcome_prices": [("49ers", 0.14)],
+                "outcome_questions": ["Will the San Francisco 49ers win?"],
+                "outcome_market_ids": ["m-49ers"],
+                "outcomes_remaining": 0,
+                "price_movement": "Up 3% this week",
+                "matched_market": {
+                    "label": "San Francisco 49ers",
+                    "question": "Will the San Francisco 49ers win?",
+                    "price": 0.14,
+                    "end_date": "2027-02-14",
+                },
+                "selection_score": 88.5,
+                "selection_tier": 2,
+            },
+        )
+
+        # Via dedupe_items (fresh unmatched first, saved matched second).
+        [merged] = dedupe.dedupe_items([fresh_unmatched, saved_matched])
+        assert merged.title == saved_matched.title
+        assert merged.body == saved_matched.body
+        assert merged.snippet == "Up 3% this week"
+        assert merged.metadata["matched_market"]["label"] == "San Francisco 49ers"
+        assert merged.metadata["question"] == "Will the San Francisco 49ers win?"
+        assert merged.metadata["end_date"] == "2027-02-14"
+        assert merged.metadata["odds"] == saved_matched.metadata["odds"]
+        assert merged.metadata["headline"] == "49ers 14%"
+        assert merged.metadata["outcome_prices"] == [("49ers", 0.14)]
+        assert merged.metadata["outcome_questions"] == ["Will the San Francisco 49ers win?"]
+        assert merged.metadata["outcome_market_ids"] == ["m-49ers"]
+        assert merged.metadata["outcomes_remaining"] == 0
+        assert merged.metadata["price_movement"] == "Up 3% this week"
+        assert merged.metadata["selection_score"] == 88.5
+        assert merged.metadata["selection_tier"] == 2
+        # Fresher higher volume/liquidity still retained.
+        assert merged.engagement["volume"] == 900_000
+        # Deep-copy isolation: mutating merged odds does not corrupt saved_matched.
+        merged.metadata["odds"]["entries"][0]["price"] = 0.99
+        assert saved_matched.metadata["odds"]["entries"][0]["price"] == 0.14
+
+        # Sorts properly via polymarket.by_selection ahead of a lower-scored event.
+        lower_ranked = _source_item(
+            "pm-other",
+            "polymarket",
+            url="https://polymarket.com/event/other",
+            engagement={"volume": 5_000_000, "liquidity": 1_000_000},
+            metadata={"matched_market": {"label": "Other"}, "selection_score": 10.0, "selection_tier": 1},
+        )
+        ordered = polymarket.by_selection([lower_ranked, merged])
+        assert [i.item_id for i in ordered] == [merged.item_id, "pm-other"]
+
+        # When the matched copy intentionally omits odds/headline (e.g. impossible_set),
+        # stale odds/headline from the unmatched copy are cleared rather than mixed.
+        matched_no_odds = _source_item(
+            "pm-no-odds",
+            "polymarket",
+            title="Matched No Odds",
+            body="Matched body",
+            snippet="",
+            url="https://polymarket.com/event/nfl-2027",
+            metadata={
+                "question": "Matched Q",
+                "end_date": "2027-02-14",
+                "outcome_prices": [],
+                "outcomes_remaining": 0,
+                "matched_market": {"label": "49ers", "price": 0.14},
+                "selection_score": 50.0,
+                "selection_tier": 1,
+            },
+        )
+        merged_clean = fusion.merge_source_items(fusion._clone_source_item(fresh_unmatched), matched_no_odds)
+        assert "odds" not in merged_clean.metadata
+        assert "headline" not in merged_clean.metadata
+        assert merged_clean.metadata["end_date"] == "2027-02-14"
+        assert merged_clean.metadata["selection_score"] == 50.0
+
+        # Reverse order (matched first, unmatched second): keeps matched display/body/snippet intact.
+        [merged_rev] = dedupe.dedupe_items([saved_matched, fresh_unmatched])
+        assert merged_rev.body == saved_matched.body
+        assert merged_rev.snippet == "Up 3% this week"
+        assert merged_rev.metadata["headline"] == "49ers 14%"
+        assert merged_rev.metadata["end_date"] == "2027-02-14"
+        assert merged_rev.engagement["volume"] == 900_000
+
     def test_same_url_with_divergent_enrichment_text_merges_evidence_without_mutating_inputs(self):
         bare_yt = _source_item(
             "yt1",

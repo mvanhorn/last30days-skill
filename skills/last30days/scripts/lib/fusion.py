@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 import math
 import re
@@ -186,6 +187,58 @@ def _sanitize_reddit_matched_comment(
         item.metadata.pop("matched_comment_url", None)
 
 
+# Polymarket display and ranking fields that belong to a matched-market verdict
+# and must move together so a merged item never mixes one market's price with
+# another market's question/odds/close date or loses its selection ranking.
+_POLYMARKET_MATCH_BUNDLE_KEYS = (
+    "matched_market",
+    "odds",
+    "headline",
+    "end_date",
+    "question",
+    "outcome_prices",
+    "outcome_questions",
+    "outcome_market_ids",
+    "outcomes_remaining",
+    "price_movement",
+    "selection_score",
+    "selection_tier",
+)
+
+
+def _merge_polymarket_match_bundle(
+    existing: schema.SourceItem,
+    incoming: schema.SourceItem,
+) -> bool:
+    """Keep Polymarket's matched-market display and ranking fields coherent.
+
+    Returns True when one copy is matched and the other is unmatched, so the
+    caller leaves the matched copy's ``body`` and ``snippet`` intact rather
+    than replacing them with longer text from the unmatched copy.
+    """
+    if existing.source != "polymarket" or incoming.source != "polymarket":
+        return False
+    in_meta = incoming.metadata or {}
+    mine_matched = bool(existing.metadata.get("matched_market"))
+    theirs_matched = bool(in_meta.get("matched_market"))
+    if mine_matched == theirs_matched:
+        return False
+    if theirs_matched:
+        for key in _POLYMARKET_MATCH_BUNDLE_KEYS:
+            if key in in_meta and in_meta[key] is not None:
+                existing.metadata[key] = copy.deepcopy(in_meta[key])
+            else:
+                existing.metadata.pop(key, None)
+        if in_meta.get("event_id") and not existing.metadata.get("event_id"):
+            existing.metadata["event_id"] = in_meta["event_id"]
+        if incoming.title:
+            existing.title = incoming.title
+        if incoming.body:
+            existing.body = incoming.body
+        existing.snippet = incoming.snippet
+    return True
+
+
 def merge_source_items(
     existing: schema.SourceItem,
     incoming: schema.SourceItem,
@@ -216,11 +269,12 @@ def merge_source_items(
         _merge_reddit_fields(
             existing, incoming, range_from=range_from, range_to=range_to,
         )
+    polymarket_match_preserved = _merge_polymarket_match_bundle(existing, incoming)
     in_meta = incoming.metadata or {}
-    for meta_key in ("enriched_via", "reddit_subreddit", "matched_market"):
+    for meta_key in ("enriched_via", "reddit_subreddit"):
         val = in_meta.get(meta_key)
         if val and not existing.metadata.get(meta_key):
-            existing.metadata[meta_key] = dict(val) if isinstance(val, dict) else val
+            existing.metadata[meta_key] = val
     theirs_rts = in_meta.get("reddit_thread_score")
     if (
         isinstance(theirs_rts, (int, float))
@@ -271,21 +325,22 @@ def merge_source_items(
         from . import signals
 
         existing.engagement_score = signals.engagement_score(existing)
-    if len(incoming.body or "") > len(existing.body or ""):
-        existing.body = incoming.body
-    # A reel or TikTok fetched twice can come back once with its spoken
-    # transcript and once with only its written description. `spoken_caption`
-    # says which one the snippet is, so the two move together: the transcript
-    # wins whatever its length, and a longer written description never takes
-    # its place.
-    theirs_spoken = bool(incoming.metadata.get("spoken_caption"))
-    mine_spoken = bool(existing.metadata.get("spoken_caption"))
-    if theirs_spoken != mine_spoken:
-        if theirs_spoken and (incoming.snippet or "").strip():
+    if not polymarket_match_preserved:
+        if len(incoming.body or "") > len(existing.body or ""):
+            existing.body = incoming.body
+        # A reel or TikTok fetched twice can come back once with its spoken
+        # transcript and once with only its written description. `spoken_caption`
+        # says which one the snippet is, so the two move together: the transcript
+        # wins whatever its length, and a longer written description never takes
+        # its place.
+        theirs_spoken = bool(incoming.metadata.get("spoken_caption"))
+        mine_spoken = bool(existing.metadata.get("spoken_caption"))
+        if theirs_spoken != mine_spoken:
+            if theirs_spoken and (incoming.snippet or "").strip():
+                existing.snippet = incoming.snippet
+                existing.metadata["spoken_caption"] = True
+        elif len(incoming.snippet or "") > len(existing.snippet or ""):
             existing.snippet = incoming.snippet
-            existing.metadata["spoken_caption"] = True
-    elif len(incoming.snippet or "") > len(existing.snippet or ""):
-        existing.snippet = incoming.snippet
     return existing
 
 
