@@ -200,14 +200,69 @@ _BRAND_LEADING_WORDS = frozenset({'new', 'on'})
 # queries like "Best VPN for travel" or "Top CRM for startups" never quote
 # prompt filler.
 _STRICT_LEADING_NOISE = _COMPOUND_EDGE_NOISE - _BRAND_LEADING_WORDS
+_PROMPT_ONLY_NOISE = _STRICT_LEADING_NOISE - frozenset({'the', 'best'})
 _TITLE_CASE_CONNECTORS = frozenset({
     'a', 'an', 'the', 'for', 'of', 'in', 'on', 'to', 'with', 'and', 'or', 'vs',
 })
 _ENTITY_JOINERS = frozenset({'and', 'or', 'vs'})
+_RECOMMENDATION_TRAILING_RE = re.compile(
+    r"^\s+(?:for|in|to|under|of|on|with|by|near|around|20\d\d)\b",
+    re.IGNORECASE,
+)
 
 
 def _is_capitalized_or_brand(tok: str) -> bool:
     return tok[0].isupper() or _COMPOUND_BRAND_TOKEN_RE.fullmatch(tok) is not None
+
+
+def _is_title_case_word(word: str) -> bool:
+    """True for mixed-case Title-Case words ('Buy', 'Verge'), False for ALL-CAPS ('VPN')."""
+    return bool(word) and word[0].isupper() and not word.isupper()
+
+
+def _should_preserve_leading_word(
+    words: List[str],
+    match: re.Match[str],
+    topic: str,
+) -> bool:
+    """Keep leading noise words only when they open a real multi-word brand
+    ('New Balance', 'On Running', 'The Verge', standalone/compared 'Best Buy')
+    rather than recommendation/prompt filler ('Best VPN for travel', 'Best
+    Laptops', 'The Best VPN', 'New VPN for travel')."""
+    if len(words) < 2:
+        return False
+    first = words[0].lower()
+    if first in _BRAND_LEADING_WORDS:
+        return not (len(words) == 2 and words[1].isupper())
+    if first == 'the':
+        return (
+            len(words) == 2
+            and _is_title_case_word(words[1])
+            and words[1].lower() not in _COMPOUND_EDGE_NOISE
+        )
+    if first == 'best':
+        if not (
+            len(words) == 2
+            and _is_title_case_word(words[1])
+            and not words[1].lower().endswith('s')
+            and words[1].lower() not in _COMPOUND_EDGE_NOISE
+        ):
+            return False
+        stripped_topic = topic.strip().rstrip('?!.')
+        if match.group() == stripped_topic:
+            return True
+        after = topic[match.end():]
+        if _RECOMMENDATION_TRAILING_RE.match(after):
+            return False
+        before = topic[:match.start()]
+        return bool(
+            re.match(r"^\s+(?:vs\.?|versus|and|or)\s+\S", after, re.IGNORECASE)
+            or (
+                re.search(r"\S\s+(?:vs\.?|versus|and|or)\s+$", before, re.IGNORECASE)
+                and not after.strip("?!.,;:)")
+            )
+        )
+    return False
 
 
 def _is_title_cased_prompt(topic: str) -> bool:
@@ -218,7 +273,8 @@ def _is_title_cased_prompt(topic: str) -> bool:
     Python Developers") and standard English Title Case with lowercase minor
     connectors ("Best AI Coding Tools for Python Developers"), while keeping
     bare multi-entity pairs like "Claude Code and React Native", "New Balance
-    vs On Running", or "React Server Components vs Astro Islands" eligible.
+    vs On Running", "Best Buy vs Target", or "React Server Components vs Astro
+    Islands" eligible.
     """
     alpha_words = [
         tok for tok in re.findall(r"\w+(?:['\u2019-]\w+)*", topic)
@@ -233,10 +289,10 @@ def _is_title_cased_prompt(topic: str) -> bool:
         return False
     # All non-connector words are capitalized. Treat as a Title-Cased prompt
     # unless the only lowercase words are entity list/comparison joiners
-    # ("and"/"or"/"vs") with no strict prompt/meta framing words among the rest.
+    # ("and"/"or"/"vs") with no prompt-only framing words among the rest.
     non_connector_words = [tok for tok in alpha_words if tok not in _TITLE_CASE_CONNECTORS]
     if all(tok in _ENTITY_JOINERS for tok in lowercase_words) and not any(
-        tok.lower() in _STRICT_LEADING_NOISE for tok in non_connector_words
+        tok.lower() in _PROMPT_ONLY_NOISE for tok in non_connector_words
     ):
         return False
     return True
@@ -249,7 +305,7 @@ def extract_compound_terms(topic: str) -> List[str]:
     - Hyphenated terms: "multi-agent", "vc-backed"
     - Short capitalized/brand multi-word names (2-3 words): "Claude Code",
       "React Native", "GitHub Actions", "MacBook Pro", "iPhone Pro",
-      "New Balance", "On Running"
+      "New Balance", "On Running", "Best Buy", "The Verge"
 
     Anchored to full word boundaries so PascalCase/camelCase brands are never
     sliced mid-word, and skips full Title-Cased prompts or runs longer than 3
@@ -267,13 +323,10 @@ def extract_compound_terms(topic: str) -> List[str]:
     # Word-bounded capitalized / brand sequences (2-3 words after edge trim)
     for match in _COMPOUND_CAPITALIZED_RUN_RE.finditer(topic):
         words = match.group().split()
-        while words and (
-            words[0].lower() in _STRICT_LEADING_NOISE
-            or (
-                words[0].lower() in _BRAND_LEADING_WORDS
-                and len(words) == 2
-                and words[1].isupper()
-            )
+        while (
+            words
+            and words[0].lower() in _COMPOUND_EDGE_NOISE
+            and not _should_preserve_leading_word(words, match, topic)
         ):
             words.pop(0)
         while words and words[-1].lower() in _COMPOUND_EDGE_NOISE:

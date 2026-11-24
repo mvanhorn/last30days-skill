@@ -793,6 +793,13 @@ def test_greptile_f1_lookback_days_3650_round_trips_and_over_limit_rejected_befo
     [
         ("New Balance", "New Balance"),
         ("On Running", "On Running"),
+        ("Best Buy", "Best Buy"),
+        ("Best Buy vs Target", "Best Buy"),
+        ("Target vs Best Buy", "Best Buy"),
+        ("The Verge", "The Verge"),
+        ("The Economist", "The Economist"),
+        ("The Atlantic", "The Atlantic"),
+        ("The Verge vs Wired", "The Verge"),
         ("Open AI", "Open AI"),
         ("New Balance shoes", "New Balance"),
         ("On Running review", "On Running"),
@@ -817,9 +824,14 @@ def test_greptile_f2_query_still_strips_prompt_filler_and_keeps_brand_comparison
     ]
     assert query.extract_compound_terms("Best AI Tools") == []
     assert query.extract_compound_terms("Best VPN for travel") == []
+    assert query.extract_compound_terms("Best VPN") == []
+    assert query.extract_compound_terms("Best Laptops") == []
+    assert query.extract_compound_terms("Best Laptops for travel") == []
     assert query.extract_compound_terms("Top CRM for startups") == []
     assert query.extract_compound_terms("Top AI tools for coding") == []
     assert query.extract_compound_terms("The best CRM for startups") == []
+    assert query.extract_compound_terms("The Best VPN for travel") == []
+    assert query.extract_compound_terms("The VPN") == []
     assert query.extract_compound_terms("New VPN for travel") == []
     assert query.extract_compound_terms("New Balance vs On Running") == [
         "New Balance",
@@ -831,9 +843,13 @@ def test_greptile_f2_query_still_strips_prompt_filler_and_keeps_brand_comparison
     "topic,expected_search",
     [
         ("Best VPN for travel", "vpn travel"),
+        ("Best VPN", "vpn"),
+        ("Best Laptops for travel", "laptops travel"),
         ("Top CRM for startups", "crm startups"),
         ("Top AI tools for coding", "ai coding"),
         ("The best CRM for startups", "crm startups"),
+        ("The Best VPN for travel", "vpn travel"),
+        ("New VPN for travel", "vpn travel"),
     ],
 )
 def test_greptile_r2_f1_recommendation_prompts_never_quote_prompt_filler(
@@ -854,7 +870,7 @@ def test_greptile_r2_f1_recommendation_prompts_never_quote_prompt_filler(
     assert plan.subqueries[0].search_query == expected_search
 
 
-@pytest.mark.parametrize("brand", ["New Balance", "On Running"])
+@pytest.mark.parametrize("brand", ["New Balance", "On Running", "Best Buy", "The Verge"])
 def test_greptile_f2_planner_keeps_full_brand_intact_in_fallback_queries(brand: str):
     core = query.extract_core_subject(brand, max_words=6, strip_suffixes=True)
     kw = planner._keyword_query(brand, core)
