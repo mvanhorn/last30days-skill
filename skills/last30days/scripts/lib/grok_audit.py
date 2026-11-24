@@ -38,7 +38,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from . import env, log
+from . import env, log, subproc
 
 # Bump when the checks change so verdicts recorded by older checks re-audit.
 AUDIT_SCHEMA = 3
@@ -110,12 +110,16 @@ def _decompress_brotli(src: Path, dest: Path, timeout: float) -> bool:
     )
     try:
         dest.parent.mkdir(parents=True, exist_ok=True)
-        subprocess.run([node, "-e", script, str(src), str(tmp)], check=True,
-                       capture_output=True, timeout=min(60.0, timeout))
+        result = subproc.run_with_timeout(
+            [node, "-e", script, str(src), str(tmp)],
+            timeout=min(60.0, timeout),
+        )
+        if result.returncode != 0:
+            return False
         os.chmod(tmp, 0o755)
         os.replace(tmp, dest)
         return True
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subproc.SubprocTimeout, subprocess.SubprocessError):
         return False
     finally:
         try:
@@ -506,10 +510,13 @@ def _run_child(binary: str, permissive: bool, deadline: float, signed_in: bool =
             if remaining <= 1:
                 return {"timeout": True}
             try:
-                subprocess.run(argv, capture_output=True, text=True, encoding="utf-8",
-                               errors="replace", timeout=remaining, cwd=workdir,
-                               env=_audit_env(home, fixture))
-            except subprocess.TimeoutExpired:
+                subproc.run_with_timeout(
+                    argv,
+                    timeout=remaining,
+                    cwd=workdir,
+                    env=_audit_env(home, fixture),
+                )
+            except (subproc.SubprocTimeout, subprocess.TimeoutExpired):
                 return {"timeout": True}
             except OSError as exc:
                 return {"error": f"{type(exc).__name__}: {exc}"}

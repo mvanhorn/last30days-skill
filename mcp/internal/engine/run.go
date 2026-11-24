@@ -96,11 +96,11 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 	args := append([]string{scriptPath}, opts.Args...)
 	cmd := exec.Command(pythonPath, args...)
 	cmd.Env = buildEnv(opts.CacheDir, opts.ExtraEnv)
-	// Own process group so a timeout SIGTERM reaches same-group
-	// grandchildren (grok CLI). exec.CommandContext would SIGKILL only the
-	// direct python child while its SIGTERM-handler/atexit cleanup never
-	// runs on SIGKILL, orphaning the setsid'd descendant groups.
-	// Mirrors lib/subproc.py.
+	// Own process group so cancellation SIGTERM reaches same-group helpers on
+	// the primary unreaped wait path while Python's SIGTERM handler cleans up
+	// registered setsid'd descendant groups (including grok CLI via lib/subproc.py)
+	// on both primary and direct-child fallback paths. exec.CommandContext would
+	// SIGKILL only Python directly and skip its SIGTERM/atexit cleanup.
 	setProcessGroup(cmd)
 
 	maxStdout := resolveOutputLimit(opts.MaxStdoutBytes, DefaultMaxStdoutBytes)

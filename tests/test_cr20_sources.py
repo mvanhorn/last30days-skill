@@ -58,7 +58,7 @@ def test_grok_all_lanes_request_the_inclusive_end_date(monkeypatch, lane, end, e
 
     monkeypatch.setattr(grok_x, "binary_path", lambda: "/dummy/grok")
     monkeypatch.setattr(grok_x, "_check_cli_version", lambda *args: (None, "grok 1.0.70 (f50904eaee6c)"))
-    monkeypatch.setattr(grok_x.subprocess, "run", run)
+    monkeypatch.setattr(grok_x.subproc, "run_with_timeout", run)
     _search_grok(lane, "2024-02-01", end)
     assert queries
     for query in queries:
@@ -126,7 +126,7 @@ def test_x_adapters_retain_final_day_but_not_following_day(monkeypatch, adapter,
 
     monkeypatch.setattr(grok_x, "binary_path", lambda: "/dummy/grok")
     monkeypatch.setattr(grok_x, "_check_cli_version", lambda *args: (None, "grok 1.0.70 (f50904eaee6c)"))
-    monkeypatch.setattr(grok_x.subprocess, "run", grok_run)
+    monkeypatch.setattr(grok_x.subproc, "run_with_timeout", grok_run)
     monkeypatch.setattr(xquik.http, "get", xquik_get)
     search = _search_grok if adapter == "grok" else _search_xquik
     items = search(lane, "2024-02-01", "2024-02-29")

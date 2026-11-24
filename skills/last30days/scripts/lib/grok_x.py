@@ -48,7 +48,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import grok_audit, log, usage
+from . import grok_audit, log, subproc, usage
 from .dates import x_date_filters
 from .relevance import token_overlap_relevance as _compute_relevance
 # One copy of the snowflake, handle-grammar, and generated-sequence helpers
@@ -872,17 +872,13 @@ def _research_argv(binary: str, prompt: str, agent_file: Path) -> List[str]:
 def _check_cli_version(binary: str, workdir: str, timeout: float) -> Tuple[Optional[str], str]:
     """Return (error, version line). Rejects builds below the floor or off stable."""
     try:
-        result = subprocess.run(
+        result = subproc.run_with_timeout(
             [binary, "--version"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
             timeout=min(timeout, 5),
             cwd=workdir,
             env=_subprocess_env(os.path.join(workdir, "home")),
         )
-    except subprocess.TimeoutExpired:
+    except (subproc.SubprocTimeout, subprocess.TimeoutExpired):
         return "grok CLI version check timed out", ""
     except OSError as exc:
         return f"could not verify grok CLI version: {type(exc).__name__}: {exc}", ""
@@ -954,23 +950,18 @@ def _invoke(prompt: str, timeout: int) -> Dict[str, Any]:
             if remaining <= 0:
                 return {"error": f"grok CLI timed out after {timeout}s"}
             usage.begin("grok")
-            result = subprocess.run(
+            # subproc.run_with_timeout decodes UTF-8 (errors="replace") and
+            # registers the child in subproc's cleanup set so engine SIGTERM
+            # terminates the grok CLI even under direct-child signaling.
+            result = subproc.run_with_timeout(
                 _research_argv(binary, prompt, agent_file),
-                capture_output=True,
-                text=True,
-                # X posts are not cp1252. Without this, text=True decodes the CLI's
-                # stdout with the locale codec and a reader thread dies on the first
-                # emoji or smart quote, which surfaces as "no items parsed" rather
-                # than an error. Matches the auth-store read above.
-                encoding="utf-8",
-                errors="replace",
                 timeout=remaining,
                 cwd=workdir,
                 env=_subprocess_env(child_home),
             )
     except FileNotFoundError:
         return {"error": "grok CLI not found on PATH"}
-    except subprocess.TimeoutExpired:
+    except (subproc.SubprocTimeout, subprocess.TimeoutExpired):
         return {"error": f"grok CLI timed out after {timeout}s"}
     except OSError as exc:
         return {"error": f"grok CLI failed: {type(exc).__name__}: {exc}"}

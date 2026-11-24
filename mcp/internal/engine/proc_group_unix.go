@@ -33,11 +33,11 @@ var (
 )
 
 // setProcessGroup puts the engine child in its own process group so a
-// timeout kill reaches same-group grandchildren (grok CLI). Descendants
-// spawned via lib/subproc.py run in their own pgids (os.setsid) and are
-// unreachable by kill(-pid); they die via the engine's SIGTERM handler,
-// which killpg()s each registered child group. Mirrors lib/subproc.py's
-// os.setsid discipline.
+// timeout kill reaches same-group helpers on the primary unreaped wait path.
+// Descendants spawned via lib/subproc.py (including grok CLI, bird-search,
+// yt-dlp, digg) run in their own pgids (os.setsid) and are cleaned up by the
+// engine's SIGTERM handler (killpg per registered child), even when the
+// fallback path signals only the direct Python child.
 func setProcessGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 }

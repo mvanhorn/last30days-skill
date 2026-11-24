@@ -287,7 +287,7 @@ def test_grok_fanout_respects_cancel(monkeypatch):
         import subprocess
         calls.append(cmd)
         return subprocess.CompletedProcess(cmd, 0, "no posts", "")
-    monkeypatch.setattr(grok_x.subprocess, "run", fake_run)
+    monkeypatch.setattr(grok_x.subproc, "run_with_timeout", fake_run)
     cancel = threading.Event()
     cancel.set()
     result = grok_x.search_x("topic", "2026-08-01", "2026-08-31", cancel=cancel)

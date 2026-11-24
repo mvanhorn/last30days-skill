@@ -28,7 +28,7 @@ def test_build_below_floor_or_off_stable_never_receives_credentials(monkeypatch,
         calls.append((cmd, kwargs))
         return subprocess.CompletedProcess(cmd, 0, version, "")
 
-    monkeypatch.setattr(grok_x.subprocess, "run", fake_run)
+    monkeypatch.setattr(grok_x.subproc, "run_with_timeout", fake_run)
     response = grok_x._invoke("private research query", 60)
     assert "unsupported grok CLI version" in response.get("error", "")
     assert staged == []
@@ -51,7 +51,7 @@ def test_failed_version_check_never_stages_credentials(monkeypatch, failure):
             raise OSError("cannot launch fixture")
         return subprocess.CompletedProcess(cmd, 1, "grok 1.0.46 (2765805b9442) [stable]", "failure")
 
-    monkeypatch.setattr(grok_x.subprocess, "run", fake_run)
+    monkeypatch.setattr(grok_x.subproc, "run_with_timeout", fake_run)
     response = grok_x._invoke("private research query", 60)
     assert "version" in response.get("error", "")
     assert staged == []
@@ -86,7 +86,7 @@ def test_audited_build_runs_x_with_only_staged_auth(monkeypatch, tmp_path, versi
         assert "x_search" not in cmd[cmd.index("--disallowed-tools") + 1].split(",")
         return subprocess.CompletedProcess(cmd, 0, '{"text":"fixture X response"}', "")
 
-    monkeypatch.setattr(grok_x.subprocess, "run", fake_run)
+    monkeypatch.setattr(grok_x.subproc, "run_with_timeout", fake_run)
     assert grok_x._invoke("Use x_keyword_search for OpenAI", 60) == {
         "text": '{"text":"fixture X response"}',
     }
@@ -110,7 +110,7 @@ def test_preflight_time_counts_toward_research_timeout(monkeypatch, tmp_path, sp
         assert kwargs["timeout"] == 10 - spent
         return subprocess.CompletedProcess(cmd, 0, "fixture response", "")
 
-    monkeypatch.setattr(grok_x.subprocess, "run", fake_run)
+    monkeypatch.setattr(grok_x.subproc, "run_with_timeout", fake_run)
     response = grok_x._invoke("X query", 10)
     if spent < 10:
         assert response == {"text": "fixture response"}
@@ -127,7 +127,7 @@ def test_search_reports_unsupported_build_as_source_failure(monkeypatch):
         assert cmd == ["/usr/bin/grok", "--version"]
         return subprocess.CompletedProcess(cmd, 0, "grok 1.0.45 (0123456789ab) [stable]", "")
 
-    monkeypatch.setattr(grok_x.subprocess, "run", fake_run)
+    monkeypatch.setattr(grok_x.subproc, "run_with_timeout", fake_run)
     result = grok_x.search_x("OpenAI", "2026-07-14", "2026-08-13", depth="quick")
     assert result["items"] == []
     assert "unsupported grok CLI version" in result.get("error", "")
@@ -144,7 +144,7 @@ def test_search_reports_profile_write_failure(monkeypatch, tmp_path):
     def denied(*args, **kwargs):
         raise PermissionError("cannot write agent profile")
 
-    monkeypatch.setattr(grok_x.subprocess, "run", fake_run)
+    monkeypatch.setattr(grok_x.subproc, "run_with_timeout", fake_run)
     monkeypatch.setattr(Path, "write_text", denied)
     result = grok_x.search_x("OpenAI", "2026-07-14", "2026-08-13", depth="quick")
     assert result["items"] == []
@@ -172,7 +172,7 @@ def test_updater_symlink_cannot_change_build_after_version_check(monkeypatch, tm
         assert cmd[0] == str(audited)
         return subprocess.CompletedProcess(cmd, 0, "fixture response", "")
 
-    monkeypatch.setattr(grok_x.subprocess, "run", fake_run)
+    monkeypatch.setattr(grok_x.subproc, "run_with_timeout", fake_run)
     assert grok_x._invoke("X query", 10) == {"text": "fixture response"}
     assert calls[0] == [str(audited), "--version"]
 
@@ -194,7 +194,7 @@ def test_build_without_a_passing_audit_never_receives_credentials(monkeypatch, v
         calls.append(cmd)
         return subprocess.CompletedProcess(cmd, 0, "grok 1.0.70 (f50904eaee6c)", "")
 
-    monkeypatch.setattr(grok_x.subprocess, "run", fake_run)
+    monkeypatch.setattr(grok_x.subproc, "run_with_timeout", fake_run)
     response = grok_x._invoke("private research query", 60)
     assert message in response.get("error", "")
     assert response.get("no_retry") is True
@@ -210,7 +210,7 @@ def test_rejected_build_is_not_retried_per_query(monkeypatch):
         calls.append(cmd)
         return subprocess.CompletedProcess(cmd, 0, "grok 1.0.45 (0123456789ab)", "")
 
-    monkeypatch.setattr(grok_x.subprocess, "run", fake_run)
+    monkeypatch.setattr(grok_x.subproc, "run_with_timeout", fake_run)
     items, error, revoked = grok_x._run_query("OpenAI", "2026-07-14", "2026-08-13")
     assert (items, revoked) == ([], False)
     assert "unsupported grok CLI version" in error
@@ -241,7 +241,7 @@ def test_npm_launcher_runs_the_native_build_it_resolves(monkeypatch, tmp_path):
             return subprocess.CompletedProcess(cmd, 0, "grok 1.0.70 (f50904eaee6c)", "")
         return subprocess.CompletedProcess(cmd, 0, "fixture response", "")
 
-    monkeypatch.setattr(grok_x.subprocess, "run", fake_run)
+    monkeypatch.setattr(grok_x.subproc, "run_with_timeout", fake_run)
     assert grok_x._invoke("X query", 10) == {"text": "fixture response"}
     assert calls == [str(native), str(native)]
     assert audited == [(str(native), "grok 1.0.70 (f50904eaee6c)")]
@@ -254,7 +254,7 @@ def test_npm_launcher_runs_the_native_build_it_resolves(monkeypatch, tmp_path):
 def test_unpassed_audit_surfaces_as_an_error_not_an_empty_window(monkeypatch, verdict):
     monkeypatch.setattr(grok_x, "binary_path", lambda: "/usr/bin/grok")
     monkeypatch.setattr(grok_audit, "verdict_for", lambda *args: verdict)
-    monkeypatch.setattr(grok_x.subprocess, "run", lambda cmd, **kwargs: subprocess.CompletedProcess(
+    monkeypatch.setattr(grok_x.subproc, "run_with_timeout", lambda cmd, **kwargs: subprocess.CompletedProcess(
         cmd, 0, "grok 1.0.70 (f50904eaee6c)", ""))
     result = grok_x.search_x("OpenAI", "2026-07-14", "2026-08-13", depth="quick")
     assert result["items"] == []
