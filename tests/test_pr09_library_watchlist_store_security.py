@@ -793,6 +793,132 @@ def test_high211_symlink_parent_dotdot_preserves_canonical_source_path(tmp_path:
     assert entry_matches[0].source_path == str(real_file.resolve())
 
 
+def test_high211_missing_dir_before_dotdot_not_redirected(tmp_path: Path):
+    vault = tmp_path / "vault"
+    real_dir = vault / "real_dir"
+    real_dir.mkdir(parents=True)
+    brief = real_dir / "brief-2026-07-13.md"
+    brief.write_text(
+        "# Real Dir Brief\n\nMUST_NOT_REDIRECT_MISSING_DOTDOT\n",
+        encoding="utf-8",
+    )
+
+    missing_via_dotdot_dir = vault / "missing" / ".." / "real_dir"
+    missing_via_dotdot_file = missing_via_dotdot_dir / "brief-2026-07-13.md"
+
+    entries, notes = library.scan_library(missing_via_dotdot_dir, tmp_path / "no-briefs")
+    assert entries == []
+    assert notes == []
+
+    db_path = tmp_path / "library.db"
+    assert library_index.index_entry(missing_via_dotdot_file, db_path=db_path) is False
+    assert library_index.index_brief(missing_via_dotdot_file, db_path=db_path) is False
+    assert not library_index.search(
+        "MUST_NOT_REDIRECT_MISSING_DOTDOT",
+        db_path=db_path,
+        store_db_path=tmp_path / "none.db",
+    )
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX symlink and directory inode swap")
+def test_high211_fallback_scan_rejects_finished_swap_after_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(library, "_SUPPORTS_DIR_FD", False)
+
+    # Sub-case 1: finished/ swapped to symlink pointing outside memory_dir
+    # right after _checked_subdir_stat approves it.
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret-2026-07-14.md").write_text(
+        "# Outside Secret\n\nOUTSIDE_SYMLINK_SWAP_SECRET\n",
+        encoding="utf-8",
+    )
+
+    memory = tmp_path / "memory-symlink-swap"
+    finished = memory / "finished"
+    finished.mkdir(parents=True)
+    (finished / "legit-2026-07-14.md").write_text(
+        "# Legit Original\n\nLEGIT_ORIGINAL_BODY\n",
+        encoding="utf-8",
+    )
+
+    real_checked_subdir_stat = library._checked_subdir_stat
+    swapped_symlink = False
+
+    def swap_to_symlink_after_check(subdir: Path, root: Path):
+        nonlocal swapped_symlink
+        st = real_checked_subdir_stat(subdir, root)
+        if not swapped_symlink and subdir.name == library.FINISHED_SUBDIR and st is not None:
+            swapped_symlink = True
+            subdir.rename(tmp_path / "finished-orig-1")
+            subdir.symlink_to(outside)
+        return st
+
+    monkeypatch.setattr(library, "_checked_subdir_stat", swap_to_symlink_after_check)
+    entries, notes = library.scan_library(memory, tmp_path / "no-briefs")
+    assert swapped_symlink is True
+    assert all("OUTSIDE_SYMLINK_SWAP_SECRET" not in e.content for e in entries)
+    assert entries == []
+    assert any("Skipped" in note for note in notes)
+
+    # Sub-case 2: finished/ swapped to a DIFFERENT real directory moved into place
+    # right after _checked_subdir_stat approves it (no symlink, only inode changes).
+    rogue_dir = tmp_path / "rogue-finished"
+    rogue_dir.mkdir()
+    (rogue_dir / "rogue-2026-07-14.md").write_text(
+        "# Rogue Replaced Dir\n\nROGUE_REAL_DIR_SWAP_SECRET\n",
+        encoding="utf-8",
+    )
+
+    memory2 = tmp_path / "memory-realdir-swap"
+    finished2 = memory2 / "finished"
+    finished2.mkdir(parents=True)
+    (finished2 / "legit-2026-07-14.md").write_text(
+        "# Legit Original 2\n\nLEGIT_ORIGINAL_2_BODY\n",
+        encoding="utf-8",
+    )
+
+    swapped_real = False
+
+    def swap_to_real_dir_after_check(subdir: Path, root: Path):
+        nonlocal swapped_real
+        st = real_checked_subdir_stat(subdir, root)
+        if not swapped_real and subdir == finished2.resolve() and st is not None:
+            swapped_real = True
+            subdir.rename(tmp_path / "finished-orig-2")
+            rogue_dir.rename(subdir)
+        return st
+
+    monkeypatch.setattr(library, "_checked_subdir_stat", swap_to_real_dir_after_check)
+    entries2, notes2 = library.scan_library(memory2, tmp_path / "no-briefs")
+    assert swapped_real is True
+    assert all("ROGUE_REAL_DIR_SWAP_SECRET" not in e.content for e in entries2)
+    assert entries2 == []
+    assert any("Skipped" in note for note in notes2)
+
+    # Sub-case 3: verify post-open _fd_real_path check catches an opened fd whose
+    # canonical path escapes the checked directory even if parent lstat looks intact.
+    monkeypatch.setattr(library, "_checked_subdir_stat", real_checked_subdir_stat)
+    memory3 = tmp_path / "memory-fd-escape"
+    finished3 = memory3 / "finished"
+    finished3.mkdir(parents=True)
+    legit3 = finished3 / "legit-2026-07-14.md"
+    legit3.write_text("# Legit 3\n\nLEGIT_3_BODY\n", encoding="utf-8")
+
+    # Happy path under fallback mode (no swap, real _fd_real_path) succeeds.
+    ok_entries, ok_notes = library.scan_library(memory3, tmp_path / "no-briefs")
+    assert ok_notes == []
+    assert [e.topic for e in ok_entries] == ["Legit 3"]
+
+    monkeypatch.setattr(
+        library, "_fd_real_path", lambda _fd: outside / "secret-2026-07-14.md"
+    )
+    entries3, notes3 = library.scan_library(memory3, tmp_path / "no-briefs")
+    assert entries3 == []
+    assert any("escapes" in note.lower() for note in notes3)
+
+
 # ---------------------------------------------------------------------------
 # HIGH-212: Store FTS5 sanitization, injection defense, and dismissed filter
 # ---------------------------------------------------------------------------

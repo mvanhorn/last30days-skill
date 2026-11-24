@@ -129,6 +129,38 @@ def sync_library(
         return replace(_sync_library(memory_dir, briefs_dir, target), rebuilt=True)
 
 
+def _resolve_regular_source_path(path: Path | str) -> Path | None:
+    """Strictly resolve an existing regular non-symlink source file path."""
+    raw_source = Path(path).expanduser()
+    if _IS_JUNCTION is not None and _IS_JUNCTION(raw_source):
+        return None
+    try:
+        lstat_res = raw_source.lstat()
+    except OSError:
+        return None
+    if stat.S_ISLNK(lstat_res.st_mode) or not stat.S_ISREG(lstat_res.st_mode):
+        return None
+    try:
+        canonical_parent = raw_source.parent.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None
+    canonical_source = canonical_parent / raw_source.name
+    if _IS_JUNCTION is not None and _IS_JUNCTION(canonical_source):
+        return None
+    try:
+        canonical_stat = canonical_source.lstat()
+    except OSError:
+        return None
+    if stat.S_ISLNK(canonical_stat.st_mode) or not stat.S_ISREG(canonical_stat.st_mode):
+        return None
+    if (os.name == "posix" or (lstat_res.st_ino and canonical_stat.st_ino)) and (
+        canonical_stat.st_dev,
+        canonical_stat.st_ino,
+    ) != (lstat_res.st_dev, lstat_res.st_ino):
+        return None
+    return canonical_source
+
+
 def index_entry(
     path: Path | str,
     *,
@@ -140,12 +172,8 @@ def index_entry(
         raise LibrarySearchUnavailable(
             "library search requires a Python SQLite build with FTS5 support"
         )
-    raw_source = Path(path).expanduser()
-    if raw_source.is_symlink() or (_IS_JUNCTION is not None and _IS_JUNCTION(raw_source)):
-        return False
-    try:
-        canonical_source = raw_source.parent.resolve() / raw_source.name
-    except (OSError, RuntimeError):
+    canonical_source = _resolve_regular_source_path(path)
+    if canonical_source is None:
         return False
     try:
         entry = library.parse_markdown_file(canonical_source, source_format=source_format)
@@ -167,15 +195,14 @@ def index_brief(
     db_path: Path | str = DEFAULT_LIBRARY_DB,
 ) -> bool:
     """Index one saved artifact, parsing it through ``scan_library``."""
-    raw_source = Path(path).expanduser()
-    if raw_source.is_symlink() or (_IS_JUNCTION is not None and _IS_JUNCTION(raw_source)):
+    source = _resolve_regular_source_path(path)
+    if source is None:
         return False
-    source = raw_source.resolve()
     if source.suffix.lower() == ".json":
         entries, _ = library.scan_library(source.parent / ".missing", source.parent)
     else:
         entries, _ = library.scan_library(source.parent, source.parent / ".missing")
-    entry = next((item for item in entries if item.source_path.resolve() == source), None)
+    entry = next((item for item in entries if item.source_path == source), None)
     if entry is None:
         return False
     target = Path(db_path).expanduser()

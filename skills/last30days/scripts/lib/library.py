@@ -8,11 +8,17 @@ import json
 import os
 import re
 import stat
+import sys
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
+
+try:
+    import fcntl
+except ImportError:
+    fcntl = None  # type: ignore[assignment]
 
 
 DEFAULT_MEMORY_DIR = Path.home() / "Documents" / "Last30Days"
@@ -26,8 +32,10 @@ _SUPPORTS_DIR_FD = (
     and hasattr(os, "O_DIRECTORY")
     and os.open in getattr(os, "supports_dir_fd", set())
     and os.stat in getattr(os, "supports_dir_fd", set())
-    and os.listdir in getattr(os, "supports_fd", set())
 )
+_SUPPORTS_LISTDIR_FD = os.listdir in getattr(os, "supports_fd", set())
+_DARWIN_F_GETPATH = 50
+_DARWIN_MAXPATHLEN = 1024
 PUBLIC_DRILL_MARKER = "<!-- LAST30DAYS_PUBLIC_DRILL -->"
 PUBLIC_FRESHNESS_MARKER = "<!-- LAST30DAYS_PUBLIC_FRESHNESS -->"
 PUBLIC_CLUSTERS_MARKER = "<!-- LAST30DAYS_PUBLIC_CLUSTERS -->"
@@ -567,20 +575,154 @@ def _open_dir_fd(
         os.close(fd)
 
 
-def _is_safe_subdir(subdir: Path, root: Path) -> bool:
-    """Return True when ``subdir`` is a non-symlink directory contained inside ``root``."""
+def _listdir_pinned(dir_fd: int, dir_path: Path) -> list[str]:
+    if _SUPPORTS_LISTDIR_FD:
+        return sorted(os.listdir(dir_fd))
+    return sorted(os.listdir(dir_path))
+
+
+def _norm_parts(path: Path) -> tuple[str, ...]:
+    if sys.platform == "darwin":
+        return tuple(part.casefold() for part in path.parts)
+    if sys.platform == "win32":
+        return tuple(os.path.normcase(part) for part in path.parts)
+    return path.parts
+
+
+def _same_normalized_path(left: Path, right: Path) -> bool:
+    return _norm_parts(left) == _norm_parts(right)
+
+
+def _path_is_within(child: Path, parent: Path) -> bool:
+    c_parts = _norm_parts(child)
+    p_parts = _norm_parts(parent)
+    return bool(p_parts) and len(c_parts) >= len(p_parts) and c_parts[:len(p_parts)] == p_parts
+
+
+def _win32_fd_real_path(fd: int) -> Path | None:
+    """Canonical path of an open Windows descriptor via ``GetFinalPathNameByHandleW``."""
+    try:
+        import ctypes
+        import msvcrt
+
+        handle = msvcrt.get_osfhandle(fd)
+        kernel32 = ctypes.windll.kernel32
+        get_path = kernel32.GetFinalPathNameByHandleW
+        get_path.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32]
+        get_path.restype = ctypes.c_uint32
+        needed = get_path(handle, None, 0, 0)
+        if not needed:
+            return None
+        buf = ctypes.create_unicode_buffer(needed + 1)
+        written = get_path(handle, buf, len(buf), 0)
+        if not written or written >= len(buf):
+            return None
+        raw = buf.value
+    except (AttributeError, ImportError, OSError, ValueError):
+        return None
+    if raw.startswith("\\\\?\\UNC\\"):
+        raw = "\\\\" + raw[8:]
+    elif raw.startswith("\\\\?\\"):
+        raw = raw[4:]
+    return Path(raw) if raw else None
+
+
+def _fd_real_path(fd: int) -> Path | None:
+    """Canonical kernel path of an open descriptor (Windows, macOS, Linux)."""
+    if sys.platform == "win32":
+        return _win32_fd_real_path(fd)
+    target: str | None = None
+    if sys.platform == "darwin" and fcntl is not None:
+        f_getpath = getattr(fcntl, "F_GETPATH", _DARWIN_F_GETPATH)
+        try:
+            raw = fcntl.fcntl(fd, f_getpath, b"\x00" * _DARWIN_MAXPATHLEN)
+        except (OSError, ValueError):
+            return None
+        if isinstance(raw, (bytes, bytearray)):
+            target = os.fsdecode(bytes(raw).split(b"\x00", 1)[0])
+        elif isinstance(raw, str):
+            target = raw.split("\x00", 1)[0]
+    else:
+        try:
+            target = os.readlink(f"/proc/self/fd/{fd}")
+        except OSError:
+            return None
+    if not target or not target.startswith("/"):
+        return None
+    return Path(target)
+
+
+def _checked_subdir_stat(subdir: Path, root: Path) -> os.stat_result | None:
+    """Return ``lstat`` for ``subdir`` when it is a non-symlink directory inside ``root``."""
     if _IS_JUNCTION is not None and _IS_JUNCTION(subdir):
-        return False
+        return None
     try:
         st = subdir.lstat()
     except OSError:
-        return False
+        return None
     if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
-        return False
+        return None
     try:
-        return subdir.resolve().is_relative_to(root.resolve())
-    except OSError:
-        return False
+        root_resolved = root.resolve(strict=True)
+        subdir_resolved = subdir.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None
+    if not _path_is_within(subdir_resolved, root_resolved):
+        return None
+    return st
+
+
+def _is_safe_subdir(subdir: Path, root: Path) -> bool:
+    """Return True when ``subdir`` is a non-symlink directory contained inside ``root``."""
+    return _checked_subdir_stat(subdir, root) is not None
+
+
+def _verify_checked_parent(
+    path: Path,
+    *,
+    root_resolved: Path,
+    expected_parent_dir: Path | None = None,
+    expected_parent_id: tuple[int, int] | None = None,
+) -> None:
+    """Verify intermediate directories and parent directory identity have not changed."""
+    target_parent = expected_parent_dir if expected_parent_dir is not None else path.parent
+    if expected_parent_dir is not None and not _same_normalized_path(path.parent, expected_parent_dir):
+        raise OSError(f"File parent does not match checked directory: {path}")
+
+    rel_parts: tuple[str, ...] | None = None
+    try:
+        rel_parts = target_parent.relative_to(root_resolved).parts
+    except ValueError:
+        if expected_parent_dir is not None:
+            raise OSError(f"Directory escapes library root: {target_parent}") from None
+
+    if rel_parts is not None:
+        cur = root_resolved
+        for part in rel_parts:
+            if part in ("", ".", ".."):
+                raise OSError(f"Invalid directory component in {target_parent}")
+            cur = cur / part
+            if _IS_JUNCTION is not None and _IS_JUNCTION(cur):
+                raise OSError(errno.ELOOP, f"Refusing to follow junction directory: {cur}")
+            cur_st = cur.lstat()
+            if stat.S_ISLNK(cur_st.st_mode):
+                raise OSError(errno.ELOOP, f"Refusing to follow symlink directory: {cur}")
+            if not stat.S_ISDIR(cur_st.st_mode):
+                raise OSError(f"Not a directory: {cur}")
+
+    if _IS_JUNCTION is not None and _IS_JUNCTION(target_parent):
+        raise OSError(errno.ELOOP, f"Refusing to follow junction directory: {target_parent}")
+    parent_st = target_parent.lstat()
+    if stat.S_ISLNK(parent_st.st_mode):
+        raise OSError(errno.ELOOP, f"Refusing to follow symlink directory: {target_parent}")
+    if not stat.S_ISDIR(parent_st.st_mode):
+        raise OSError(f"Not a directory: {target_parent}")
+    if (
+        expected_parent_id is not None
+        and (os.name == "posix" or (expected_parent_id[1] and parent_st.st_ino))
+        and (parent_st.st_dev, parent_st.st_ino) != expected_parent_id
+    ):
+        raise OSError(f"Directory changed during scan: {target_parent}")
 
 
 def _read_regular_text(
@@ -589,15 +731,26 @@ def _read_regular_text(
     root: Path | None = None,
     max_bytes: int | None = None,
     dir_fd: int | None = None,
+    expected_parent_dir: Path | None = None,
+    expected_parent_id: tuple[int, int] | None = None,
 ) -> tuple[str, os.stat_result]:
     """Read UTF-8 text from a regular, non-symlink file within ``root`` and size cap."""
     limit = MAX_LIBRARY_FILE_BYTES if max_bytes is None else max_bytes
+    root_resolved: Path | None = None
     if dir_fd is not None:
         entry_name = path.name
         if not entry_name or entry_name in (".", "..") or "/" in entry_name or "\\" in entry_name:
             raise OSError(f"Invalid library entry name: {path}")
         lstat_res = os.lstat(entry_name, dir_fd=dir_fd)
     else:
+        if root is not None:
+            root_resolved = root.resolve(strict=True)
+            _verify_checked_parent(
+                path,
+                root_resolved=root_resolved,
+                expected_parent_dir=expected_parent_dir,
+                expected_parent_id=expected_parent_id,
+            )
         if _IS_JUNCTION is not None and _IS_JUNCTION(path):
             raise OSError(errno.ELOOP, f"Refusing to follow junction: {path}")
         lstat_res = path.lstat()
@@ -605,9 +758,14 @@ def _read_regular_text(
         raise OSError(errno.ELOOP, f"Refusing to follow symlink: {path}")
     if not stat.S_ISREG(lstat_res.st_mode):
         raise OSError(f"Not a regular file: {path}")
-    if dir_fd is None and root is not None:
-        if not path.resolve().is_relative_to(root.resolve()):
+    if dir_fd is None and root_resolved is not None:
+        resolved_path = path.resolve(strict=True)
+        if not _path_is_within(resolved_path, root_resolved):
             raise OSError(f"Path escapes library root: {path}")
+        if expected_parent_dir is not None and not _same_normalized_path(
+            resolved_path.parent, expected_parent_dir
+        ):
+            raise OSError(f"Path escapes checked directory: {path}")
     flags = os.O_RDONLY
     for attr in ("O_NOFOLLOW", "O_NONBLOCK", "O_CLOEXEC", "O_BINARY"):
         flags |= getattr(os, attr, 0)
@@ -629,6 +787,21 @@ def _read_regular_text(
             st.st_ino,
         ) != (lstat_res.st_dev, lstat_res.st_ino):
             raise OSError(f"File changed during open: {path}")
+        if dir_fd is None and root_resolved is not None:
+            _verify_checked_parent(
+                path,
+                root_resolved=root_resolved,
+                expected_parent_dir=expected_parent_dir,
+                expected_parent_id=expected_parent_id,
+            )
+            fd_path = _fd_real_path(fd)
+            if fd_path is not None:
+                if not _path_is_within(fd_path, root_resolved):
+                    raise OSError(f"Opened file escapes library root: {path}")
+                if expected_parent_dir is not None and not _same_normalized_path(
+                    fd_path, expected_parent_dir / path.name
+                ):
+                    raise OSError(f"Opened file escapes checked directory: {path}")
         if st.st_size > limit:
             raise ValueError(f"file exceeds {limit} byte limit")
         chunks: list[bytes] = []
@@ -652,28 +825,67 @@ def get_or_create_library_id(memory_dir: Path | str) -> str:
     """Return the persisted random namespace for one research library."""
     memory_path = Path(memory_dir).expanduser()
     memory_path.mkdir(parents=True, exist_ok=True)
-    id_path = memory_path / LIBRARY_ID_FILENAME
-    try:
-        raw_id, _ = _read_regular_text(id_path, root=memory_path, max_bytes=1024)
-        library_id = raw_id.strip()
-    except FileNotFoundError:
-        library_id = uuid.uuid4().hex
-        flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
-        for attr in ("O_NOFOLLOW", "O_CLOEXEC"):
-            flags |= getattr(os, attr, 0)
-        try:
-            fd = os.open(id_path, flags, 0o600)
-        except FileExistsError:
-            raw_id, _ = _read_regular_text(id_path, root=memory_path, max_bytes=1024)
-            library_id = raw_id.strip()
-        else:
+    resolved_memory = memory_path.resolve(strict=True)
+    id_path = resolved_memory / LIBRARY_ID_FILENAME
+    if _SUPPORTS_DIR_FD:
+        with _open_dir_fd(resolved_memory) as memory_fd:
             try:
-                stream = os.fdopen(fd, "w", encoding="utf-8")
-            except BaseException:
-                os.close(fd)
-                raise
-            with stream:
-                stream.write(f"{library_id}\n")
+                raw_id, _ = _read_regular_text(id_path, max_bytes=1024, dir_fd=memory_fd)
+                library_id = raw_id.strip()
+            except FileNotFoundError:
+                library_id = uuid.uuid4().hex
+                flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+                for attr in ("O_NOFOLLOW", "O_CLOEXEC"):
+                    flags |= getattr(os, attr, 0)
+                try:
+                    fd = os.open(LIBRARY_ID_FILENAME, flags, 0o600, dir_fd=memory_fd)
+                except FileExistsError:
+                    raw_id, _ = _read_regular_text(id_path, max_bytes=1024, dir_fd=memory_fd)
+                    library_id = raw_id.strip()
+                else:
+                    try:
+                        stream = os.fdopen(fd, "w", encoding="utf-8")
+                    except BaseException:
+                        os.close(fd)
+                        raise
+                    with stream:
+                        stream.write(f"{library_id}\n")
+    else:
+        memory_stat = _checked_subdir_stat(resolved_memory, resolved_memory)
+        memory_id = (memory_stat.st_dev, memory_stat.st_ino) if memory_stat is not None else None
+        try:
+            raw_id, _ = _read_regular_text(
+                id_path,
+                root=resolved_memory,
+                max_bytes=1024,
+                expected_parent_dir=resolved_memory,
+                expected_parent_id=memory_id,
+            )
+            library_id = raw_id.strip()
+        except FileNotFoundError:
+            library_id = uuid.uuid4().hex
+            flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+            for attr in ("O_NOFOLLOW", "O_CLOEXEC"):
+                flags |= getattr(os, attr, 0)
+            try:
+                fd = os.open(id_path, flags, 0o600)
+            except FileExistsError:
+                raw_id, _ = _read_regular_text(
+                    id_path,
+                    root=resolved_memory,
+                    max_bytes=1024,
+                    expected_parent_dir=resolved_memory,
+                    expected_parent_id=memory_id,
+                )
+                library_id = raw_id.strip()
+            else:
+                try:
+                    stream = os.fdopen(fd, "w", encoding="utf-8")
+                except BaseException:
+                    os.close(fd)
+                    raise
+                with stream:
+                    stream.write(f"{library_id}\n")
     if not _LIBRARY_ID.fullmatch(library_id):
         raise ValueError(f"invalid library ID in {id_path}")
     return library_id
@@ -684,11 +896,17 @@ def is_generated_brief_name(name: str) -> bool:
     return _GENERATED_BRIEF_NAME.fullmatch(name) is not None
 
 
-def _canonical_dir_path(path: Path) -> Path:
+def _resolve_scan_root(raw_path: Path, notes: list[str]) -> Path | None:
+    """Strictly resolve an existing scan root without collapsing missing ``..`` segments."""
     try:
-        return path.resolve()
-    except (OSError, RuntimeError):
-        return path
+        return raw_path.resolve(strict=True)
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    except (OSError, RuntimeError) as exc:
+        if isinstance(exc, OSError) and exc.errno in (errno.ENOENT, errno.ENOTDIR):
+            return None
+        notes.append(f"Skipped {raw_path}: {exc}")
+        return None
 
 
 def scan_library(
@@ -703,118 +921,143 @@ def scan_library(
     """
     entries: dict[str, LibraryEntry] = {}
     notes: list[str] = []
-    memory_path = _canonical_dir_path(Path(memory_dir).expanduser())
-    briefs_path = _canonical_dir_path(Path(briefs_dir).expanduser())
+    memory_path = _resolve_scan_root(Path(memory_dir).expanduser(), notes)
+    briefs_path = _resolve_scan_root(Path(briefs_dir).expanduser(), notes)
 
     if _SUPPORTS_DIR_FD:
-        try:
-            with _open_dir_fd(memory_path) as memory_fd:
-                finished_path = memory_path / FINISHED_SUBDIR
-                try:
-                    with _open_dir_fd(
-                        FINISHED_SUBDIR, dir_fd=memory_fd, nofollow=True
-                    ) as finished_fd:
-                        for name in sorted(os.listdir(finished_fd)):
-                            if not name.endswith(".md"):
-                                continue
-                            path = finished_path / name
+        if memory_path is not None:
+            try:
+                with _open_dir_fd(memory_path) as memory_fd:
+                    finished_path = memory_path / FINISHED_SUBDIR
+                    try:
+                        with _open_dir_fd(
+                            FINISHED_SUBDIR, dir_fd=memory_fd, nofollow=True
+                        ) as finished_fd:
+                            for name in _listdir_pinned(finished_fd, finished_path):
+                                if not name.endswith(".md"):
+                                    continue
+                                path = finished_path / name
+                                try:
+                                    entry = parse_markdown_file(
+                                        path,
+                                        source_format="finished-brief",
+                                        dir_fd=finished_fd,
+                                    )
+                                    _keep_preferred(entries, entry)
+                                except (OSError, UnicodeError, ValueError) as exc:
+                                    notes.append(f"Skipped {path}: {exc}")
+                                    continue
+                    except FileNotFoundError:
+                        pass
+                    except OSError as exc:
+                        if exc.errno == errno.ELOOP:
+                            notes.append(f"Skipped {finished_path}: refusing to follow symlink directory")
+                        elif exc.errno == errno.ENOTDIR:
                             try:
-                                entry = parse_markdown_file(
-                                    path,
-                                    source_format="finished-brief",
-                                    dir_fd=finished_fd,
-                                )
-                                _keep_preferred(entries, entry)
-                            except (OSError, UnicodeError, ValueError) as exc:
-                                notes.append(f"Skipped {path}: {exc}")
-                                continue
-                except FileNotFoundError:
-                    pass
-                except OSError as exc:
-                    if exc.errno == errno.ELOOP:
-                        notes.append(f"Skipped {finished_path}: refusing to follow symlink directory")
-                    elif exc.errno == errno.ENOTDIR:
-                        try:
-                            if stat.S_ISLNK(os.lstat(FINISHED_SUBDIR, dir_fd=memory_fd).st_mode):
-                                notes.append(
-                                    f"Skipped {finished_path}: refusing to follow symlink directory"
-                                )
-                        except OSError:
-                            pass
-                    else:
-                        notes.append(f"Skipped {finished_path}: {exc}")
+                                if stat.S_ISLNK(os.lstat(FINISHED_SUBDIR, dir_fd=memory_fd).st_mode):
+                                    notes.append(
+                                        f"Skipped {finished_path}: refusing to follow symlink directory"
+                                    )
+                            except OSError:
+                                pass
+                        else:
+                            notes.append(f"Skipped {finished_path}: {exc}")
 
-                for name in sorted(os.listdir(memory_fd)):
-                    if not name.endswith(".md"):
-                        continue
-                    path = memory_path / name
+                    for name in _listdir_pinned(memory_fd, memory_path):
+                        if not name.endswith(".md"):
+                            continue
+                        path = memory_path / name
+                        try:
+                            entry = parse_markdown_file(
+                                path,
+                                source_format="markdown",
+                                dir_fd=memory_fd,
+                            )
+                            _keep_preferred(entries, entry)
+                        except (OSError, UnicodeError, ValueError) as exc:
+                            notes.append(f"Skipped {path}: {exc}")
+                            continue
+            except (FileNotFoundError, NotADirectoryError):
+                pass
+            except OSError as exc:
+                if exc.errno not in (errno.ENOENT, errno.ENOTDIR):
+                    notes.append(f"Skipped {memory_path}: {exc}")
+
+        if briefs_path is not None:
+            try:
+                with _open_dir_fd(briefs_path) as briefs_fd:
+                    for name in _listdir_pinned(briefs_fd, briefs_path):
+                        if not name.endswith(".json"):
+                            continue
+                        path = briefs_path / name
+                        try:
+                            entry = _parse_briefing(path, dir_fd=briefs_fd)
+                            _keep_preferred(entries, entry)
+                        except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+                            notes.append(f"Skipped {path}: {exc}")
+                            continue
+            except (FileNotFoundError, NotADirectoryError):
+                pass
+            except OSError as exc:
+                if exc.errno not in (errno.ENOENT, errno.ENOTDIR):
+                    notes.append(f"Skipped {briefs_path}: {exc}")
+    else:
+        if memory_path is not None:
+            memory_stat = _checked_subdir_stat(memory_path, memory_path)
+            if memory_stat is not None:
+                memory_id = (memory_stat.st_dev, memory_stat.st_ino)
+                finished_path = memory_path / FINISHED_SUBDIR
+                finished_stat = _checked_subdir_stat(finished_path, memory_path)
+                if finished_stat is not None:
+                    finished_id = (finished_stat.st_dev, finished_stat.st_ino)
+                    for path in sorted(finished_path.glob("*.md")):
+                        try:
+                            entry = parse_markdown_file(
+                                path,
+                                source_format="finished-brief",
+                                root=memory_path,
+                                expected_parent_dir=finished_path,
+                                expected_parent_id=finished_id,
+                            )
+                            _keep_preferred(entries, entry)
+                        except (OSError, UnicodeError, ValueError) as exc:
+                            notes.append(f"Skipped {path}: {exc}")
+                            continue
+                elif finished_path.is_symlink() or (
+                    _IS_JUNCTION is not None and _IS_JUNCTION(finished_path)
+                ):
+                    notes.append(f"Skipped {finished_path}: refusing to follow symlink directory")
+
+                for path in sorted(memory_path.glob("*.md")):
                     try:
                         entry = parse_markdown_file(
                             path,
                             source_format="markdown",
-                            dir_fd=memory_fd,
+                            root=memory_path,
+                            expected_parent_dir=memory_path,
+                            expected_parent_id=memory_id,
                         )
                         _keep_preferred(entries, entry)
                     except (OSError, UnicodeError, ValueError) as exc:
                         notes.append(f"Skipped {path}: {exc}")
                         continue
-        except (FileNotFoundError, NotADirectoryError):
-            pass
-        except OSError as exc:
-            if exc.errno not in (errno.ENOENT, errno.ENOTDIR):
-                notes.append(f"Skipped {memory_path}: {exc}")
 
-        try:
-            with _open_dir_fd(briefs_path) as briefs_fd:
-                for name in sorted(os.listdir(briefs_fd)):
-                    if not name.endswith(".json"):
-                        continue
-                    path = briefs_path / name
+        if briefs_path is not None:
+            briefs_stat = _checked_subdir_stat(briefs_path, briefs_path)
+            if briefs_stat is not None:
+                briefs_id = (briefs_stat.st_dev, briefs_stat.st_ino)
+                for path in sorted(briefs_path.glob("*.json")):
                     try:
-                        entry = _parse_briefing(path, dir_fd=briefs_fd)
+                        entry = _parse_briefing(
+                            path,
+                            root=briefs_path,
+                            expected_parent_dir=briefs_path,
+                            expected_parent_id=briefs_id,
+                        )
                         _keep_preferred(entries, entry)
                     except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
                         notes.append(f"Skipped {path}: {exc}")
                         continue
-        except (FileNotFoundError, NotADirectoryError):
-            pass
-        except OSError as exc:
-            if exc.errno not in (errno.ENOENT, errno.ENOTDIR):
-                notes.append(f"Skipped {briefs_path}: {exc}")
-    else:
-        if memory_path.is_dir():
-            finished_path = memory_path / FINISHED_SUBDIR
-            if _is_safe_subdir(finished_path, memory_path):
-                for path in sorted(finished_path.glob("*.md")):
-                    try:
-                        entry = parse_markdown_file(
-                            path, source_format="finished-brief", root=finished_path
-                        )
-                        _keep_preferred(entries, entry)
-                    except (OSError, UnicodeError, ValueError) as exc:
-                        notes.append(f"Skipped {path}: {exc}")
-                        continue
-            elif finished_path.is_symlink() or (
-                _IS_JUNCTION is not None and _IS_JUNCTION(finished_path)
-            ):
-                notes.append(f"Skipped {finished_path}: refusing to follow symlink directory")
-
-            for path in sorted(memory_path.glob("*.md")):
-                try:
-                    entry = parse_markdown_file(path, source_format="markdown", root=memory_path)
-                    _keep_preferred(entries, entry)
-                except (OSError, UnicodeError, ValueError) as exc:
-                    notes.append(f"Skipped {path}: {exc}")
-                    continue
-
-        if briefs_path.is_dir():
-            for path in sorted(briefs_path.glob("*.json")):
-                try:
-                    entry = _parse_briefing(path, root=briefs_path)
-                    _keep_preferred(entries, entry)
-                except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
-                    notes.append(f"Skipped {path}: {exc}")
-                    continue
 
     filtered = _suppress_superseded_raw(entries)
     ordered = sorted(
@@ -863,9 +1106,17 @@ def parse_markdown_file(
     source_format: str = "markdown",
     root: Path | None = None,
     dir_fd: int | None = None,
+    expected_parent_dir: Path | None = None,
+    expected_parent_id: tuple[int, int] | None = None,
 ) -> LibraryEntry:
     """Parse one saved Markdown report or finished brief into a LibraryEntry."""
-    content, st = _read_regular_text(path, root=root, dir_fd=dir_fd)
+    content, st = _read_regular_text(
+        path,
+        root=root,
+        dir_fd=dir_fd,
+        expected_parent_dir=expected_parent_dir,
+        expected_parent_id=expected_parent_id,
+    )
     unbounded_private = is_unbounded_private_brief(content, source_format=source_format)
     parse_source = content if unbounded_private else public_markdown(content)
     meta_topic_match = _TOPIC_META_COMMENT.search(content)
@@ -1042,8 +1293,16 @@ def _parse_briefing(
     *,
     root: Path | None = None,
     dir_fd: int | None = None,
+    expected_parent_dir: Path | None = None,
+    expected_parent_id: tuple[int, int] | None = None,
 ) -> LibraryEntry:
-    raw_text, st = _read_regular_text(path, root=root, dir_fd=dir_fd)
+    raw_text, st = _read_regular_text(
+        path,
+        root=root,
+        dir_fd=dir_fd,
+        expected_parent_dir=expected_parent_dir,
+        expected_parent_id=expected_parent_id,
+    )
     data = json.loads(raw_text)
     if not isinstance(data, dict):
         raise ValueError("briefing JSON is not an object")
