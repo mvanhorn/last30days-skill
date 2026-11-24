@@ -584,22 +584,14 @@ def _extract_json_values(text: str) -> List[Any]:
 
 
 def _posts_from_json_value(value: Any, *, depth: int = 0) -> List[Dict[str, Any]]:
-    if depth > 4:
+    if depth > 6:
         return []
     if isinstance(value, list):
-        posts = []
-        for item in value:
-            fields = _fields_from_json_obj(item)
-            if fields:
-                posts.append(fields)
-        if posts:
-            return posts
+        posts: List[Dict[str, Any]] = []
         for item in value:
             if isinstance(item, (dict, list, str)):
-                nested_posts = _posts_from_json_value(item, depth=depth + 1)
-                if nested_posts:
-                    return nested_posts
-        return []
+                posts.extend(_posts_from_json_value(item, depth=depth + 1))
+        return posts
     if isinstance(value, str):
         for nested in _extract_json_values(value):
             posts = _posts_from_json_value(nested, depth=depth + 1)

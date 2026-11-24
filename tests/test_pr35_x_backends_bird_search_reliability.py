@@ -251,6 +251,15 @@ class TestHigh139GrokWrapperParsing:
         assert items[0]["url"] == f"https://x.com/alice/status/{IN_WINDOW_ID}"
         assert items[0]["text"] == "wrapped inside structured result"
 
+        # Same wrapper inside a top-level JSON array must still unwrap result.posts
+        # instead of matching the wrapper object itself via _fields_from_json_obj.
+        array_of_wrappers = [{"type": "system", "message": "init"}, structured_wrapper]
+        items_arr = grok_x.parse_x_response({"text": json.dumps(array_of_wrappers)}, "alice", *WINDOW)
+        assert len(items_arr) == 1
+        assert items_arr[0]["author_handle"] == "alice"
+        assert items_arr[0]["url"] == f"https://x.com/alice/status/{IN_WINDOW_ID}"
+        assert items_arr[0]["text"] == "wrapped inside structured result"
+
     def test_top_level_json_array_of_cli_wrappers_unwraps_prose_and_collections(self):
         prose_stream = [
             {"type": "system", "message": "init"},
