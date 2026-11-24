@@ -8,6 +8,7 @@ import http.client as http_client
 import io
 import json
 import os
+import re
 import shutil
 import socket
 import ssl
@@ -15,7 +16,9 @@ import sys
 import tempfile
 import threading
 import time
+from typing import Any
 import urllib.error
+from urllib.parse import urlsplit
 import urllib.request
 from pathlib import Path
 
@@ -32,6 +35,10 @@ MAX_META_BYTES = 256 * 1024
 _STREAM_CHUNK_BYTES = 64 * 1024
 _MAX_HEADER_COUNT = 256
 _MAX_HEADER_BYTES = 64 * 1024
+_REDIRECT_POLICY_ATTR = "_last30days_redirect_policy"
+_STRICT_HOSTNAME_RE = re.compile(
+    r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$"
+)
 _PRIORITY_RESPONSE_HEADERS = frozenset({
     "retry-after",
     "x-l30d-charge-credits",
@@ -77,6 +84,8 @@ def _error_record(exc):
 
 
 def _error_from_record(record):
+    from lib import public_host
+
     if record["kind"] == "URLError":
         reason = record["reason"]
         return urllib.error.URLError(_error_from_record(reason) if isinstance(reason, dict) else reason)
@@ -87,8 +96,10 @@ def _error_from_record(record):
         "TimeoutError": TimeoutError,
         "ConnectionResetError": ConnectionResetError,
         "ConnectionRefusedError": ConnectionRefusedError,
+        "NonPublicAddressError": public_host.NonPublicAddressError,
         "OSError": OSError,
         "ResponseTooLarge": ResponseTooLarge,
+        "ValueError": ValueError,
         "SSLError": ssl.SSLError,
         "SSLCertVerificationError": ssl.SSLCertVerificationError,
     }
@@ -96,6 +107,65 @@ def _error_from_record(record):
     if record.get("errno") is not None:
         return kind(record["errno"], record["message"])
     return kind(record["message"])
+
+
+def _url_matches_policy(url: str, policy: dict[str, Any]) -> bool:
+    """Validate ``url`` against a declarative JSON-serializable redirect policy."""
+    from lib import public_host
+
+    if not isinstance(url, str) or not url or url != url.strip():
+        return False
+    if any(ch.isspace() or ord(ch) < 0x20 or ord(ch) == 0x7F for ch in url):
+        return False
+    require_public = bool(policy.get("require_public_syntax", True))
+    if require_public and not public_host.is_public_address_syntax(url):
+        return False
+    try:
+        parts = urlsplit(url)
+        port = parts.port
+    except ValueError:
+        return False
+    scheme = parts.scheme.lower()
+    https_only = bool(policy.get("https_only", False))
+    if https_only:
+        if scheme != "https":
+            return False
+    elif scheme not in ("http", "https"):
+        return False
+    if parts.username is not None or parts.password is not None or "\\" in parts.netloc:
+        return False
+    allowed_ports_raw = policy.get("allowed_ports")
+    if allowed_ports_raw is not None:
+        allowed_ports = frozenset(int(p) for p in allowed_ports_raw)
+        effective_port = port if port is not None else (443 if scheme == "https" else 80)
+        if effective_port not in allowed_ports:
+            return False
+    raw_host = parts.hostname or ""
+    if not raw_host or not raw_host.isascii():
+        return False
+    host = raw_host[:-1].lower() if raw_host.endswith(".") else raw_host.lower()
+    exact_hosts = frozenset(str(h).lower() for h in (policy.get("exact_hosts") or ()))
+    suffix_hosts = tuple(str(s).lower() for s in (policy.get("suffix_hosts") or ()))
+    if exact_hosts or suffix_hosts:
+        if require_public:
+            if len(host) > 253 or not _STRICT_HOSTNAME_RE.fullmatch(host):
+                return False
+            if public_host._parse_ip_literal(host) is not None:
+                return False
+        return host in exact_hosts or host.endswith(suffix_hosts)
+    return True
+
+
+def _build_redirect_guard(policy: dict[str, Any]):
+    """Build a redirect-guard callable from a declarative redirect policy."""
+    allow_redirects = bool(policy.get("allow_redirects", True))
+
+    def _guard(newurl: str) -> bool:
+        if not allow_redirects:
+            return False
+        return _url_matches_policy(newurl, policy)
+
+    return _guard
 
 
 def _serialize_headers(raw_headers) -> list[list[str]]:
@@ -213,16 +283,30 @@ def get(
     read_error_body: bool = True,
     with_headers: bool = False,
     max_bytes: int = MAX_RESPONSE_BYTES,
+    public_only: bool | None = None,
+    redirect_policy: dict[str, Any] | None = None,
 ):
     """Run one GET in a child process killed at the deadline.
 
     Returns ``(status, body, error)``, or ``(status, body, error, headers)``
     with ``with_headers`` (the response headers as name/value pairs).
     """
+    from lib import http
+
     if req.get_method() != "GET":
         raise ValueError("bounded transport supports GET only")
     if max_bytes <= 0:
         raise ValueError("max_bytes must be positive")
+    effective_public_only = (
+        bool(getattr(req, http._PUBLIC_ONLY_ATTR, False))
+        if public_only is None
+        else bool(public_only)
+    )
+    effective_redirect_policy = (
+        getattr(req, _REDIRECT_POLICY_ATTR, None)
+        if redirect_policy is None
+        else redirect_policy
+    )
     body_dir: str | None = None
     body_path: str | None = None
     try:
@@ -242,7 +326,7 @@ def get(
             )
             fd = os.open(body_path, create_flags, 0o600)
             os.close(fd)
-        payload = {
+        payload: dict[str, Any] = {
             "url": req.full_url,
             "headers": req.headers,
             "unredirected_headers": req.unredirected_hdrs,
@@ -253,6 +337,8 @@ def get(
             "with_headers": with_headers,
             "max_bytes": max_bytes,
             "body_path": body_path,
+            "public_only": effective_public_only,
+            "redirect_policy": effective_redirect_policy,
         }
         transport_deadline = deadline_monotonic - 2 * CLEANUP_GRACE_SECONDS
         try:
@@ -316,6 +402,9 @@ def _main():
     )
     for key, value in payload["unredirected_headers"].items():
         req.add_unredirected_header(key, value)
+    if payload.get("public_only"):
+        setattr(req, http._PUBLIC_ONLY_ATTR, True)
+    redirect_policy = payload.get("redirect_policy")
     max_bytes = int(payload.get("max_bytes") or MAX_RESPONSE_BYTES)
     if max_bytes <= 0:
         max_bytes = MAX_RESPONSE_BYTES
@@ -323,6 +412,10 @@ def _main():
     want_headers = bool(payload.get("with_headers", True))
     error_reason = None
     try:
+        if isinstance(redirect_policy, dict):
+            if not _url_matches_policy(req.full_url, redirect_policy):
+                raise urllib.error.URLError("refused URL by redirect policy")
+            setattr(req, http._REDIRECT_GUARD_ATTR, _build_redirect_guard(redirect_policy))
         try:
             response = http.open_request(req, payload["timeout"])
         except urllib.error.HTTPError as exc:
