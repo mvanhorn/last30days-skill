@@ -744,11 +744,24 @@ def test_setup_pass_bash_syntax_and_bash32_safe_regexes():
     assert check.returncode == 0, check.stderr
     for script_path in (SETUP_PASS_SH, SETUP_KEYCHAIN_SH):
         text = script_path.read_text(encoding="utf-8")
+        lines = text.splitlines()
         # Ensure every `=~` uses a variable RHS (Bash 3.2 rejects inline parentheses).
-        for line in text.splitlines():
+        for line in lines:
             stripped = line.strip()
             if "=~" in stripped and not stripped.startswith("#"):
                 assert "=~ $" in stripped, f"inline regex in {script_path.name}: {line}"
+        # Ensure every `"${TARGETS[@]}"` expansion is preceded by a `${#TARGETS[@]}` non-empty guard
+        # (macOS Bash 3.2 aborts on empty `"${arr[@]}"` under `set -u`).
+        for idx, line in enumerate(lines):
+            if '"${TARGETS[@]}"' in line:
+                window = "\n".join(lines[max(0, idx - 10):idx])
+                assert "${#TARGETS[@]}" in window, (
+                    f"unguarded TARGETS[@] expansion in {script_path.name}:{idx + 1}: {line}"
+                )
+        # Ensure bare `"$@"` after `shift` is guarded by `$# -gt 0` (Bash 3.2 `set -u`).
+        for line in lines:
+            if '"$@"' in line and not line.strip().startswith("#"):
+                assert "$# -gt 0" in line, f"unguarded $@ expansion in {script_path.name}: {line}"
 
 
 @pytest.fixture

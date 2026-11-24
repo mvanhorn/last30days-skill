@@ -59,7 +59,7 @@ while [[ $# -gt 0 ]]; do
     --delete) ACTION="delete"; shift ;;
     --replace) REPLACE=1; shift ;;
     --help|-h) sed -n '2,/^$/p' "$0" | sed 's/^# //; s/^#//'; exit 0 ;;
-    --) shift; TARGETS+=("$@"); break ;;
+    --) shift; if [[ $# -gt 0 ]]; then TARGETS+=("$@"); fi; break ;;
     -*) echo "unknown flag: $1" >&2; exit 2 ;;
     *) TARGETS+=("$1"); shift ;;
   esac
@@ -97,12 +97,14 @@ is_valid_key() {
   return 1
 }
 
-for key in "${TARGETS[@]}"; do
-  if ! is_valid_key "$key"; then
-    echo "unknown or invalid key: $key" >&2
-    exit 2
-  fi
-done
+if [[ ${#TARGETS[@]} -gt 0 ]]; then
+  for key in "${TARGETS[@]}"; do
+    if ! is_valid_key "$key"; then
+      echo "unknown or invalid key: $key" >&2
+      exit 2
+    fi
+  done
+fi
 
 # Checked after flag parsing so `--help` works on a box without pass installed.
 if ! command -v pass >/dev/null 2>&1; then
