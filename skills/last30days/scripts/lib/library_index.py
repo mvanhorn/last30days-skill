@@ -271,10 +271,10 @@ def _sync_library(
             if library.is_unbounded_private_brief(entry.content, source_format=entry.source_format):
                 continue
             current_ids.add(entry.entry_id)
-            file_stat = _regular_stat(entry.source_path)
+            mtime_ns, file_size = _entry_file_identity(entry)
             fingerprint = _fingerprint(_indexable_content(entry.content))
             if fts_trustworthy and existing.get(entry.entry_id) == (
-                file_stat.st_mtime_ns, file_stat.st_size, fingerprint
+                mtime_ns, file_size, fingerprint
             ):
                 unchanged += 1
                 continue
@@ -302,6 +302,13 @@ def _regular_stat(path: Path) -> os.stat_result:
     return st
 
 
+def _entry_file_identity(entry: library.LibraryEntry) -> tuple[int, int]:
+    if entry.source_mtime_ns is not None and entry.source_size is not None:
+        return entry.source_mtime_ns, entry.source_size
+    st = _regular_stat(entry.source_path)
+    return st.st_mtime_ns, st.st_size
+
+
 def _connect(path: Path) -> sqlite3.Connection:
     _ensure_private_directory(path.parent)
     safe_path = prepare_private_sqlite_files(path, create=True)
@@ -322,7 +329,7 @@ def _upsert_entry(
     *,
     fingerprint: str | None = None,
 ) -> None:
-    file_stat = _regular_stat(entry.source_path)
+    mtime_ns, file_size = _entry_file_identity(entry)
     private_free_content = library.public_markdown(entry.content)
     indexed_content = _without_library_context(private_free_content)
     headline = entry.headline
@@ -331,7 +338,7 @@ def _upsert_entry(
         headline = library._markdown_headline(private_free_content) or library._brief_prose_headline(private_free_content) or entry.topic
         summary = library._markdown_summary(private_free_content) or library._brief_prose_summary(private_free_content) or headline
     content_hash = fingerprint or _fingerprint(indexed_content)
-    source_path = str(entry.source_path.resolve())
+    source_path = os.path.abspath(entry.source_path)
     replaced = conn.execute(
         "SELECT entry_id FROM library_documents WHERE source_path = ? AND entry_id != ?",
         (source_path, entry.entry_id),
@@ -358,8 +365,8 @@ def _upsert_entry(
         (
             entry.entry_id,
             source_path,
-            file_stat.st_mtime_ns,
-            file_stat.st_size,
+            mtime_ns,
+            file_size,
             content_hash,
             entry.topic,
             entry.published_date.isoformat(),

@@ -482,6 +482,44 @@ def test_high210_multiple_unmarked_drill_followups_all_stripped():
     assert "UNMARKED_ONE_SECRET" not in sanitized_mixed
     assert "UNMARKED_TWO_NO_TRAILER_SECRET" not in sanitized_mixed
 
+    # Unmarked legacy drill containing an unclosed PRIVATE_CORPUS_START before a drill
+    # trailer must strip the explicit private block FIRST so private text after the
+    # trailer cannot survive drill cleanup.
+    drill_with_unclosed_private = (
+        "# last30days: Drill Unclosed Private\n\n"
+        "## Public Intro\n\n"
+        "PUBLIC_BEFORE_DRILL\n\n"
+        "## Drill Follow-up\n\n"
+        f"{library.PRIVATE_CORPUS_START}\n"
+        "SECRET_BEFORE_TRAILER\n\n"
+        "### Deeper\n\n"
+        "- 1 new items after dedupe\n"
+        "- Re-researched sources: Reddit\n\n"
+        "---\n\n"
+        "## Section After Trailer\n\n"
+        "SECRET_AFTER_TRAILER_MUST_NOT_LEAK\n"
+    )
+    sanitized_unclosed = library.public_markdown(drill_with_unclosed_private)
+    assert "PUBLIC_BEFORE_DRILL" in sanitized_unclosed
+    assert "SECRET_BEFORE_TRAILER" not in sanitized_unclosed
+    assert "SECRET_AFTER_TRAILER_MUST_NOT_LEAK" not in sanitized_unclosed
+    assert "## Drill Follow-up" not in sanitized_unclosed
+
+    # Closed private block placed between PUBLIC_DRILL_MARKER and an unmarked drill
+    # (whether newline-separated or same-line) must NOT splice the earlier public
+    # marker onto the unmarked drill.
+    for sep in ("\n", "", " "):
+        spliced_marker = (
+            "# last30days: Marker Splice Guard\n\n"
+            f"{library.PUBLIC_DRILL_MARKER}{sep}"
+            f"{library.PRIVATE_CORPUS_START}\nPRIVATE_SPACER\n{library.PRIVATE_CORPUS_END}\n"
+            "## Drill Follow-up\n\n"
+            "UNMARKED_DRILL_AFTER_SPLICE\n"
+        )
+        sanitized_spliced = library.public_markdown(spliced_marker)
+        assert "PRIVATE_SPACER" not in sanitized_spliced
+        assert "UNMARKED_DRILL_AFTER_SPLICE" not in sanitized_spliced
+
 
 def test_high210_legacy_cluster_strips_corpus_representatives_from_body(tmp_path: Path):
     md = (
@@ -635,6 +673,62 @@ def test_high211_get_or_create_library_id_rejects_symlink(tmp_path: Path):
 
     with pytest.raises(OSError):
         library.get_or_create_library_id(memory)
+
+
+@pytest.mark.skipif(not library._SUPPORTS_DIR_FD, reason="POSIX dir_fd pinning")
+def test_high211_scan_library_pins_finished_dir_fd_across_mid_scan_symlink_swap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "brief-2026-07-10.md").write_text(
+        "# External Secret\n\nEVIL_OUTSIDE_SECRET_PAYLOAD\n",
+        encoding="utf-8",
+    )
+
+    memory = tmp_path / "memory"
+    finished = memory / "finished"
+    finished.mkdir(parents=True)
+    (finished / "brief-2026-07-10.md").write_text(
+        "# Legit Pinned Brief\n\nLEGIT_PINNED_CONTENT\n",
+        encoding="utf-8",
+    )
+
+    real_listdir = os.listdir
+    swapped = False
+
+    def swap_finished_during_listing(target):
+        nonlocal swapped
+        names = real_listdir(target)
+        if not swapped and isinstance(target, int) and "brief-2026-07-10.md" in names:
+            swapped = True
+            moved = tmp_path / "finished-moved"
+            finished.rename(moved)
+            finished.symlink_to(outside)
+        return names
+
+    monkeypatch.setattr(library.os, "listdir", swap_finished_during_listing)
+
+    entries, notes = library.scan_library(memory, tmp_path / "no-briefs")
+    assert swapped is True
+    assert notes == []
+    assert [e.topic for e in entries] == ["Legit Pinned Brief"]
+    assert "LEGIT_PINNED_CONTENT" in entries[0].content
+    assert "EVIL_OUTSIDE_SECRET_PAYLOAD" not in entries[0].content
+
+    # Reset and verify library_index.sync_library also never indexes the external target.
+    finished.unlink()
+    (tmp_path / "finished-moved").rename(finished)
+    swapped = False
+    db_path = tmp_path / "library.db"
+    library_index.sync_library(memory, tmp_path / "no-briefs", db_path=db_path)
+    assert swapped is True
+    assert not library_index.search(
+        "EVIL_OUTSIDE_SECRET_PAYLOAD", db_path=db_path, store_db_path=tmp_path / "none.db"
+    )
+    assert library_index.search(
+        "LEGIT_PINNED_CONTENT", db_path=db_path, store_db_path=tmp_path / "none.db"
+    )
 
 
 # ---------------------------------------------------------------------------

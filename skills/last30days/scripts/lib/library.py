@@ -9,6 +9,7 @@ import os
 import re
 import stat
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -20,6 +21,13 @@ FINISHED_SUBDIR = "finished"
 LIBRARY_ID_FILENAME = ".last30days-library-id"
 MAX_LIBRARY_FILE_BYTES = 10 * 1024 * 1024
 _IS_JUNCTION = getattr(os.path, "isjunction", None)
+_SUPPORTS_DIR_FD = (
+    os.name == "posix"
+    and hasattr(os, "O_DIRECTORY")
+    and os.open in getattr(os, "supports_dir_fd", set())
+    and os.stat in getattr(os, "supports_dir_fd", set())
+    and os.listdir in getattr(os, "supports_fd", set())
+)
 PUBLIC_DRILL_MARKER = "<!-- LAST30DAYS_PUBLIC_DRILL -->"
 PUBLIC_FRESHNESS_MARKER = "<!-- LAST30DAYS_PUBLIC_FRESHNESS -->"
 PUBLIC_CLUSTERS_MARKER = "<!-- LAST30DAYS_PUBLIC_CLUSTERS -->"
@@ -467,12 +475,23 @@ def is_unbounded_private_brief(
     return bool(_BADGE_LINE.search(markdown) and has_private_corpus(markdown))
 
 
+def _strip_private_corpus_blocks(markdown: str) -> str:
+    """Strip explicit private corpus blocks without splicing an earlier public marker onto the next section."""
+    def _replace(match: re.Match[str]) -> str:
+        before = markdown[:match.start()].rstrip(" \t\r\n")
+        if before.endswith((PUBLIC_DRILL_MARKER, PUBLIC_CLUSTERS_MARKER, PUBLIC_FRESHNESS_MARKER)):
+            return "\n\n"
+        return ""
+
+    return _PRIVATE_CORPUS_BLOCK.sub(_replace, markdown)
+
+
 def public_markdown(markdown: str) -> str:
     if is_unbounded_private_brief(markdown):
         return ""
     corpus_document = has_private_corpus(markdown)
+    markdown = _strip_private_corpus_blocks(markdown)
     markdown = _strip_unmarked_drills(markdown)
-    markdown = _PRIVATE_CORPUS_BLOCK.sub("", markdown)
     markdown = _strip_from_your_files_sections(markdown)
     if corpus_document:
         # The old renderer could keep a drill's local-derived cluster title
@@ -499,6 +518,8 @@ class LibraryEntry:
     content: str
     source_updated_at: datetime
     source_format: str = "markdown"
+    source_mtime_ns: int | None = None
+    source_size: int | None = None
 
     @property
     def entry_id(self) -> str:
@@ -522,6 +543,24 @@ def slugify(value: str) -> str:
     return slug or "last30days"
 
 
+@contextmanager
+def _open_dir_fd(
+    target: Path | str,
+    *,
+    dir_fd: int | None = None,
+    nofollow: bool = False,
+):
+    """Open a directory descriptor pinned against concurrent directory swaps on POSIX."""
+    flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0)
+    if nofollow:
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(target, flags, dir_fd=dir_fd) if dir_fd is not None else os.open(target, flags)
+    try:
+        yield fd
+    finally:
+        os.close(fd)
+
+
 def _is_safe_subdir(subdir: Path, root: Path) -> bool:
     """Return True when ``subdir`` is a non-symlink directory contained inside ``root``."""
     if _IS_JUNCTION is not None and _IS_JUNCTION(subdir):
@@ -543,24 +582,34 @@ def _read_regular_text(
     *,
     root: Path | None = None,
     max_bytes: int | None = None,
+    dir_fd: int | None = None,
 ) -> tuple[str, os.stat_result]:
     """Read UTF-8 text from a regular, non-symlink file within ``root`` and size cap."""
     limit = MAX_LIBRARY_FILE_BYTES if max_bytes is None else max_bytes
-    if _IS_JUNCTION is not None and _IS_JUNCTION(path):
-        raise OSError(errno.ELOOP, f"Refusing to follow junction: {path}")
-    lstat_res = path.lstat()
+    if dir_fd is not None:
+        entry_name = path.name
+        if not entry_name or entry_name in (".", "..") or "/" in entry_name or "\\" in entry_name:
+            raise OSError(f"Invalid library entry name: {path}")
+        lstat_res = os.lstat(entry_name, dir_fd=dir_fd)
+    else:
+        if _IS_JUNCTION is not None and _IS_JUNCTION(path):
+            raise OSError(errno.ELOOP, f"Refusing to follow junction: {path}")
+        lstat_res = path.lstat()
     if stat.S_ISLNK(lstat_res.st_mode):
         raise OSError(errno.ELOOP, f"Refusing to follow symlink: {path}")
     if not stat.S_ISREG(lstat_res.st_mode):
         raise OSError(f"Not a regular file: {path}")
-    if root is not None:
+    if dir_fd is None and root is not None:
         if not path.resolve().is_relative_to(root.resolve()):
             raise OSError(f"Path escapes library root: {path}")
     flags = os.O_RDONLY
     for attr in ("O_NOFOLLOW", "O_NONBLOCK", "O_CLOEXEC", "O_BINARY"):
         flags |= getattr(os, attr, 0)
     try:
-        fd = os.open(path, flags)
+        if dir_fd is not None:
+            fd = os.open(entry_name, flags, dir_fd=dir_fd)
+        else:
+            fd = os.open(path, flags)
     except OSError as exc:
         if exc.errno == errno.ELOOP:
             raise OSError(errno.ELOOP, f"Refusing to follow symlink: {path}") from exc
@@ -644,39 +693,115 @@ def scan_library(
     memory_path = Path(memory_dir).expanduser()
     briefs_path = Path(briefs_dir).expanduser()
 
-    if memory_path.is_dir():
-        finished_path = memory_path / FINISHED_SUBDIR
-        if _is_safe_subdir(finished_path, memory_path):
-            for path in sorted(finished_path.glob("*.md")):
+    if _SUPPORTS_DIR_FD:
+        try:
+            with _open_dir_fd(memory_path) as memory_fd:
+                finished_path = memory_path / FINISHED_SUBDIR
                 try:
-                    entry = parse_markdown_file(
-                        path, source_format="finished-brief", root=finished_path
-                    )
+                    with _open_dir_fd(
+                        FINISHED_SUBDIR, dir_fd=memory_fd, nofollow=True
+                    ) as finished_fd:
+                        for name in sorted(os.listdir(finished_fd)):
+                            if not name.endswith(".md"):
+                                continue
+                            path = finished_path / name
+                            try:
+                                entry = parse_markdown_file(
+                                    path,
+                                    source_format="finished-brief",
+                                    dir_fd=finished_fd,
+                                )
+                                _keep_preferred(entries, entry)
+                            except (OSError, UnicodeError, ValueError) as exc:
+                                notes.append(f"Skipped {path}: {exc}")
+                                continue
+                except FileNotFoundError:
+                    pass
+                except OSError as exc:
+                    if exc.errno == errno.ELOOP:
+                        notes.append(f"Skipped {finished_path}: refusing to follow symlink directory")
+                    elif exc.errno == errno.ENOTDIR:
+                        try:
+                            if stat.S_ISLNK(os.lstat(FINISHED_SUBDIR, dir_fd=memory_fd).st_mode):
+                                notes.append(
+                                    f"Skipped {finished_path}: refusing to follow symlink directory"
+                                )
+                        except OSError:
+                            pass
+                    else:
+                        notes.append(f"Skipped {finished_path}: {exc}")
+
+                for name in sorted(os.listdir(memory_fd)):
+                    if not name.endswith(".md"):
+                        continue
+                    path = memory_path / name
+                    try:
+                        entry = parse_markdown_file(
+                            path,
+                            source_format="markdown",
+                            dir_fd=memory_fd,
+                        )
+                        _keep_preferred(entries, entry)
+                    except (OSError, UnicodeError, ValueError) as exc:
+                        notes.append(f"Skipped {path}: {exc}")
+                        continue
+        except (FileNotFoundError, NotADirectoryError):
+            pass
+        except OSError as exc:
+            if exc.errno not in (errno.ENOENT, errno.ENOTDIR):
+                notes.append(f"Skipped {memory_path}: {exc}")
+
+        try:
+            with _open_dir_fd(briefs_path) as briefs_fd:
+                for name in sorted(os.listdir(briefs_fd)):
+                    if not name.endswith(".json"):
+                        continue
+                    path = briefs_path / name
+                    try:
+                        entry = _parse_briefing(path, dir_fd=briefs_fd)
+                        _keep_preferred(entries, entry)
+                    except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+                        notes.append(f"Skipped {path}: {exc}")
+                        continue
+        except (FileNotFoundError, NotADirectoryError):
+            pass
+        except OSError as exc:
+            if exc.errno not in (errno.ENOENT, errno.ENOTDIR):
+                notes.append(f"Skipped {briefs_path}: {exc}")
+    else:
+        if memory_path.is_dir():
+            finished_path = memory_path / FINISHED_SUBDIR
+            if _is_safe_subdir(finished_path, memory_path):
+                for path in sorted(finished_path.glob("*.md")):
+                    try:
+                        entry = parse_markdown_file(
+                            path, source_format="finished-brief", root=finished_path
+                        )
+                        _keep_preferred(entries, entry)
+                    except (OSError, UnicodeError, ValueError) as exc:
+                        notes.append(f"Skipped {path}: {exc}")
+                        continue
+            elif finished_path.is_symlink() or (
+                _IS_JUNCTION is not None and _IS_JUNCTION(finished_path)
+            ):
+                notes.append(f"Skipped {finished_path}: refusing to follow symlink directory")
+
+            for path in sorted(memory_path.glob("*.md")):
+                try:
+                    entry = parse_markdown_file(path, source_format="markdown", root=memory_path)
                     _keep_preferred(entries, entry)
                 except (OSError, UnicodeError, ValueError) as exc:
                     notes.append(f"Skipped {path}: {exc}")
                     continue
-        elif finished_path.is_symlink() or (
-            _IS_JUNCTION is not None and _IS_JUNCTION(finished_path)
-        ):
-            notes.append(f"Skipped {finished_path}: refusing to follow symlink directory")
 
-        for path in sorted(memory_path.glob("*.md")):
-            try:
-                entry = parse_markdown_file(path, source_format="markdown", root=memory_path)
-                _keep_preferred(entries, entry)
-            except (OSError, UnicodeError, ValueError) as exc:
-                notes.append(f"Skipped {path}: {exc}")
-                continue
-
-    if briefs_path.is_dir():
-        for path in sorted(briefs_path.glob("*.json")):
-            try:
-                entry = _parse_briefing(path, root=briefs_path)
-                _keep_preferred(entries, entry)
-            except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
-                notes.append(f"Skipped {path}: {exc}")
-                continue
+        if briefs_path.is_dir():
+            for path in sorted(briefs_path.glob("*.json")):
+                try:
+                    entry = _parse_briefing(path, root=briefs_path)
+                    _keep_preferred(entries, entry)
+                except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+                    notes.append(f"Skipped {path}: {exc}")
+                    continue
 
     filtered = _suppress_superseded_raw(entries)
     ordered = sorted(
@@ -724,9 +849,10 @@ def parse_markdown_file(
     *,
     source_format: str = "markdown",
     root: Path | None = None,
+    dir_fd: int | None = None,
 ) -> LibraryEntry:
     """Parse one saved Markdown report or finished brief into a LibraryEntry."""
-    content, st = _read_regular_text(path, root=root)
+    content, st = _read_regular_text(path, root=root, dir_fd=dir_fd)
     unbounded_private = is_unbounded_private_brief(content, source_format=source_format)
     parse_source = content if unbounded_private else public_markdown(content)
     meta_topic_match = _TOPIC_META_COMMENT.search(content)
@@ -769,6 +895,8 @@ def parse_markdown_file(
         content=content,
         source_updated_at=_source_updated_at(path, st=st),
         source_format=source_format,
+        source_mtime_ns=st.st_mtime_ns,
+        source_size=st.st_size,
     )
 
 
@@ -896,8 +1024,13 @@ def _markdown_summary(content: str) -> str:
     return ""
 
 
-def _parse_briefing(path: Path, *, root: Path | None = None) -> LibraryEntry:
-    raw_text, st = _read_regular_text(path, root=root)
+def _parse_briefing(
+    path: Path,
+    *,
+    root: Path | None = None,
+    dir_fd: int | None = None,
+) -> LibraryEntry:
+    raw_text, st = _read_regular_text(path, root=root, dir_fd=dir_fd)
     data = json.loads(raw_text)
     if not isinstance(data, dict):
         raise ValueError("briefing JSON is not an object")
@@ -931,6 +1064,8 @@ def _parse_briefing(path: Path, *, root: Path | None = None) -> LibraryEntry:
         content=markdown,
         source_updated_at=_source_updated_at(path, st=st),
         source_format="json",
+        source_mtime_ns=st.st_mtime_ns,
+        source_size=st.st_size,
     )
 
 
