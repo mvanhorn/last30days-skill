@@ -246,6 +246,12 @@ time.sleep(15)
         import time
 
         outcome = {}
+        registered = threading.Event()
+
+        def on_pid(pid):
+            outcome["pid"] = pid
+            registered.set()
+
         with tempfile.TemporaryDirectory() as tmp:
             pidfile = real_os.path.join(tmp, "grandchild.pid")
 
@@ -254,7 +260,7 @@ time.sleep(15)
                     subproc.run_with_timeout(
                         ["sh", "-c", f"sleep 30 & echo $! > {pidfile}; wait"],
                         timeout=20,
-                        on_pid=lambda pid: outcome.update(pid=pid),
+                        on_pid=on_pid,
                     )
                     outcome["error"] = None
                 except Exception as exc:
@@ -269,6 +275,7 @@ time.sleep(15)
             ):
                 time.sleep(0.01)
             self.assertTrue(real_os.path.getsize(pidfile))
+            self.assertTrue(registered.wait(max(0, deadline - time.monotonic())))
             self.assertIn(outcome["pid"], subproc._child_pids)
 
             subproc.cleanup_children()
@@ -291,6 +298,7 @@ time.sleep(15)
         import time
 
         outcome = {}
+        registered = threading.Event()
         with tempfile.TemporaryDirectory() as tmp:
             pidfile = real_os.path.join(tmp, "grandchild.pid")
 
@@ -299,6 +307,7 @@ time.sleep(15)
                     outcome["result"] = subproc.run_with_timeout(
                         ["sh", "-c", f"trap '' TERM; sleep 30 & echo $! > {pidfile}; wait"],
                         timeout=20,
+                        on_pid=lambda _: registered.set(),
                     )
                 except Exception as exc:
                     outcome["error"] = exc
@@ -311,6 +320,7 @@ time.sleep(15)
             ):
                 time.sleep(0.01)
             self.assertTrue(real_os.path.getsize(pidfile))
+            self.assertTrue(registered.wait(max(0, deadline - time.monotonic())))
 
             start = time.monotonic()
             subproc.cleanup_children(grace=0.3)
