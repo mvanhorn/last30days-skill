@@ -779,6 +779,61 @@ def test_scan_library_prefers_finished_brief_over_unsuffixed_raw_and_keeps_clien
     assert "tool use reliability" in public_html
 
 
+def test_library_feed_keeps_raw_report_for_distinct_topic_with_same_slug(tmp_path, monkeypatch):
+    finished = tmp_path / "finished"
+    finished.mkdir()
+    (finished / "c-2026-07-10.md").write_text(
+        "🌐 last30days · C# · Jun 10 to Jul 10, 2026 · v4.5.0\n\n"
+        "C# finished brief headline.\n",
+        encoding="utf-8",
+    )
+    for filename, topic, headline, day in (
+        ("c-raw.md", "C++", "C++ raw report headline", "10"),
+        ("c-raw-2026-07-10.md", "c#", "C# superseded raw headline", "10"),
+        ("c-raw-acme.md", "C#", "C# client raw headline", "10"),
+        ("c-raw-2026-07-09.md", "C#", "C# earlier raw headline", "09"),
+    ):
+        (tmp_path / filename).write_text(
+            REPORT.replace("AI agents", topic)
+            .replace("Agent loops are becoming durable", headline)
+            .replace("2026-07-10", f"2026-07-{day}"),
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(cli.env, "get_config", lambda **_kwargs: {})
+    monkeypatch.setattr(
+        sys, "argv", ["last30days.py", "library", "feed", "--save-dir", str(tmp_path)]
+    )
+    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+        assert cli.main() == 0
+
+    atom = ET.parse(tmp_path / "feed.xml")
+    namespace = {"atom": feed.ATOM_NS}
+    assert {node.text for node in atom.findall("atom:entry/atom:title", namespace)} == {
+        "C++ raw report headline",
+        "C# finished brief headline.",
+        "C# client raw headline",
+        "C# earlier raw headline",
+    }
+
+
+def test_scan_library_does_not_merge_casefolded_topics_with_distinct_slugs(tmp_path):
+    finished = tmp_path / "finished"
+    finished.mkdir()
+    (finished / "masse-2026-07-10.md").write_text(
+        "🌐 last30days · Masse · Jun 10 to Jul 10, 2026 · v4.5.0\n\nMass.\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "ma-e-raw.md").write_text(
+        REPORT.replace("AI agents", "Maße"), encoding="utf-8"
+    )
+
+    entries, notes = library.scan_library(tmp_path, tmp_path / "missing-briefings")
+
+    assert notes == []
+    assert {entry.topic for entry in entries} == {"Maße", "Masse"}
+
+
 def test_library_feed_publish_omits_corpus_tainted_finished_brief(tmp_path, monkeypatch):
     memory = tmp_path / "memory"
     finished = memory / "finished"

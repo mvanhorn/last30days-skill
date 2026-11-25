@@ -1071,8 +1071,10 @@ def scan_library(
 
 def _suppress_superseded_raw(entries: dict[str, LibraryEntry]) -> dict[str, LibraryEntry]:
     """Hide unsuffixed raw dumps when a public finished brief covers the same topic and date."""
+    # Require agreement on the parsed topic as well as the slug and date.
+    # Distinct topics such as C# and C++ can share a slug.
     finished_keys = {
-        (entry.slug, entry.published_date)
+        (entry.slug, entry.topic.casefold(), entry.published_date)
         for entry in entries.values()
         if entry.source_format == "finished-brief"
         and not is_unbounded_private_brief(entry.content)
@@ -1083,7 +1085,7 @@ def _suppress_superseded_raw(entries: dict[str, LibraryEntry]) -> dict[str, Libr
     for entry_id, entry in entries.items():
         if (
             entry.source_format == "markdown"
-            and (entry.slug, entry.published_date) in finished_keys
+            and (entry.slug, entry.topic.casefold(), entry.published_date) in finished_keys
             and _is_unsuffixed_raw_dump(entry.source_path.stem)
         ):
             continue
