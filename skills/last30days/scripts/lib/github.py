@@ -16,6 +16,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from http.client import HTTPException
 from typing import Any, Dict, List, Optional
 
 from . import dates, env, http, log, schema
@@ -116,11 +117,11 @@ def _fetch_json(
         _log(f"HTTP {e.code}: {e.reason}")
         _note(f"HTTP {e.code}: {e.reason}")
         return None
-    except (urllib.error.URLError, OSError, TimeoutError) as e:
+    except (urllib.error.URLError, OSError, TimeoutError, HTTPException) as e:
         _log(f"Network error: {e}")
         _note(f"network error: {e}")
         return None
-    except json.JSONDecodeError as e:
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
         _log(f"JSON decode error: {e}")
         _note(f"invalid JSON: {e}")
         return None
@@ -904,6 +905,14 @@ def search_github_person(
         _log("No PRs found, falling back to keyword search")
         return []
 
+    open_q = urllib.parse.quote(f"{author_query} is:open")
+    open_data = _fetch_json(f"{SEARCH_URL}?q={open_q}&per_page=1", token=resolved_token, timeout=20)
+    open_count = (
+        open_data.get("total_count")
+        if isinstance(open_data, dict) and not open_data.get("incomplete_results")
+        else None
+    )
+
     # Phase 2: Group merged PRs by repo
     repo_pr_counts: Dict[str, int] = {}
     for item in merged_items:
@@ -943,14 +952,16 @@ def search_github_person(
     idx = 0
 
     # Build velocity summary
-    open_prs = total_prs - merged_count
+    submitted_line = f"- {total_prs} total PRs submitted"
+    if type(open_count) is int and 0 <= open_count <= total_prs:
+        submitted_line += f", {open_count} still open"
     merge_rate = round(100 * merged_count / total_prs) if total_prs > 0 else 0
     num_repos = len(repo_pr_counts)
     velocity_text = (
         f"GitHub Person Profile: @{username}\n\n"
         f"CONTRIBUTION VELOCITY (last {dates.days_ago(from_date, to_date)} days)\n"
         f"- {merged_count} PRs merged across {num_repos} repos ({merge_rate}% merge rate)\n"
-        f"- {total_prs} total PRs submitted, {open_prs} still open\n"
+        f"{submitted_line}\n"
     )
 
     idx += 1
