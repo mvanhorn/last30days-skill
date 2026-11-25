@@ -8,6 +8,8 @@ import math
 import re
 import unicodedata
 from collections import Counter
+from contextlib import nullcontext
+from threading import Event
 
 from . import (
     categories, competitors, entity_extract, http, jobs_story, log, polymarket, providers, query, relevance,
@@ -514,6 +516,8 @@ def plan_query(
     model: str | None,
     context: str = "",
     internal_subrun: bool = False,
+    deadline: float | None = None,
+    cancel: Event | None = None,
 ) -> schema.QueryPlan:
     """Create a query plan. Comparison queries with extractable entities use a
     deterministic plan; other intents prefer the configured reasoning provider.
@@ -540,7 +544,12 @@ def plan_query(
         prompt += f"\n\nCurrent context (from web search): {context}"
     if provider and model:
         try:
-            raw = provider.generate_json(model, prompt)
+            budget = (
+                provider.request_budget(deadline, cancel, attempts=2)
+                if deadline is not None else nullcontext()
+            )
+            with budget:
+                raw = provider.generate_json(model, prompt)
             plan = _sanitize_plan(
                 raw, topic, available_sources, requested_sources, depth,
             )

@@ -169,6 +169,7 @@ STREAM_ARTIFACT_LIFT_KEYS: tuple[str, ...] = ("meta_ads_page", "meta_ads_tally")
 # Worst case per stream is one timeout ceiling (+ one inline 5xx retry in the
 # main fan-out, itself bounded by the lane's own timeouts); no new config knobs.
 STREAM_FUTURE_TIMEOUT_SECONDS = 180.0
+PLANNER_TIMEOUT_SECONDS = 30.0
 _TRANSIENT_RETRY_DELAY_SECONDS = 3.0
 # Leave time for the background adapter to return its final poll receipt.
 DEEP_RESEARCH_RECEIPT_SECONDS = 1.0
@@ -3057,6 +3058,8 @@ def run(
             model=None if mock else runtime.planner_model,
             context=config.get("_auto_resolve_context", ""),
             internal_subrun=internal_subrun,
+            deadline=_research_deadline(config, PLANNER_TIMEOUT_SECONDS),
+            cancel=config.get("_enrich_cancel"),
         )
         # Source labelling: the fallback path annotates notes with "fallback-plan"
         # or "deterministic-comparison-plan"; anything else came from the LLM.

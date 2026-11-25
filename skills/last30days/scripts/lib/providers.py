@@ -8,6 +8,8 @@ import os
 import re
 import sys
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from threading import Event
 from typing import Any
 from urllib.parse import quote, urlsplit, urlunsplit
@@ -131,10 +133,24 @@ class ReasoningClient:
         self._usage_complete = True
         self._request_deadline: float | None = None
         self._request_cancel: Event | None = None
+        self._request_attempts: int | None = None
 
     def set_request_budget(self, deadline: float, cancel: Event | None) -> None:
         self._request_deadline = deadline
         self._request_cancel = cancel
+
+    @contextmanager
+    def request_budget(
+        self, deadline: float, cancel: Event | None, *, attempts: int,
+    ) -> Iterator[None]:
+        """Apply a smaller budget to one stage without affecting later calls."""
+        previous = (self._request_deadline, self._request_cancel, self._request_attempts)
+        self.set_request_budget(deadline, cancel)
+        self._request_attempts = attempts
+        try:
+            yield
+        finally:
+            self._request_deadline, self._request_cancel, self._request_attempts = previous
 
     @staticmethod
     def _valid_token_count(value: Any) -> bool:
@@ -195,6 +211,9 @@ class ReasoningClient:
                 raise http.DeadlineExceeded()
             kwargs["deadline_monotonic"] = min(self._request_deadline, now + kwargs["timeout"])
             kwargs["cancel"] = self._request_cancel
+        if self._request_attempts is not None:
+            kwargs["retries"] = self._request_attempts
+            kwargs["retry_dns"] = False
         try:
             return http.post(url, payload, on_retry=self._mark_usage_incomplete, **kwargs)
         except Exception:
