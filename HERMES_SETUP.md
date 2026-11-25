@@ -88,6 +88,23 @@ On first run, the skill will guide you through setup:
 
 ## Troubleshooting
 
+### `rich.errors.MarkupError` during install
+
+Hermes prints the skill scan report through `rich` with markup on, and that report quotes scanned
+source lines. When a quoted line looks like a rich tag — `[/?#\s)\]` in
+`skills/last30days/scripts/lib/resolve.py`'s `_PROSE_SEG_END` regex does — the install aborts
+right after `Running security scan...`:
+
+```
+rich.errors.MarkupError: closing tag '[/?#\s)\]' at position 9778 doesn't match any open tag
+```
+
+The scan itself is fine; only the report failed to print, so no verdict ever appears. This is a
+Hermes CLI bug (`hermes_cli/skills_hub.py` prints that report with `markup` left on), not a
+problem with this skill. Use the hand-copy or symlink path above in the meantime, and report the
+traceback to [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent/issues) if
+your Hermes still crashes after an update.
+
 ### Python not found
 ```bash
 # Find Python 3.12+
