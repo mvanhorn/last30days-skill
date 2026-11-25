@@ -592,8 +592,13 @@ def store_findings(
     run_id: int,
     topic_id: int,
     findings: List[Dict[str, Any]],
+    *,
+    count_by_topic: bool = False,
 ) -> Dict[str, int]:
-    """Store findings with URL-based dedup. Returns counts of new/updated."""
+    """Store deduplicated findings and count new/updated URLs.
+
+    Watchlist runs classify a URL by whether the topic has seen it before.
+    """
     # Collect findings that have a URL, preserving first-seen order while
     # collapsing same-batch duplicate URLs so one run never self-conflicts on
     # source_url or double-increments sighting_count.
@@ -624,6 +629,39 @@ def store_findings(
     conn = _connect()
     try:
         conn.execute("BEGIN IMMEDIATE")
+        topic_updated_count = None
+        if count_by_topic:
+            # Check the same membership sources as _FINDING_TOPICS_SQL for
+            # this batch, before the upsert advances the latest run pointer.
+            urls = list(by_url)
+            placeholders = ",".join("?" for _ in urls)
+            topic_updated_count = conn.execute(
+                f"""SELECT COUNT(*) FROM findings f
+                    LEFT JOIN research_runs r ON r.id = f.run_id
+                    WHERE f.source_url IN ({placeholders})
+                      AND (f.topic_id = ? OR r.topic_id = ? OR f.id IN (
+                          SELECT finding_id FROM finding_sightings WHERE topic_id = ?
+                      ))""",
+                (*urls, topic_id, topic_id, topic_id),
+            ).fetchone()[0]
+        # A legacy latest-run link can be the only record of a topic's
+        # observation. Save it as a historical sighting before the upsert.
+        conn.executemany(
+            """INSERT INTO finding_sightings
+               (finding_id, topic_id, source, source_url, source_title,
+                engagement_score, relevance_score, seen_at)
+               SELECT f.id, r.topic_id, f.source, f.source_url, f.source_title,
+                      f.engagement_score, f.relevance_score, r.run_date
+               FROM findings f
+               JOIN research_runs r ON r.id = f.run_id
+               JOIN topics t ON t.id = r.topic_id
+               WHERE f.source_url = ? AND f.topic_id IS NOT r.topic_id
+                 AND NOT EXISTS (
+                     SELECT 1 FROM finding_sightings s
+                     WHERE s.finding_id = f.id AND s.topic_id = r.topic_id
+                 )""",
+            ((url,) for url in by_url),
+        )
         upsert_sql = """INSERT INTO findings
                (run_id, topic_id, source, source_url, source_title,
                 author, content, summary, engagement_score, relevance_score)
@@ -679,6 +717,9 @@ def store_findings(
             updated_count = len(with_urls) - unique_new
             conn.executemany(upsert_sql, upsert_rows)
             _record_sightings(conn, run_id, topic_id, with_urls)
+        if topic_updated_count is not None:
+            updated_count = topic_updated_count
+            new_count = len(with_urls) - updated_count
         conn.execute(
             "UPDATE research_runs SET findings_new = ?, findings_updated = ? WHERE id = ?",
             (new_count, updated_count, run_id),
