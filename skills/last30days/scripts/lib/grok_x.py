@@ -1249,12 +1249,13 @@ def search_x(
     ahead of bird in the chain -- silently downgrading a `--deep` run from 60
     posts to 10.
 
-    ``deadline`` is the X chain's shared ``time.monotonic()`` budget (see
-    pipeline's ``X_CHAIN_DEADLINE_SECONDS``): each fan-out call clamps its
-    per-call timeout to the time left, and calls past the deadline are never
-    started, so grok cannot consume the whole chain budget alone. ``cancel``
-    is an optional ``threading.Event`` (the enrichment batch's cooperative
-    cancel): set means not-yet-started fan-out queries are skipped.
+    ``deadline`` is the X chain's shared ``time.monotonic()`` budget (pipeline's
+    ``X_CHAIN_DEADLINE_SECONDS``, or ``LAST30DAYS_X_BUDGET_SECONDS`` when set):
+    each fan-out call clamps its per-call timeout to the time left, and calls
+    past the deadline are never started, so grok cannot consume the whole chain
+    budget alone. ``cancel`` is an optional ``threading.Event`` (the enrichment
+    batch's cooperative cancel): set means not-yet-started fan-out queries are
+    skipped.
 
     Returns {'items': [...]}; 'error' is set only for an actual invocation
     failure. A completed run that found nothing returns an empty list with no

@@ -257,7 +257,9 @@ def test_high015_completed_streams_rescues_done_future_for_ordinary_batch():
     wait_config = {"_research_deadline": time.monotonic() - 1.0}
     bundle = schema.RetrievalBundle()
 
-    yielded = list(pipeline._completed_streams([(futures, wait_config, 180.0, False)], bundle))
+    yielded = list(pipeline._completed_streams(
+        [(futures, wait_config, time.monotonic() + 180.0, False)], bundle,
+    ))
 
     assert len(yielded) == 1
     future, _sq, source, budget_expired = yielded[0]
