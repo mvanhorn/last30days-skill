@@ -1,0 +1,1 @@
+The skill frontmatter description now fits the 60-character routing index that truncating hosts apply (Hermes clips every skill description at `SKILL_PROMPT_DESC_LIMIT = 60`), so the line no longer loses its tail before the model picks the skill. The doctor/health-check routing for "is my last30days search broken?" prompts is preserved inside the shortened line.

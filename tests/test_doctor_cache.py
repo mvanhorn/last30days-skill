@@ -640,16 +640,25 @@ class DoctorSkillContract(unittest.TestCase):
     def test_frontmatter_description_carries_health_check_keywords(self):
         # Cold-start prompts like "is my last30days X search broken?" can
         # only load the skill if the machine-parsed frontmatter description
-        # mentions the health surface (F16a). It must stay ONE line.
+        # mentions the health surface (F16a). It must stay ONE line and fit
+        # the 60-char routing index truncating hosts apply (Hermes clips
+        # every description at SKILL_PROMPT_DESC_LIMIT = 60 before the model
+        # sees it), so the health words have to lead rather than trail a
+        # long line; the phrase "health check" itself lives in the body.
         lines = SKILL_MD.read_text(encoding="utf-8").splitlines()
         self.assertEqual("---", lines[0])
         closing = lines[1:].index("---") + 1
         frontmatter = lines[1:closing]
         desc_lines = [l for l in frontmatter if l.startswith("description:")]
         self.assertEqual(1, len(desc_lines), "description must be one line")
-        desc = desc_lines[0].lower()
-        for needle in ("doctor", "health check", "diagnose", "broken"):
+        desc = desc_lines[0].split(":", 1)[1].strip().strip("\"'").lower()
+        for needle in ("doctor", "diagnose", "broken"):
             self.assertIn(needle, desc, f"description missing keyword: {needle!r}")
+        self.assertLessEqual(
+            len(desc),
+            60,
+            f"description must fit the 60-char routing budget, got {len(desc)}",
+        )
 
     def test_predicted_backend_announcement(self):
         self.assertIn("active_backend", self.text)
