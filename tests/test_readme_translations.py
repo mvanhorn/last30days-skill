@@ -14,6 +14,7 @@ READMES = {
     "العربية": ROOT / "README.ar.md",
     "فارسی": ROOT / "README.fa.md",
     "Türkçe": ROOT / "README.tr.md",
+    "Русский": ROOT / "README.ru.md",
 }
 
 
