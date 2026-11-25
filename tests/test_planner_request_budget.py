@@ -6,7 +6,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from lib import dates, http, pipeline, providers, schema
+from lib import http, pipeline, providers, schema
 
 
 @pytest.mark.parametrize("inherited", [False, True])
@@ -132,14 +132,14 @@ def test_reranker_does_not_inherit_the_planner_request_budget(monkeypatch):
             raise http.DeadlineExceeded()
         return {"choices": [{"message": {"content": "{}"}}]}
 
-    def retrieve(**_kwargs):
+    def retrieve(*, date_range, **_kwargs):
         return [{
             "id": "999",
             "title": "SQLite incremental vacuum makes unused pages reusable",
             "url": "https://example.com/sqlite-vacuum",
             "hn_url": "https://news.ycombinator.com/item?id=999",
             "author": "tester",
-            "date": dates.get_date_range(0)[1],
+            "date": date_range[1],
             "engagement": {"points": 64, "comments": 12},
             "relevance": 1.0,
         }], {}
@@ -154,6 +154,7 @@ def test_reranker_does_not_inherit_the_planner_request_budget(monkeypatch):
         depth="quick",
         requested_sources=["hackernews"],
         web_backend="none",
+        as_of_date="2026-07-10",
     )
 
     assert report.ranked_candidates
