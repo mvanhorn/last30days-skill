@@ -752,10 +752,21 @@ def _sanitize_plan(
     )
 
     subqueries: list[schema.SubQuery] = []
-    for index, subquery in enumerate((raw.get("subqueries") or [])[:_max_subqueries(intent_hint, topic)], start=1):
+    raw_subqueries = raw.get("subqueries")
+    if not isinstance(raw_subqueries, list):
+        raw_subqueries = []
+    max_subqueries = _max_subqueries(intent_hint, topic)
+    if honor_plan_sources:
+        raw_subqueries = raw_subqueries[:max_subqueries]
+    # A malformed provider row should not cost a usable query its slot.
+    for index, subquery in enumerate(raw_subqueries, start=1):
         if not isinstance(subquery, dict):
             continue
-        sources = [source for source in subquery.get("sources") or [] if source in source_weights]
+        raw_sources = subquery.get("sources")
+        sources = [
+            source for source in raw_sources
+            if isinstance(source, str) and source in source_weights
+        ] if isinstance(raw_sources, list) else []
         if requested:
             sources = [source for source in sources if source in requested]
         if not sources:
@@ -771,19 +782,32 @@ def _sanitize_plan(
             sources = list(source_weights)
         if not sources:
             continue
-        search_query = str(subquery.get("search_query") or "").strip()
-        ranking_query = str(subquery.get("ranking_query") or "").strip()
+        search_query = subquery.get("search_query")
+        ranking_query = subquery.get("ranking_query")
+        if not isinstance(search_query, str) or not isinstance(ranking_query, str):
+            continue
+        search_query = search_query.strip()
+        ranking_query = ranking_query.strip()
         if not search_query or not ranking_query:
             continue
+        raw_weight = subquery.get("weight")
+        try:
+            weight = float(raw_weight or 1.0)
+        except (TypeError, ValueError, OverflowError):
+            weight = 1.0
+        if not math.isfinite(weight):
+            weight = 1.0
         subqueries.append(
             schema.SubQuery(
                 label=str(subquery.get("label") or f"q{index}").strip() or f"q{index}",
                 search_query=search_query,
                 ranking_query=ranking_query,
                 sources=sources,
-                weight=max(0.05, float(subquery.get("weight") or 1.0)),
+                weight=max(0.05, weight),
             )
         )
+        if len(subqueries) == max_subqueries:
+            break
     if (
         depth != "quick"
         and subqueries
@@ -822,6 +846,9 @@ def _sanitize_plan(
         hints = polymarket_hints(raw.get("polymarket_hints"))
     except ValueError:
         hints = None
+    notes = raw.get("notes")
+    if not isinstance(notes, list):
+        notes = []
     return schema.QueryPlan(
         intent=intent,
         freshness_mode=freshness_mode,
@@ -838,7 +865,7 @@ def _sanitize_plan(
             )
         ),
         source_weights=source_weights,
-        notes=[str(note).strip() for note in raw.get("notes") or [] if str(note).strip()]
+        notes=[note.strip() for note in notes if isinstance(note, str) and note.strip()]
         + (_enablement_notes(topic) if not honor_plan_sources and intent == "how_to" and _is_enablement(topic) else []),
         person_identity_anchors=[a.strip() for a in anchors if _is_identity_anchor(a)],
         polymarket_hints=hints,
