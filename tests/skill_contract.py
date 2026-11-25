@@ -3,14 +3,8 @@
 from pathlib import Path
 import re
 
-import yaml
-
 
 SKILL_ROOT = Path(__file__).resolve().parents[1] / "skills" / "last30days"
-# Hermes clamps every skill description at SKILL_PROMPT_DESC_LIMIT = 60 when it
-# builds the routing index, so anything past this budget never reaches the
-# model choosing a skill. Other hosts apply their own caps; this is the floor.
-DESCRIPTION_ROUTING_BUDGET = 60
 ROUTES = {
     "Before any engine command": ("runtime",),
     "Library search, feed, or queue intent": ("library-queue",),
@@ -42,29 +36,6 @@ STANDARD_CONDITIONS = (
 
 def root_text(skill_root=SKILL_ROOT):
     return (skill_root / "SKILL.md").read_text(encoding="utf-8")
-
-
-def frontmatter(skill_root=SKILL_ROOT):
-    """Parse the YAML frontmatter a host reads, not its source lines.
-
-    A plain YAML scalar may wrap onto continuation lines, and a folded or
-    literal block is one value spread over several; counting only the
-    ``description:`` line would measure a prefix of what the host indexes.
-    """
-    text = root_text(skill_root)
-    assert text.startswith("---"), f"missing YAML frontmatter: {skill_root}"
-    block = text.split("---", 2)[1]
-    data = yaml.safe_load(block)
-    assert isinstance(data, dict), f"frontmatter is not a mapping: {skill_root}"
-    return data
-
-
-def frontmatter_description(skill_root=SKILL_ROOT):
-    description = frontmatter(skill_root).get("description")
-    assert isinstance(description, str) and description.strip(), (
-        f"frontmatter has no string description: {skill_root}"
-    )
-    return description
 
 
 def routing_table(skill_root=SKILL_ROOT):

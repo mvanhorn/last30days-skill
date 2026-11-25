@@ -18,6 +18,7 @@ import datetime
 import io
 import json
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -25,11 +26,71 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
+import yaml
+
 import last30days as cli
 from lib import doctor, health
 
 ROOT = Path(__file__).resolve().parents[1]
 SKILL_MD = ROOT / "skills" / "last30days" / "SKILL.md"
+
+# Hermes clamps every skill description at SKILL_PROMPT_DESC_LIMIT = 60 when it
+# builds the routing index, so anything past this budget never reaches the
+# model choosing a skill. Other hosts apply their own caps; this is the floor.
+DESCRIPTION_ROUTING_BUDGET = 60
+
+# Line-anchored on purpose: splitting the text on the "---" substring cuts the
+# frontmatter early when a comment, quoted value or indented block scalar holds
+# a horizontal rule, and an unclosed fence would feed the body to the parser.
+_FRONTMATTER_FENCE = re.compile(
+    r"\A---[ \t]*\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|\Z)", re.DOTALL
+)
+_DESCRIPTION_LINE = re.compile(r"description\s*:")
+
+
+def _frontmatter_block(text):
+    match = _FRONTMATTER_FENCE.match(text)
+    assert match, "SKILL.md must open with a line-anchored '---' frontmatter fence"
+    return match.group(1)
+
+
+def _checked_description(block, needles=()):
+    """Validate the description a host indexes and return it.
+
+    YAML lets a scalar wrap onto continuation lines or use a block, but hosts
+    that read frontmatter line-wise would see only the first line, so the
+    value must sit entirely on one physical ``description:`` line. Measure the
+    parsed YAML value, not the source line: a wrapped scalar passes at its
+    prefix and fails at its real length.
+    """
+    sources = [line for line in block.splitlines() if _DESCRIPTION_LINE.match(line)]
+    assert len(sources) == 1, f"description must be one physical line, found {len(sources)}"
+    try:
+        source_value = yaml.safe_load(sources[0])
+        block_value = yaml.safe_load(block)
+    except yaml.YAMLError as exc:
+        raise AssertionError(f"frontmatter is not valid YAML: {exc}") from exc
+    assert isinstance(source_value, dict) and isinstance(source_value.get("description"), str), (
+        "the description source line must parse to a YAML string"
+    )
+    description = source_value["description"]
+    assert isinstance(block_value, dict) and block_value.get("description") == description, (
+        "description spills beyond its single source line"
+    )
+    assert description == description.strip(), "description has surrounding whitespace"
+    assert not re.search(r"[\r\n\t]", description), "description contains a line break or tab"
+    assert len(description) <= DESCRIPTION_ROUTING_BUDGET, (
+        "description must fit the "
+        f"{DESCRIPTION_ROUTING_BUDGET}-char routing budget, got {len(description)}"
+    )
+    for needle in needles:
+        assert needle in description.lower(), f"description missing keyword: {needle!r}"
+    return description
+
+
+def _skill_description(skill_root, needles=()):
+    text = (skill_root / "SKILL.md").read_text(encoding="utf-8")
+    return _checked_description(_frontmatter_block(text), needles=needles)
 
 BIRD_STATUS_OFF = {
     "installed": False,
@@ -638,32 +699,18 @@ class DoctorSkillContract(unittest.TestCase):
         self.assertIn("**MANDATORY standing rule.**", self.text)
 
     def test_frontmatter_description_routes_research_and_health(self):
-        # Cold-start prompts like "is my last30days X search broken?" can
-        # only load the skill if the machine-parsed frontmatter description
-        # mentions the health surface (F16a), and an ordinary research prompt
-        # still needs the research surface in the same line. It must fit the
-        # 60-char routing index truncating hosts apply (Hermes clips every
-        # description at SKILL_PROMPT_DESC_LIMIT = 60 before the model sees
-        # it), measured on the YAML value a host parses: counting the
-        # `description:` source line would miss a wrapped plain scalar, a
-        # folded block, or a literal block that folds past the budget. The
-        # phrase "health check" itself lives in the body.
-        from tests.skill_contract import (
-            DESCRIPTION_ROUTING_BUDGET,
-            frontmatter_description,
+        # Cold-start prompts like "is my last30days X search broken?" can only
+        # load the skill if the machine-parsed frontmatter description mentions
+        # the health surface (F16a); an ordinary research prompt still needs
+        # the research surface in the same line. Both must fit the 60-char
+        # routing index truncating hosts apply (Hermes clips every description
+        # at SKILL_PROMPT_DESC_LIMIT = 60 before the model sees it). The phrase
+        # "health check" itself lives in the body.
+        desc = _skill_description(
+            SKILL_MD.parent,
+            needles=("research", "30 days", "doctor", "diagnose", "broken"),
         )
-
-        desc = frontmatter_description()
-        self.assertEqual(desc, desc.strip(), "description has surrounding whitespace")
-        self.assertNotIn("\n", desc, "description must be one line as parsed")
-        for needle in ("research", "30 days", "doctor", "diagnose", "broken"):
-            self.assertIn(needle, desc.lower(), f"description missing keyword: {needle!r}")
-        self.assertLessEqual(
-            len(desc),
-            DESCRIPTION_ROUTING_BUDGET,
-            "description must fit the "
-            f"{DESCRIPTION_ROUTING_BUDGET}-char routing budget, got {len(desc)}",
-        )
+        self.assertLessEqual(len(desc), DESCRIPTION_ROUTING_BUDGET)
 
     def test_predicted_backend_announcement(self):
         self.assertIn("active_backend", self.text)
@@ -683,56 +730,70 @@ class DoctorSkillContract(unittest.TestCase):
 
 
 class SkillRoutingDescriptionContract(unittest.TestCase):
-    """A skill description is routing text, so every skill must fit the index."""
+    """The frontmatter description is routing text; its YAML shape is a gate."""
 
-    def test_description_budget_measures_the_parsed_value(self):
-        # A plain YAML scalar may wrap onto continuation lines, and the host
-        # parses the folded value. Measuring the source line instead would
-        # let this fixture pass at 50 chars while the indexed description is
-        # 104 — the exact bypass the budget assertion must not inherit.
-        from tests.skill_contract import (
-            DESCRIPTION_ROUTING_BUDGET,
-            frontmatter_description,
-        )
+    def test_description_contract_rejects_wrapped_folded_or_health_only_lines(self):
+        # Fixtures an earlier revision accepted: a wrapped scalar whose first
+        # source line is 50 chars, a folded block that parses to one short
+        # line, a literal block, and a health-only line with no research
+        # surface. Each must fail the contract, not just measure short.
+        rejected = {
+            "wrapped plain scalar": (
+                "name: probe\n"
+                "description: Research the last 30 days; doctor diagnoses broken\n"
+                "  sources and keeps going past the routing budget.\n"
+            ),
+            "folded scalar": (
+                "name: probe\n"
+                "description: >-\n"
+                "  Research the last 30 days; doctor diagnoses broken sources.\n"
+            ),
+            "literal scalar": (
+                "name: probe\n"
+                "description: |\n"
+                "  Research the last 30 days; doctor diagnoses broken sources.\n"
+            ),
+            "health only": (
+                'name: probe\ndescription: "Doctor diagnoses broken sources."\n'
+            ),
+        }
+        for label, block in rejected.items():
+            with self.subTest(label):
+                with self.assertRaises(AssertionError):
+                    _checked_description(
+                        block,
+                        needles=("research", "30 days", "doctor", "diagnose", "broken"),
+                    )
 
-        wrapped = (
+    def test_frontmatter_fence_ignores_dashes_inside_values(self):
+        # A horizontal rule in a quoted value must not end the frontmatter
+        # early, and an unclosed fence must not be read as valid.
+        text = (
             "---\n"
             "name: probe\n"
-            "description: Research the last 30 days; doctor diagnoses broken\n"
-            "  sources and keeps going past the routing budget.\n"
+            "argument-hint: 'run a --- b'\n"
+            'description: "Research the last 30 days; doctor diagnoses broken sources."\n'
             "---\n"
             "# body\n"
         )
-        with tempfile.TemporaryDirectory() as tmp:
-            skill_dir = Path(tmp) / "probe"
-            skill_dir.mkdir()
-            (skill_dir / "SKILL.md").write_text(wrapped, encoding="utf-8")
-            description = frontmatter_description(skill_dir)
-        self.assertGreater(
-            len(description),
-            DESCRIPTION_ROUTING_BUDGET,
-            "the parsed value, not the 50-char source line, must be measured",
+        block = _frontmatter_block(text)
+        self.assertIn("argument-hint", block)
+        self.assertEqual(
+            "Research the last 30 days; doctor diagnoses broken sources.",
+            _checked_description(
+                block,
+                needles=("research", "30 days", "doctor", "diagnose", "broken"),
+            ),
         )
+        with self.assertRaises(AssertionError):
+            _frontmatter_block("---\nname: probe\ndescription: unclosed\n# body\n")
 
     def test_every_skill_description_fits_the_routing_index_budget(self):
-        from tests.skill_contract import (
-            DESCRIPTION_ROUTING_BUDGET,
-            frontmatter_description,
-        )
-
         skill_dirs = sorted(path.parent for path in (ROOT / "skills").glob("*/SKILL.md"))
         self.assertTrue(skill_dirs, "no skills/*/SKILL.md found to check")
         for skill_dir in skill_dirs:
-            description = frontmatter_description(skill_dir)
-            self.assertNotIn(
-                "\n", description, f"{skill_dir.name}: description must be one line as parsed",
-            )
-            self.assertLessEqual(
-                len(description),
-                DESCRIPTION_ROUTING_BUDGET,
-                f"{skill_dir.name}: description must fit the "
-                f"{DESCRIPTION_ROUTING_BUDGET}-char routing budget, got {len(description)}",
-            )
+            with self.subTest(skill_dir.name):
+                _skill_description(skill_dir)
 
 
 if __name__ == "__main__":
