@@ -7,12 +7,14 @@ degradation when the binary is absent.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 
 from lib import arxiv
 
 
 NOW = datetime(2026, 6, 27, tzinfo=timezone.utc)
+DATE_CLAUSE = "submittedDate:[202506270000 TO 202606280000]"
 
 
 def _entry(title, published, summary="An abstract.", authors=("Ada Lovelace",), abs_url="https://arxiv.org/abs/2606.00001v1"):
@@ -33,12 +35,11 @@ def _entry(title, published, summary="An abstract.", authors=("Ada Lovelace",), 
 # ---- query construction ----
 
 def test_search_query_is_quoted_phrase_relevance_sorted():
-    args = arxiv._build_search_args("AI coding agents", 10)
-    joined = " ".join(args)
-    assert '--search-query' in args
-    assert 'all:"AI coding agents"' in args  # quoted phrase
-    assert "--sort-by" in args and "relevance" in args  # NOT submittedDate
-    assert "submittedDate" not in joined
+    args = arxiv._build_search_args("AI coding agents", 10, DATE_CLAUSE)
+    assert args[args.index("--search-query") + 1] == (
+        f'all:"AI coding agents" AND {DATE_CLAUSE}'
+    )
+    assert args[args.index("--sort-by") + 1] == "relevance"
 
 
 def test_search_query_strips_inner_quotes():
@@ -47,12 +48,12 @@ def test_search_query_strips_inner_quotes():
 
 
 def test_unquoted_fallback_search_args_conjoin_terms_at_command_boundary():
-    args = arxiv._build_search_args("AI video generation advances", 10, quoted=False)
+    args = arxiv._build_search_args("AI video generation advances", 10, DATE_CLAUSE, quoted=False)
     assert args == [
         "arxiv-pp-cli",
         "query",
         "--search-query",
-        'all:"AI" AND all:"video" AND all:"generation" AND all:"advances"',
+        f'all:"AI" AND all:"video" AND all:"generation" AND all:"advances" AND {DATE_CLAUSE}',
         "--sort-by",
         "relevance",
         "--max-results",
@@ -62,9 +63,35 @@ def test_unquoted_fallback_search_args_conjoin_terms_at_command_boundary():
 
 
 def test_unquoted_fallback_quotes_operator_and_colon_terms_at_command_boundary():
-    args = arxiv._build_search_args("AI AND OR title:video", 5, quoted=False)
+    args = arxiv._build_search_args("AI AND OR title:video", 5, DATE_CLAUSE, quoted=False)
     assert args[args.index("--search-query") + 1] == (
-        'all:"AI" AND all:"AND" AND all:"OR" AND all:"title:video"'
+        f'all:"AI" AND all:"AND" AND all:"OR" AND all:"title:video" AND {DATE_CLAUSE}'
+    )
+
+
+def test_current_window_covers_partial_recency_day_and_all_of_report_end(monkeypatch):
+    now = NOW.replace(hour=13, minute=42, second=30)
+    monkeypatch.setattr(arxiv, "_today", lambda: now)
+    assert arxiv._submitted_date_clause("2026-06-27") == (
+        "submittedDate:[202506261342 TO 202606280000]"
+    )
+    entries = [
+        _entry("Before the exact cutoff", "2025-06-26T13:42:30Z"),
+        _entry("Inside the recency window", "2025-06-26T13:42:31Z"),
+        _entry("Later today", "2026-06-27T23:59:59Z"),
+        _entry("Tomorrow", "2026-06-28T00:00:00Z"),
+    ]
+    items = arxiv.parse_arxiv_response({"results": entries}, to_date="2026-06-27")
+    assert [item["title"] for item in items] == ["Inside the recency window", "Later today"]
+
+
+def test_date_bounds_stay_within_supported_calendar(monkeypatch):
+    monkeypatch.setattr(arxiv, "_today", lambda: NOW)
+    assert arxiv._submitted_date_clause("0001-12-01") == (
+        "submittedDate:[000101010000 TO 000112020000]"
+    )
+    assert arxiv._submitted_date_clause("9999-12-31") == (
+        "submittedDate:[202506260000 TO 999912312359]"
     )
 
 
@@ -203,6 +230,62 @@ def test_as_of_window_anchors_recency_and_drops_later_papers(monkeypatch):
     assert [item["title"] for item in items] == ["Window paper", "End day paper"]
 
 
+def test_arxiv_retrieval_filters_before_relevance_limit(monkeypatch):
+    from lib import pipeline, schema
+
+    topic = "graph neural networks"
+    current_entries = [
+        _entry(f"Graph neural networks paper {i}", published)
+        for i, published in enumerate([
+            "2025-11-25T00:00:00Z",
+            "2026-04-11T12:00:00Z",
+            "2026-10-05T12:00:00Z",
+            "2026-11-10T12:00:00Z",
+            "2026-11-25T23:59:59Z",
+        ])
+    ]
+    ranked_entries = [
+        _entry(f"Stale graph neural networks paper {i}", "2025-11-24T23:59:59Z")
+        for i in range(5)
+    ] + [_entry("Later graph neural networks paper", "2026-11-26T00:00:01Z")] + current_entries
+    monkeypatch.setattr(arxiv, "_today", lambda: datetime(2026, 11, 26, tzinfo=timezone.utc))
+    monkeypatch.setattr(arxiv, "_is_available", lambda: True)
+
+    def fake_run(cmd, timeout):
+        query = cmd[cmd.index("--search-query") + 1]
+        limit = int(cmd[cmd.index("--max-results") + 1])
+        assert cmd[cmd.index("--sort-by") + 1] == "relevance"
+        assert limit == 5
+        entries = ranked_entries
+        _, _, submitted_range = query.partition(" AND submittedDate:[")
+        if submitted_range:
+            start, end = submitted_range.removesuffix("]").split(" TO ")
+            lower = datetime.strptime(start, "%Y%m%d%H%M").replace(tzinfo=timezone.utc)
+            upper = datetime.strptime(end, "%Y%m%d%H%M").replace(tzinfo=timezone.utc)
+            entries = [
+                entry for entry in entries
+                if lower <= datetime.fromisoformat(entry["published"]) <= upper
+            ]
+        return _Proc(0, json.dumps({"results": {"entries": entries[:limit]}}))
+
+    monkeypatch.setattr(arxiv.subproc, "run_with_timeout", fake_run)
+    items, _ = pipeline._retrieve_stream_impl(
+        topic=topic,
+        subquery=schema.SubQuery(
+            label="primary", search_query=topic, ranking_query=topic, sources=["arxiv"],
+        ),
+        source="arxiv",
+        config={},
+        depth="quick",
+        date_range=("2026-10-26", "2026-11-25"),
+        runtime=schema.ProviderRuntime(
+            reasoning_provider="none", planner_model="none", rerank_model="none",
+        ),
+        mock=False,
+    )
+    assert [item["title"] for item in items] == [entry["title"] for entry in current_entries]
+
+
 class _Proc:
     def __init__(self, rc, out, err=""):
         self.returncode, self.stdout, self.stderr = rc, out, err
@@ -278,12 +361,13 @@ def test_zero_result_quoted_query_retries_unquoted_and_finds_results(monkeypatch
     """A natural-language multi-word topic matches nothing as an exact
     phrase, but the unquoted retry finds it -- the fix for #908."""
     monkeypatch.setattr(arxiv, "_is_available", lambda: True)
+    monkeypatch.setattr(arxiv, "_today", lambda: NOW + timedelta(days=1))
     calls = []
 
     def fake_run(cmd, timeout):
         calls.append(cmd)
         query = cmd[cmd.index("--search-query") + 1]
-        if query == 'all:"AI video generation advances"':
+        if query == f'all:"AI video generation advances" AND {DATE_CLAUSE}':
             return _Proc(0, '{"results":{"entries":[]}}')
         return _Proc(0, '{"results":{"entries":[{"title":"AI video generation advances"}]}}')
 
@@ -291,8 +375,8 @@ def test_zero_result_quoted_query_retries_unquoted_and_finds_results(monkeypatch
     resp = arxiv.search_arxiv("AI video generation advances", "2026-06-01", "2026-06-27")
     assert resp["results"] == [{"title": "AI video generation advances"}]
     assert len(calls) == 2
-    assert 'all:"AI video generation advances"' in calls[0]
-    assert 'all:"AI" AND all:"video" AND all:"generation" AND all:"advances"' in calls[1]
+    assert f'all:"AI video generation advances" AND {DATE_CLAUSE}' in calls[0]
+    assert f'all:"AI" AND all:"video" AND all:"generation" AND all:"advances" AND {DATE_CLAUSE}' in calls[1]
 
 
 def test_zero_result_quoted_query_retry_also_empty_returns_empty(monkeypatch):
