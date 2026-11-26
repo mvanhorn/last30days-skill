@@ -215,6 +215,19 @@ Check governing formatting/citation instructions first. Skip a conflicting prese
 
 If one regeneration cannot satisfy a data-backed check, display the best supported result and name the unsatisfied check. Never fabricate missing evidence.
 
+Final checklist - mark each box before displaying the synthesis. An unchecked box means go back to the matching self-check item above, fix it (regenerating at most once), and return here.
+
+- [ ] Item 1 - narrative paragraphs use the `**Headline phrase** -` shape
+- [ ] Item 2 - fenced footer relayed exactly
+- [ ] Item 3 - at most six quote lines, no double-quoting
+- [ ] Item 4 - no tooling meta-commentary
+- [ ] Item 5 - Polymarket odds handled per the rule
+- [ ] Item 6 - every required citation preserved
+- [ ] Item 7 - engagement counts only where allowed
+- [ ] Item 8 - local-engine emit/plan contract verified
+- [ ] Item 9 - person-topic handles resolved
+- [ ] All boxes above are checked; nothing to go back for
+
 ## HTML and follow-up handoff
 
 HTML/export intent includes `--emit=html`, `--emit:html`, `--html`, or a natural-language request for an HTML brief or shareable file. These are skill intent signals, not the full Python CLI contract. Classify this intent before submitting fresh research. Apply the runbook's hosted API gate and read the HTML reference through the root gate before finishing.
