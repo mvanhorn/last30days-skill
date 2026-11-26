@@ -90,6 +90,7 @@ _REGISTERS = {
             "hackernews": 1.35,
             "arxiv": 1.30,
             "devto": 1.25,
+            "v2ex": 1.15,
             "grounding": 1.10,
         },
     ),

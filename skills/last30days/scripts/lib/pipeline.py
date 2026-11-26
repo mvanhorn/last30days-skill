@@ -90,6 +90,7 @@ from . import (
     topic_shape,
     truthsocial,
     trustpilot,
+    v2ex,
     x_api,
     x_envelope,
     x_judge,
@@ -142,7 +143,7 @@ SEARCH_ALIAS = {
 # resolved per run, so every subquery would issue the identical page fetch.
 MAX_SOURCE_FETCHES: dict[str, int] = {
     "x": 2, "jobs": 1, "linkedin": 1, "stocktwits": 1, "trustpilot": 1, "amazon": 1,
-    "telegram": 1, "meta_ads": 1, "devto": 1,
+    "telegram": 1, "meta_ads": 1, "devto": 1, "v2ex": 1,
 }
 
 # Sources whose thin result is their normal success state, so the "<3 items"
@@ -768,6 +769,7 @@ MOCK_AVAILABLE_SOURCES = [
     "dripstack",
     "telegram",
     "devto",
+    "v2ex",
 ]
 
 # Full set of searchable source names accepted by --search /
@@ -923,6 +925,12 @@ def available_sources(
         or config.get("_devto_tags")
     ):
         available.append("devto")
+    # V2EX is opt-in for the same reason: SOV2EX is a community-run index
+    # that should only see queries from users who asked for V2EX.
+    if "v2ex" in include_sources or (
+        requested_sources and "v2ex" in requested_sources
+    ):
+        available.append("v2ex")
     if which("digg-pp-cli"):
         available.append("digg")
     # arXiv is default-on when its Printing Press CLI is installed (zero auth).
@@ -3187,7 +3195,8 @@ def run(
             explicit=hiring_signals_mode or company_jobs_attached,
             topic=topic,
         )
-        _ensure_devto_in_plan(plan, available)
+        for opt_in_source in ("devto", "v2ex"):
+            _ensure_opt_in_source_in_plan(plan, available, opt_in_source)
     if "corpus" in available and plan.subqueries:
         # Corpus is deterministic and user-registered, so it always gets one
         # bounded stream even when a quick/LLM plan omits it. Reuse the primary
@@ -5126,6 +5135,15 @@ def _finalize_items_by_source(
                 http.fixture_source_record(enrichment_request, schema.to_dict(items))
             else:
                 http.fixture_source_record(enrichment_request, [])
+        if source == "v2ex" and items and not mock:
+            matched, replayed = http.fixture_source_replay(enrichment_request)
+            if matched:
+                items = _merge_replayed_enrichment(items, replayed)
+            elif time.monotonic() < finalization_deadline:
+                v2ex.enrich_source_items(items, deadline=finalization_deadline)
+                http.fixture_source_record(enrichment_request, schema.to_dict(items))
+            else:
+                http.fixture_source_record(enrichment_request, [])
         if source == "amazon" and items and not mock:
             # Attach-if-missing: review enrichment now runs at search time in
             # _retrieve_stream_impl, so items arriving here should already have
@@ -5808,21 +5826,23 @@ def _mean_source_weight(weights: Mapping[str, float]) -> float:
     return (sum(positive) / len(positive)) if positive else 1.0
 
 
-def _ensure_devto_in_plan(plan: schema.QueryPlan, available: list[str]) -> None:
-    """Give an activated dev.to source the primary subquery.
+def _ensure_opt_in_source_in_plan(
+    plan: schema.QueryPlan, available: list[str], source: str,
+) -> None:
+    """Give an activated off-by-default source (dev.to, V2EX) the primary subquery.
 
-    dev.to is off by default, so a host plan built from the default source
-    list never names it. Once tags or INCLUDE_SOURCES turn it on, activation
-    must not be a no-op.
+    These sources are off by default, so a plan built from the default source
+    list never names them. Once a flag or INCLUDE_SOURCES turns one on,
+    activation must not be a no-op.
     """
-    if "devto" not in available or not plan.subqueries:
+    if source not in available or not plan.subqueries:
         return
-    # A plan that already routes dev.to keeps its route: MAX_SOURCE_FETCHES
-    # allows one dev.to fetch, and a second route would spend it first.
-    if not any("devto" in subquery.sources for subquery in plan.subqueries):
-        plan.subqueries[0].sources.append("devto")
-    if "devto" not in plan.source_weights:
-        plan.source_weights["devto"] = _mean_source_weight(plan.source_weights)
+    # A plan that already routes the source keeps its route: MAX_SOURCE_FETCHES
+    # allows one fetch, and a second route would spend it first.
+    if not any(source in subquery.sources for subquery in plan.subqueries):
+        plan.subqueries[0].sources.append(source)
+    if source not in plan.source_weights:
+        plan.source_weights[source] = _mean_source_weight(plan.source_weights)
         plan.source_weights = planner._normalize_weights(plan.source_weights)
 
 
@@ -9094,6 +9114,16 @@ def _retrieve_stream_impl(
         items = devto.parse_devto_response(result, query=relevance_topic)
         # Comment enrichment is deferred to _finalize_items_by_source so it
         # lands on the articles that survive relevance pruning.
+        return items, _result_outcome_artifact(source, result)
+    if source == "v2ex":
+        relevance_topic = raw_topic or topic or subquery.search_query
+        result = v2ex.search_v2ex(
+            relevance_topic, from_date, to_date, depth=depth,
+            search_query=subquery.search_query,
+        )
+        items = v2ex.parse_v2ex_response(result, query=relevance_topic)
+        # Reply enrichment is deferred to _finalize_items_by_source so it
+        # lands on the topics that survive relevance pruning.
         return items, _result_outcome_artifact(source, result)
     if source == "stocktwits":
         # Pass raw_topic so symbol detection sees the full topic, not the

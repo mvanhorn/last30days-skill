@@ -13,6 +13,7 @@ SOURCE_QUALITY = {
     "xiaohongshu": 0.7,
     "hackernews": 0.8,
     "devto": 0.78,
+    "v2ex": 0.72,
     "youtube": 0.85,
     "digg": 0.85,
     "arxiv": 0.9,
@@ -197,6 +198,7 @@ ENGAGEMENT_WEIGHTS: dict[str, list[tuple[str, float]]] = {
     "instagram":        [("views", 0.50), ("likes", 0.30), ("comments", 0.20)],
     "hackernews":       [("points", 0.55), ("comments", 0.45)],
     "devto":            [("reactions", 0.60), ("comments", 0.40)],
+    "v2ex":             [("replies", 1.0)],
     "github":           [("reactions", 0.60), ("comments", 0.40)],
     "bluesky":          [("likes", 0.40), ("reposts", 0.30), ("replies", 0.20), ("quotes", 0.10)],
     "truthsocial":      [("likes", 0.45), ("reposts", 0.30), ("replies", 0.25)],
@@ -336,6 +338,9 @@ _ENGAGEMENT_LOG_REFERENCE: dict[str, float] = {
     "threads":     9.2,  # ~log1p(10000)
     # Likes/comments/favorites on an Instagram-like feed.
     "xiaohongshu": 9.2,  # ~log1p(10000)
+    # Topic reply counts. The V2EX hot list on 2026-11-26 ran 130, 97, 81 at
+    # the top and 57 at the median, so ~150 replies is a very busy topic.
+    "v2ex":        5.0,  # ~log1p(150)
     # Saves on a viral pin reach ~10k.
     "pinterest":   9.2,  # ~log1p(10000)
     # Reactions run like Reddit upvotes: a viral post has ~2k.
