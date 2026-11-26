@@ -8091,6 +8091,29 @@ def _retrieve_stream_impl(
         # per-subquery search_query, as polymarket does above.
         relevance_topic = raw_topic or topic or subquery.search_query
         items = github.parse_github_response(response, topic=relevance_topic)
+        # Title-first search can return zero topical matches when the planner
+        # added extra keywords that appear only in issue bodies. Retry once
+        # across title and body only after a clean, non-error, non-empty core
+        # search so rate-limited or qualifier-only queries never double-fetch.
+        if (
+            not items
+            and not response.get("error")
+            and github.strip_search_qualifiers(github.extract_core_subject(subquery.search_query))
+        ):
+            fallback_response = github.search_github(
+                subquery.search_query,
+                from_date,
+                to_date,
+                depth=depth,
+                token=token,
+                title_only=False,
+            )
+            fallback_items = github.parse_github_response(
+                fallback_response, topic=relevance_topic
+            )
+            if fallback_items or fallback_response.get("error"):
+                response = fallback_response
+                items = fallback_items
         # Note: an unauth rate-limit (response["error"]) is expected on the
         # tokenless anon tier and returns empty here rather than raising — github
         # is now always eligible, so raising would spam "github failed" on every

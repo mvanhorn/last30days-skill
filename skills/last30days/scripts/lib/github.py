@@ -270,6 +270,8 @@ def search_github(
     to_date: str,
     depth: str = "default",
     token: Optional[str] = None,
+    *,
+    title_only: bool = True,
 ) -> Dict[str, Any]:
     """Search GitHub Issues and PRs (HTTP fetch only).
 
@@ -321,9 +323,13 @@ def search_github(
     _log(f"Searching for '{core}' (raw: '{topic}', since {from_date}, count={count})")
 
     # Only results whose title names the topic survive the topical floor, so
-    # search titles: a body search fills the page with popular issues that
-    # merely mention the topic, and the floor then drops all of them.
-    base_q = f"is:public {core} created:{from_date}..{to_date} in:title"
+    # search titles first: a body search fills the page with popular issues that
+    # merely mention the topic, and the floor then drops all of them. Callers
+    # pass title_only=False as a fallback when planner-expanded queries yield
+    # no title matches.
+    base_q = f"is:public {core} created:{from_date}..{to_date}"
+    if title_only:
+        base_q += " in:title"
 
     def _search(qualifier: Optional[str]) -> Optional[Dict[str, Any]]:
         q = f"{base_q} {qualifier}" if qualifier else base_q
