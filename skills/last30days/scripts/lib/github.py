@@ -12,12 +12,13 @@ import os
 import re
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait as futures_wait
 from http.client import HTTPException
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from . import dates, env, http, log, schema
 from .query import extract_core_subject
@@ -80,7 +81,7 @@ def resolve_token(token: Optional[str] = None) -> Optional[str]:
 def _fetch_json(
     url: str,
     token: Optional[str] = None,
-    timeout: int = 15,
+    timeout: float = 15,
     failure_out: Optional[List[str]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Fetch JSON from GitHub API. Returns None on failure.
@@ -334,6 +335,10 @@ def search_github(
     to_date: str,
     depth: str = "default",
     token: Optional[str] = None,
+    *,
+    title_only: bool = True,
+    deadline: Optional[float] = None,
+    stopped: Optional[Callable[[], bool]] = None,
 ) -> Dict[str, Any]:
     """Search GitHub Issues and PRs (HTTP fetch only).
 
@@ -384,9 +389,26 @@ def search_github(
         _log("No GitHub token; using the unauthenticated REST tier (low rate limit)")
     _log(f"Searching for '{core}' (raw: '{topic}', since {from_date}, count={count})")
 
+    # Only results whose title names the topic survive the topical floor, so
+    # search titles first: a body search fills the page with popular issues that
+    # merely mention the topic, and the floor then drops all of them. Callers
+    # pass title_only=False as a fallback when planner-expanded queries yield
+    # no title matches.
     base_q = f"is:public {core} created:{from_date}..{to_date}"
+    if title_only:
+        base_q += " in:title"
 
     def _search(qualifier: Optional[str]) -> Optional[Dict[str, Any]]:
+        if stopped is not None and stopped():
+            fetch_failures.append("cancelled")
+            return None
+        req_timeout: float = 30.0
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                fetch_failures.append("deadline exceeded")
+                return None
+            req_timeout = min(req_timeout, remaining)
         q = f"{base_q} {qualifier}" if qualifier else base_q
         params = {
             "q": q,
@@ -395,7 +417,7 @@ def search_github(
             "per_page": str(min(count, 100)),
         }
         url = f"{SEARCH_URL}?{urllib.parse.urlencode(params)}"
-        return _fetch_json(url, token=resolved_token, timeout=30,
+        return _fetch_json(url, token=resolved_token, timeout=req_timeout,
                            failure_out=fetch_failures)
 
     fetch_failures: List[str] = []
@@ -415,6 +437,14 @@ def search_github(
         seen_ids = set()
         failed_qualifiers: List[str] = []
         for qualifier in ("is:issue", "is:pull-request"):
+            if stopped is not None and stopped():
+                fetch_failures.append("cancelled")
+                failed_qualifiers.append(qualifier)
+                break
+            if deadline is not None and time.monotonic() >= deadline:
+                fetch_failures.append("deadline exceeded")
+                failed_qualifiers.append(qualifier)
+                break
             part = _search(qualifier)
             if part is None:
                 failed_qualifiers.append(qualifier)
@@ -438,10 +468,18 @@ def search_github(
             )
     else:
         data = _search(None)
+    stop_reason = (
+        fetch_failures[-1]
+        if fetch_failures and fetch_failures[-1] in {"cancelled", "deadline exceeded"}
+        else None
+    )
     if not data:
         envelope = {"items": [], "context": {"core": core, "from_date": from_date,
                                              "to_date": to_date, "count": count}}
-        if authed and partition_failure:
+        if stop_reason is not None:
+            envelope["stopped_reason"] = stop_reason
+            envelope["error"] = f"GitHub search timed out ({stop_reason})"
+        elif authed and partition_failure:
             envelope["error"] = partition_failure
         elif authed and fetch_failures:
             # Authenticated transport failures must not be laundered into a
@@ -469,6 +507,8 @@ def search_github(
             "count": count,
         },
     }
+    if stop_reason is not None:
+        envelope["stopped_reason"] = stop_reason
     if partition_failure:
         envelope["error"] = partition_failure
     return envelope
@@ -566,10 +606,21 @@ def parse_github_response(
 def enrich_with_comments(
     items: List[Dict[str, Any]],
     depth: str = "default",
+    *,
+    deadline: Optional[float] = None,
+    stopped: Optional[Callable[[], bool]] = None,
 ) -> List[Dict[str, Any]]:
     """Fetch public comments for top items by reactions and attach to metadata."""
     if not items:
         return items
+    if stopped is not None and stopped():
+        return items
+    req_timeout = 15.0
+    if deadline is not None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return items
+        req_timeout = min(req_timeout, remaining)
 
     limit = ENRICH_LIMITS.get(depth, ENRICH_LIMITS["default"])
 
@@ -582,23 +633,51 @@ def enrich_with_comments(
 
     _log(f"Enriching top {len(to_enrich)} items with comments")
 
-    with ThreadPoolExecutor(max_workers=5) as executor:
+    executor = ThreadPoolExecutor(max_workers=5)
+    try:
         futures = {
             executor.submit(
                 _fetch_item_comments,
                 items[idx]["url"],
+                timeout=req_timeout,
             ): idx
             for idx in to_enrich
         }
 
-        for future in as_completed(futures):
-            idx = futures[future]
-            try:
-                comments = future.result(timeout=15)
-                items[idx]["metadata"]["top_comments"] = comments
-            except (KeyError, TypeError, OSError) as exc:
-                _log(f"Comment enrichment failed for {items[idx].get('url', '?')}: {type(exc).__name__}: {exc}")
-                items[idx]["metadata"]["top_comments"] = []
+        if deadline is None and stopped is None:
+            for future in as_completed(futures):
+                idx = futures[future]
+                try:
+                    comments = future.result(timeout=15)
+                    items[idx]["metadata"]["top_comments"] = comments
+                except (KeyError, TypeError, OSError) as exc:
+                    _log(f"Comment enrichment failed for {items[idx].get('url', '?')}: {type(exc).__name__}: {exc}")
+                    items[idx]["metadata"]["top_comments"] = []
+        else:
+            pending = set(futures)
+            while pending:
+                if stopped is not None and stopped():
+                    break
+                if deadline is not None:
+                    left = deadline - time.monotonic()
+                    if left <= 0:
+                        break
+                    step = min(0.1, left)
+                else:
+                    step = 0.1
+                done, pending = futures_wait(pending, timeout=step, return_when=FIRST_COMPLETED)
+                for future in done:
+                    idx = futures[future]
+                    try:
+                        comments = future.result(timeout=0)
+                        items[idx]["metadata"]["top_comments"] = comments
+                    except (KeyError, TypeError, OSError) as exc:
+                        _log(f"Comment enrichment failed for {items[idx].get('url', '?')}: {type(exc).__name__}: {exc}")
+                        items[idx]["metadata"]["top_comments"] = []
+            for future in pending:
+                future.cancel()
+    finally:
+        executor.shutdown(wait=(deadline is None and stopped is None), cancel_futures=True)
 
     return items
 
@@ -606,12 +685,14 @@ def enrich_with_comments(
 def _fetch_item_comments(
     issue_url: str,
     max_comments: int = 5,
+    timeout: float = 15,
 ) -> List[Dict[str, Any]]:
     """Fetch comments for a GitHub issue/PR.
 
     Args:
         issue_url: HTML URL like https://github.com/owner/repo/issues/123
         max_comments: Max comments to return
+        timeout: Request timeout in seconds
 
     Returns:
         List of comment dicts with score, excerpt, author.
@@ -625,7 +706,7 @@ def _fetch_item_comments(
     # support reaction sorting, so fetch its largest page and rank locally.
     api_url = f"https://api.github.com/repos/{path}/comments?per_page=100"
 
-    data = _fetch_json(api_url, timeout=15)
+    data = _fetch_json(api_url, timeout=timeout)
     if not data or not isinstance(data, list):
         return []
 
