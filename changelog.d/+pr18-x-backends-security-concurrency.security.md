@@ -1,0 +1,1 @@
+Hardened X backends (`grok_audit`, `grok_x`, `x_envelope`, `xai_x`) against OIDC audit bypass, raw CLI secret/error leakage, cross-thread rejection-reason races, unallowlisted envelope error categories, non-finite JSON engagement crashes, unvalidated xAI post provenance, and unescaped xAI prompt interpolation.

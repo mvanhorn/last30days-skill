@@ -549,15 +549,18 @@ def parse_reviews(response: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], Dict[
     return comments, stats
 
 
-def _remaining_lane_budget(elapsed: float) -> int:
+def _remaining_lane_budget(elapsed: float, deadline: Optional[float] = None) -> int:
     """Compute the review lane's wall-clock budget.
 
     Returns the lesser of LANE_DEADLINE and whatever remains of the foreground
-    contract. If the remaining time is below MIN_USEFUL_REVIEW_BUDGET, returns
-    0 (skip the lane entirely) rather than firing doomed short pulls that spend
-    Bright Data credits without returning reviews.
+    contract (and ``deadline``, when provided). If the remaining time is below
+    MIN_USEFUL_REVIEW_BUDGET, returns 0 (skip the lane entirely) rather than
+    firing doomed short pulls that spend Bright Data credits without returning
+    reviews.
     """
     remaining = FOREGROUND_CONTRACT - elapsed - RENDER_MARGIN
+    if deadline is not None:
+        remaining = min(remaining, deadline - time.monotonic())
     if remaining < MIN_USEFUL_REVIEW_BUDGET:
         return 0
     return int(min(LANE_DEADLINE, remaining))
@@ -573,6 +576,7 @@ def enrich_with_reviews(
     brand: str = "",
     keyword: str = "",
     fetcher=None,
+    deadline: Optional[float] = None,
 ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
     """Attach review samples to the top products, in parallel, under a deadline.
 
@@ -597,7 +601,7 @@ def enrich_with_reviews(
         _log(f"depth={depth}: discovery only, no review pulls")
         return enriched, None
 
-    budget = _remaining_lane_budget(elapsed)
+    budget = _remaining_lane_budget(elapsed, deadline=deadline)
     if budget <= 0:
         _log(f"review lane skipped (budget {budget}s, floor {MIN_USEFUL_REVIEW_BUDGET}s)")
         return enriched, "review lane skipped (budget 0s)"
@@ -676,6 +680,7 @@ def enrich_source_items(
     elapsed: float = 0.0,
     max_reviews: int = MAX_REVIEWS,
     fetcher=None,
+    deadline: Optional[float] = None,
 ) -> List[Any]:
     """Attach review samples to the amazon SourceItems that survived dedupe.
 
@@ -713,6 +718,7 @@ def enrich_source_items(
     enriched, _status = enrich_with_reviews(
         products, depth=depth, config=config, elapsed=elapsed,
         max_reviews=max_reviews, keyword=keyword, fetcher=fetcher,
+        deadline=deadline,
     )
     for product in enriched:
         item = by_asin.get(product["asin"])

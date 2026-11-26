@@ -80,7 +80,7 @@ func startCacheTestProcess(t *testing.T, test string, env []string, ready string
 
 func cacheStagePaths(t *testing.T, base string) []string {
 	t.Helper()
-	paths, err := filepath.Glob(filepath.Join(base, cacheSubdir, "v1.tmp-*"))
+	paths, err := filepath.Glob(filepath.Join(cacheParentDir(base), "v1.tmp-*"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +143,7 @@ func TestEnsurePreservesActiveStagesAndReclaimsThemAfterOwnerDeath(t *testing.T)
 
 func TestEnsurePreservesUnmarkedStagingDirectories(t *testing.T) {
 	base := t.TempDir()
-	stage := filepath.Join(base, cacheSubdir, "v1.tmp-unmarked")
+	stage := filepath.Join(cacheParentDir(base), "v1.tmp-unmarked")
 	if err := os.MkdirAll(stage, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +158,7 @@ func TestEnsurePreservesUnmarkedStagingDirectories(t *testing.T) {
 
 func TestEnsureReclaimsUnownedStageRegistration(t *testing.T) {
 	base := t.TempDir()
-	parent := filepath.Join(base, cacheSubdir)
+	parent := cacheParentDir(base)
 	if err := os.MkdirAll(parent, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +177,7 @@ func TestEnsureReclaimsUnownedStageRegistration(t *testing.T) {
 func TestEnsureHeldPublicationLockTimesOut(t *testing.T) {
 	base := t.TempDir()
 	t.Setenv(CacheEnvOverride, base)
-	stopOwner := startCacheLockOwner(t, filepath.Join(base, cacheSubdir, "v1.lock"))
+	stopOwner := startCacheLockOwner(t, filepath.Join(cacheParentDir(base), "v1.lock"))
 	const callers = 4
 	done := make(chan error, callers)
 	started := time.Now()
@@ -212,10 +212,10 @@ func TestEnsureHeldPublicationLockTimesOut(t *testing.T) {
 		}
 	}
 	t.Logf("all %d held-lock callers returned deadline errors after %s", callers, time.Since(started))
-	if _, err := os.Stat(filepath.Join(base, cacheSubdir, "v1")); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(filepath.Join(cacheParentDir(base), "v1")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("timed-out contender published a cache: %v", err)
 	}
-	staged, err := filepath.Glob(filepath.Join(base, cacheSubdir, "v1.tmp-*"))
+	staged, err := filepath.Glob(filepath.Join(cacheParentDir(base), "v1.tmp-*"))
 	if err != nil || len(staged) != 0 {
 		t.Fatalf("timed-out contender left staging directories: %v, %v", staged, err)
 	}
@@ -288,7 +288,7 @@ func TestEnsurePublicationTimeoutCleansOwnedStage(t *testing.T) {
 	if len(stages) != 1 {
 		t.Fatalf("paused extractor stages = %v, want one", stages)
 	}
-	startCacheLockOwner(t, filepath.Join(base, cacheSubdir, "v1.lock"))
+	startCacheLockOwner(t, filepath.Join(cacheParentDir(base), "v1.lock"))
 	if err := os.WriteFile(filepath.Join(base, "release"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}

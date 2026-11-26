@@ -33,7 +33,7 @@ from concurrent.futures import TimeoutError as FutureTimeout
 from contextvars import ContextVar, copy_context
 from html import unescape
 from typing import Any, Callable
-from urllib.parse import urljoin, urlparse
+from urllib.parse import quote, urlencode, urljoin, urlparse
 
 from . import dates, grounding, health, http, jobs_digest, jobs_story, jobs_teams, log
 from .job_boards import detect as board_detect
@@ -181,14 +181,14 @@ _ATS_LINK_PATTERNS: list[tuple[str, str]] = [
     (ATS_PROVIDER_GREENHOUSE, r"greenhouse\.io/embed/job_board\?for=([A-Za-z0-9_.-]+)"),
     (ATS_PROVIDER_LEVER, r"(?:jobs\.lever\.co|api\.lever\.co/v0/postings)/([A-Za-z0-9_.-]+)"),
     (ATS_PROVIDER_WORKABLE, r"apply\.workable\.com/(?:api/v[0-9]+/accounts/)?([A-Za-z0-9_.-]+)"),
-    (ATS_PROVIDER_WORKABLE, r"([A-Za-z0-9_-]+)\.workable\.com"),
+    (ATS_PROVIDER_WORKABLE, r"(?<![A-Za-z0-9_-])([A-Za-z0-9_-]{1,63})\.workable\.com"),
     (ATS_PROVIDER_SMARTRECRUITERS, r"(?:careers|jobs)\.smartrecruiters\.com/([A-Za-z0-9_.-]+)"),
     (ATS_PROVIDER_SMARTRECRUITERS, r"api\.smartrecruiters\.com/v1/companies/([A-Za-z0-9_.-]+)"),
     # Workday needs three parts to rebuild its endpoints: tenant, host number
     # and site. The site may follow a locale segment such as /en-US/.
     (
         ATS_PROVIDER_WORKDAY,
-        r"([A-Za-z0-9_-]+)\.(wd[0-9]+)\.myworkdayjobs\.com/(?:[a-z]{2}-[A-Za-z]{2}/)?([A-Za-z0-9_-]+)",
+        r"(?<![A-Za-z0-9_-])([A-Za-z0-9_-]{1,63})\.(wd[0-9]+)\.myworkdayjobs\.com/(?:[a-z]{2}-[A-Za-z]{2}/)?([A-Za-z0-9_-]+)",
     ),
     # Kula is read by its platform reader, under the slug the link names.
     (PLATFORM_PROVIDER_KULA, board_detect.KULA_BOARD_LINK),
@@ -198,6 +198,14 @@ _ATS_LINK_PATTERNS: list[tuple[str, str]] = [
 _BOARD_DOMAINS = (
     "greenhouse.io", "ashbyhq.com", "lever.co", "workable.com",
     "smartrecruiters.com", "myworkdayjobs.com",
+)
+# Shared multi-tenant ATS and hiring-platform domains whose sitemaps can list
+# roles for companies other than the target; never read as an owned sitemap.
+_SHARED_PLATFORM_DOMAINS = (
+    *_BOARD_DOMAINS,
+    "kula.ai",
+    "oraclecloud.com",
+    "eightfold.ai",
 )
 SUPPORTED_SYSTEMS = "Greenhouse, Ashby, Lever, Workable, SmartRecruiters and Workday"
 # Hiring platforms read off a careers page on the company's own site.
@@ -223,60 +231,128 @@ class LaneBudget:
         *,
         clock: Callable[[], float] | None = None,
     ) -> None:
+        self._lock = threading.RLock()
         self.clock = clock or time.monotonic
         self.seconds = float(seconds)
         self.started = self.clock()
         self.deadline = self.started + self.seconds
         # Finding a board may be given less than the whole budget, so that a
         # later company still has time; reading a found board has all of it.
-        self.step_deadline = self.deadline
+        self._step_deadline = self.deadline
         self.slow: list[str] = []
-        self.stopped_at = ""
+        self._stopped_at = ""
         # Board APIs that reached their own request limit while the lane
         # still had time: that call's failure, not the lane's.
         self.unanswered: list[str] = []
         # Set once the lane reached its answer for the topic, so a second
         # pass of the same run does not ask the same hosts again.
-        self.settled = False
+        self._settled = False
         # Careers page URL -> the address that answered it, after redirects.
         self.landed: dict[str, str] = {}
         # Hosts that gave no answer at all, so no later step asks them again.
         self.unreachable: set[str] = set()
 
+    @property
+    def step_deadline(self) -> float:
+        with self._lock:
+            return self._step_deadline
+
+    @step_deadline.setter
+    def step_deadline(self, value: float) -> None:
+        with self._lock:
+            self._step_deadline = value
+
+    @property
+    def stopped_at(self) -> str:
+        with self._lock:
+            return self._stopped_at
+
+    @stopped_at.setter
+    def stopped_at(self, value: str) -> None:
+        with self._lock:
+            self._stopped_at = value
+
+    @property
+    def settled(self) -> bool:
+        with self._lock:
+            return self._settled
+
+    @settled.setter
+    def settled(self, value: bool) -> None:
+        with self._lock:
+            self._settled = bool(value)
+
     def remaining(self) -> float:
-        return max(0.0, min(self.deadline, self.step_deadline) - self.clock())
+        with self._lock:
+            return max(0.0, min(self.deadline, self._step_deadline) - self.clock())
 
     def spent(self) -> bool:
-        return self.clock() >= self.deadline
+        with self._lock:
+            return self.clock() >= self.deadline
 
     def limit_discovery(self, seconds: float | None) -> None:
-        self.step_deadline = (
-            self.deadline if seconds is None
-            else min(self.deadline, self.clock() + max(0.0, seconds))
-        )
+        with self._lock:
+            self._step_deadline = (
+                self.deadline if seconds is None
+                else min(self.deadline, self.clock() + max(0.0, seconds))
+            )
 
     def note_slow(self, what: str) -> None:
-        if what and what not in self.slow:
-            self.slow.append(what)
+        with self._lock:
+            if what and what not in self.slow:
+                self.slow.append(what)
+
+    def note_unanswered(self, detail: str) -> None:
+        with self._lock:
+            if detail:
+                self.unanswered.append(detail)
+
+    def has_unanswered(self, detail: str | None = None) -> bool:
+        with self._lock:
+            if detail is None:
+                return bool(self.unanswered)
+            return detail in self.unanswered
+
+    def unanswered_snapshot(self) -> list[str]:
+        with self._lock:
+            return list(self.unanswered)
+
+    def record_landed(self, url: str, landed_url: str) -> None:
+        with self._lock:
+            self.landed[url] = landed_url
+
+    def get_landed(self, url: str, default: str | None = None) -> str | None:
+        with self._lock:
+            return self.landed.get(url, default)
+
+    def mark_unreachable(self, hosts: set[str] | list[str]) -> None:
+        with self._lock:
+            self.unreachable.update(hosts)
+
+    def is_unreachable(self, host: str) -> bool:
+        with self._lock:
+            return host in self.unreachable
 
     def stop(self, step: str) -> None:
         """Record the first step that found no time left."""
-        if not self.stopped_at:
-            self.stopped_at = step
+        with self._lock:
+            if not self._stopped_at:
+                self._stopped_at = step
 
     def reason(self) -> str:
         """Where the time went, for a lane that ran out of it."""
-        text = (
-            f"jobs lane ran out of time ({self.seconds:g}s budget)" if self.spent()
-            else f"jobs search used up its share of the lane's {self.seconds:g}s"
-        )
-        if self.stopped_at:
-            text += f" before {self.stopped_at}"
-        if self.slow:
-            text += "; slow: " + ", ".join(self.slow[:4])
-            if len(self.slow) > 4:
-                text += f" and {len(self.slow) - 4} more"
-        return text
+        with self._lock:
+            text = (
+                f"jobs lane ran out of time ({self.seconds:g}s budget)" if self.spent()
+                else f"jobs search used up its share of the lane's {self.seconds:g}s"
+            )
+            if self._stopped_at:
+                text += f" before {self._stopped_at}"
+            if self.slow:
+                text += "; slow: " + ", ".join(self.slow[:4])
+                if len(self.slow) > 4:
+                    text += f" and {len(self.slow) - 4} more"
+            return text
 
 
 _BUDGET: ContextVar[LaneBudget | None] = ContextVar("last30days_jobs_budget", default=None)
@@ -624,10 +700,11 @@ def _with_budget_outcome(
             if budget.spent():
                 artifact["_source_out_of_time"] = True
         return artifact
-    if budget.unanswered and not items:
+    unanswered = budget.unanswered_snapshot()
+    if unanswered and not items:
         # Time was left, but a board's API never answered: the lane cannot
         # say there is no board. Named, and open to a retry.
-        reason = f"{company}: {'; '.join(budget.unanswered[:4])}"
+        reason = f"{company}: {'; '.join(unanswered[:4])}"
         log.source_log("Jobs", reason, tty_only=False)
         return {
             **artifact,
@@ -746,6 +823,7 @@ def _search_jobs(
                 company, date_range, config, entry, entry["reason"],
                 attempted=attempted, web_backend=web_backend, explicit=explicit,
             )
+        share = budget.step_deadline
         attempted.append(f"company:{entry['provider']}:{entry['board']}")
         hosted = entry["provider"] in _HOSTED_PROVIDERS
         found, reason = _read_found_board(
@@ -755,9 +833,20 @@ def _search_jobs(
         )
         if found is not None:
             return found
+        budget.step_deadline = share
         if reason == "unanswered":
             # A board that did not answer is not one that cannot be read:
-            # the budget names it, and a retry may read it.
+            # the budget names it, and a retry may read it. For a hosted
+            # board (e.g. Workday), the company's own site may still serve an
+            # owned job sitemap while the third-party host is slow/overloaded.
+            if hosted:
+                roster = _sitemap_tier(
+                    company, date_range, _sitemap_hosts([], site),
+                    attempted=attempted, explicit=explicit, budget=budget,
+                    fallback=f"{entry['provider']} board did not answer",
+                )
+                if roster is not None:
+                    return roster
             return _web_tier(
                 company, date_range, config, attempted=attempted,
                 web_backend=web_backend, explicit=explicit,
@@ -806,6 +895,7 @@ def _search_jobs(
             platform = board_detect.detect_platform(careers_html, careers_url or "")
 
     if platform is not None:
+        share = budget.step_deadline
         platform_provider, entry = platform
         entry = {"name": company, **entry}
         attempted.append(f"careers:{platform_provider}:{entry['board']}")
@@ -816,14 +906,20 @@ def _search_jobs(
         )
         if found is not None:
             return found
+        budget.step_deadline = share
         if reason == "unanswered":
             return _web_tier(
                 company, date_range, config, attempted=attempted,
                 web_backend=web_backend, explicit=explicit,
             )
+        sitemap_first = (
+            [entry["board"], _host(careers_url or "")]
+            if page_via == "site"
+            else []
+        )
         return _fall_through(
             company, date_range, config, {"name": company, "site": entry["board"]},
-            reason, hosts=_sitemap_hosts([entry["board"], _host(careers_url or "")], site),
+            reason, hosts=_sitemap_hosts(sitemap_first, site),
             attempted=attempted, web_backend=web_backend, explicit=explicit, budget=budget,
             platform=platform_provider,
         )
@@ -871,8 +967,9 @@ def _search_jobs(
 
     # --- The roster tier: the job sitemap of the company's own site. ---
     if site and _host(site):
+        sitemap_first = [_host(careers_url or "")] if page_via == "site" else []
         roster = _sitemap_tier(
-            company, date_range, _sitemap_hosts([_host(careers_url or "")], site),
+            company, date_range, _sitemap_hosts(sitemap_first, site),
             attempted=attempted, explicit=explicit, budget=budget,
         )
         if roster is not None:
@@ -929,7 +1026,7 @@ def _read_found_board(
     )
     if found is not None:
         return found, ""
-    if f"the {provider} board {board} did not answer" in budget.unanswered:
+    if budget.has_unanswered(f"the {provider} board {board} did not answer"):
         return None, "unanswered"
     return None, f"its {provider} board answered with an error or with no roles the lane could read"
 
@@ -963,13 +1060,58 @@ def _fall_through(
     )
 
 
+def _is_shared_board_host(host: str) -> bool:
+    """Whether ``host`` belongs to a shared multi-tenant ATS or hiring platform."""
+    clean = _host(host)
+    return bool(clean) and any(
+        _same_site(clean, domain) for domain in _SHARED_PLATFORM_DOMAINS
+    )
+
+
+def _is_owned_sitemap_host(host: str, site: str) -> bool:
+    """Whether ``host`` is a company-dedicated host verified for ``site`` and
+    safe to stamp as an owned job sitemap (never a multi-tenant platform)."""
+    clean = _host(host)
+    site_host = _host(site)
+    if not clean or not site_host or _is_shared_board_host(clean):
+        return False
+    if _same_site(clean, site_host) or _named_jobs_host(clean, site):
+        return True
+    registered = _registry_entry(site)
+    if registered is not None and registered[0] == "board":
+        entry = registered[1]
+        if entry.get("provider") not in _HOSTED_PROVIDERS and _same_site(
+            clean, _host(entry.get("board", ""))
+        ):
+            return True
+    hinted = next(
+        (page for key, page in CAREERS_PAGES.items() if _same_site(site_host, key)),
+        "",
+    )
+    return bool(hinted) and _same_site(clean, _host(hinted))
+
+
 def _sitemap_hosts(first: list[str], site: str) -> list[str]:
-    """Hosts asked for a job sitemap: the board's and careers page's own,
-    then the official site's jobs and careers hosts, then the site itself."""
-    hosts = [host for host in first if host]
-    base = _host(site).removeprefix("www.") if site else ""
+    """Hosts asked for a job sitemap: verified company-dedicated hosts first,
+    then the official site's jobs and careers hosts, then the site itself.
+
+    Untrusted hosts and multi-tenant platform hosts are excluded because
+    ``_sitemap_tier`` stamps the first matching host as ``owned=True``.
+    """
+    site_host = _host(site) if site else ""
+    if not site_host:
+        return []
+    hosts = [
+        host for host in first
+        if host and _is_owned_sitemap_host(host, site)
+    ]
+    base = site_host.removeprefix("www.")
     if base:
-        hosts += [f"jobs.{base}", f"careers.{base}", _host(site)]
+        hosts += [
+            candidate
+            for candidate in (f"jobs.{base}", f"careers.{base}", site_host)
+            if not _is_shared_board_host(candidate)
+        ]
     return list(dict.fromkeys(host.lower() for host in hosts))
 
 
@@ -986,11 +1128,11 @@ def _sitemap_tier(
     """The roster tier (``lib.job_boards.sitemap``): roles listed in a job
     sitemap of the company's own site, as a board read titles only. None when
     no host has a job sitemap."""
-    hosts = [host for host in hosts if host not in budget.unreachable]
+    hosts = [host for host in hosts if not budget.is_unreachable(host)]
     if not hosts or _out_of_time("the job sitemap"):
         return None
     sitemap = importlib.import_module(f"{__package__}.job_boards.sitemap")
-    deadline = budget.deadline - budget.remaining() * DETAIL_SHARE
+    deadline = min(budget.deadline, budget.step_deadline) - budget.remaining() * DETAIL_SHARE
     attempted.append("sitemap:" + ",".join(hosts[:4]))
     def read() -> tuple[list[dict[str, Any]], dict[str, Any]]:
         try:
@@ -1137,7 +1279,7 @@ def _read_board(
             _note_slow(f"the {provider} board {slug} did not answer")
             # Its own request limit or the lane's: either way the board
             # was found and not read, which is said by name.
-            budget.unanswered.append(f"the {provider} board {slug} did not answer")
+            budget.note_unanswered(f"the {provider} board {slug} did not answer")
         items = []
     except ValueError as exc:  # BoardShapeError, UnicodeDecodeError, bad JSON
         # A company reader's answer in a shape or encoding it cannot read:
@@ -1150,8 +1292,9 @@ def _read_board(
         )
         items = []
     if not items:
-        if company_board is not None and board.get("board_unanswered"):
-            budget.unanswered.append(f"the {provider} board {slug} did not answer")
+        if board.get("board_unanswered"):
+            _note_slow(f"the {provider} board {slug} did not answer")
+            budget.note_unanswered(f"the {provider} board {slug} did not answer")
         return None
     stated = next(
         (str(item["company_name"]) for item in items if item.get("company_name")), "",
@@ -1251,14 +1394,24 @@ def parse_board_url(url: str) -> tuple[str | None, str | None]:
     system's name in the path or query of another site is not a board.
     """
     text = (url or "").strip()
+    if not text or "\\" in text or any(ch.isspace() or ord(ch) < 0x20 or ord(ch) == 0x7F for ch in text):
+        return None, None
     try:
         parsed = urlparse(text if "://" in text else f"https://{text}")
+        port = parsed.port
     except ValueError:
         return None, None
-    host = parsed.netloc.lower().removeprefix("www.")
-    if parsed.scheme not in ("http", "https") or not any(
-        _same_site(host, domain) for domain in _BOARD_DOMAINS
+    scheme = parsed.scheme.lower()
+    if scheme not in ("http", "https"):
+        return None, None
+    if parsed.username is not None or parsed.password is not None:
+        return None, None
+    if port is not None and not (
+        (scheme == "https" and port == 443) or (scheme == "http" and port == 80)
     ):
+        return None, None
+    host = (parsed.hostname or "").rstrip(".").lower().removeprefix("www.")
+    if not host or not any(_same_site(host, domain) for domain in _BOARD_DOMAINS):
         return None, None
     return detect_ats(host + parsed.path + (f"?{parsed.query}" if parsed.query else ""))
 
@@ -1421,9 +1574,10 @@ def _site_links_board(
 
 def _boards_named(html: str) -> set[tuple[str, str]]:
     """Every (provider, lower-cased slug) a page names."""
+    bounded = (html or "")[:board_detect.MAX_HTML_CHARS]
     named: set[tuple[str, str]] = set()
     for provider, pattern in _ATS_LINK_PATTERNS:
-        for match in re.finditer(pattern, html):
+        for match in re.finditer(pattern, bounded):
             slug = match.group(match.lastindex or 1).strip().strip("/.")
             if not slug or slug.lower() in _SLUG_STOPWORDS:
                 continue
@@ -1434,10 +1588,12 @@ def _boards_named(html: str) -> set[tuple[str, str]]:
 
 
 _ORGANIZATION_TYPES = {"organization", "corporation", "localbusiness"}
-_SITE_NAME_RE = re.compile(
-    r"""<meta[^>]+property=["']og:site_name["'][^>]*content=["']([^"']{1,80})["']""", re.I,
-)
 _STATED_NAME_LIMIT = 3
+
+
+def extract_jsonld_blocks(html: str) -> list[str]:
+    """Extract raw JSON-LD ``<script type="application/ld+json">`` blocks in linear time."""
+    return board_detect.extract_jsonld_blocks(html)
 
 
 def _stated_names(html: str) -> list[str]:
@@ -1445,9 +1601,12 @@ def _stated_names(html: str) -> list[str]:
     Organization in its structured data, then its ``og:site_name``."""
     names: list[str] = []
 
-    def add(value: Any) -> None:
+    def add(value: Any, *, unescape_entities: bool = True) -> None:
         for name in value if isinstance(value, list) else [value]:
-            text = " ".join(unescape(name).split()) if isinstance(name, str) else ""
+            if not isinstance(name, str):
+                continue
+            raw = unescape(name) if unescape_entities else name
+            text = " ".join(raw.split())
             if text and len(text) <= 80 and text not in names:
                 names.append(text)
 
@@ -1467,12 +1626,15 @@ def _stated_names(html: str) -> list[str]:
                 if isinstance(child, (dict, list)):
                     walk(child, depth + 1)
 
-    for block in _JSONLD_RE.findall(html or ""):
+    for block in extract_jsonld_blocks(html or ""):
         try:
             walk(json.loads(block.strip()))
-        except (json.JSONDecodeError, ValueError):
+        except (json.JSONDecodeError, ValueError, RecursionError):
             continue
-    add(_SITE_NAME_RE.findall(html or ""))
+    add(
+        board_detect.extract_meta_contents(html or "", "property", "og:site_name"),
+        unescape_entities=False,
+    )
     return names[:_STATED_NAME_LIMIT]
 
 
@@ -1578,8 +1740,8 @@ def _find_careers_page(
                 dead.add(host)
                 if budget is not None:
                     # Both host forms were asked for a known site.
-                    budget.unreachable.update({host, f"www.{host.removeprefix('www.')}",
-                                               host.removeprefix("www.")})
+                    budget.mark_unreachable({host, f"www.{host.removeprefix('www.')}",
+                                             host.removeprefix("www.")})
             if page is None:
                 continue
             if _names_board(page[0], page[1]):
@@ -1603,7 +1765,12 @@ def _find_careers_page(
             # domain, its failure to answer is not an outage of the lane.
             html, _no_answer = _careers_text(careers_url, guessed=True)
             if html:
-                return html, careers_url, _found_via(careers_url, company, site)
+                budget = _BUDGET.get()
+                landed = (budget.get_landed(careers_url) if budget is not None else None) or careers_url
+                if board_detect.is_safe_public_url(landed) and (
+                    _same_site(_host(landed), _host(careers_url)) or _jobs_host(_host(landed))
+                ):
+                    return html, landed, _found_via(landed, company, site)
 
     return None, None, "search"
 
@@ -1660,13 +1827,15 @@ def _careers_page_at(
         html, no_answer, url = _known_site_text(url)
     if not html:
         return None, no_answer, url
-    landed = (budget.landed.get(url) if budget is not None else None) or url
+    landed = (budget.get_landed(url) if budget is not None else None) or url
+    if not board_detect.is_safe_public_url(landed):
+        return None, False, url
     if not (_same_site(_host(landed), _host(url)) or _jobs_host(_host(landed)) or named):
         return None, False, url
     if not (_looks_like_careers_html(html) or _names_board(html, landed)):
         return None, False, url
     page, page_url = _board_page(html, landed, guessed=guessed)
-    return (page, page_url, "site" if named else _found_via(url, company, site)), False, url
+    return (page, page_url, "site" if named else _found_via(landed, company, site)), False, url
 
 
 def _names_board(html: str, url: str) -> bool:
@@ -1727,6 +1896,9 @@ def _careers_text(url: str, *, guessed: bool) -> tuple[str | None, bool]:
 
 
 def _careers_fetch(url: str, host: str, *, guessed: bool) -> tuple[str | None, bool]:
+    if not board_detect.is_safe_public_url(url):
+        return None, False
+    guard = board_detect.public_redirect_guard(url)
     landed: list[str] = []
     budget = _BUDGET.get()
     with http.expected_misses(403, 404):
@@ -1736,19 +1908,22 @@ def _careers_fetch(url: str, host: str, *, guessed: bool) -> tuple[str | None, b
             with http.capture_failures() as failures:
                 html = http.get_text(
                     url, accept="text/html", retries=1, retry_dns=False, landed=landed,
-                    **_bounds(GUESS_TIMEOUT_SECONDS),
+                    public_only=True, redirect_guard=guard,
+                    max_bytes=board_detect.MAX_HTML_BYTES, **_bounds(GUESS_TIMEOUT_SECONDS),
                 )
             if any(failure.outcome_state == health.TIMEOUT for failure in failures):
                 _note_slow(f"{host} did not answer in {GUESS_TIMEOUT_SECONDS}s")
             if landed and budget is not None:
-                budget.landed[url] = landed[-1]
+                budget.record_landed(url, landed[-1])
             return html, any(failure.status_code is None for failure in failures)
         with http.tee_failures() as failures:
             html = http.get_text(
-                url, accept="text/html", retries=1, landed=landed, **_bounds(PAGE_TIMEOUT_SECONDS),
+                url, accept="text/html", retries=1, landed=landed, public_only=True,
+                redirect_guard=guard,
+                max_bytes=board_detect.MAX_HTML_BYTES, **_bounds(PAGE_TIMEOUT_SECONDS),
             )
     if landed and budget is not None:
-        budget.landed[url] = landed[-1]
+        budget.record_landed(url, landed[-1])
     timed_out = any(failure.outcome_state == health.TIMEOUT for failure in failures)
     if timed_out:
         _note_slow(f"{host} did not answer in {PAGE_TIMEOUT_SECONDS}s")
@@ -1760,6 +1935,9 @@ _LINKED_PAGE_LIMIT = 2
 _JOBS_LINK_WORDS = re.compile(r"job|position|opening|vacanc|search|board|role", re.I)
 # A link to a file is not a jobs page (a PDF under /jobs/ is a legal notice).
 _FILE_LINK = re.compile(r"\.(?:pdf|docx?|xlsx?|pptx?|zip|png|jpe?g|gif|svg|webp|mp4|ics|xml|json|css|js)$", re.I)
+_GENERIC_HOST_LABELS = board_detect._SECOND_LEVEL_PUBLIC_LABELS | frozenset({
+    "www", "jobs", "career", "careers", "int",
+})
 
 
 def _board_page(html: str, url: str, *, guessed: bool = False) -> tuple[str, str]:
@@ -1782,14 +1960,25 @@ def _board_page(html: str, url: str, *, guessed: bool = False) -> tuple[str, str
     budget = _BUDGET.get()
     pointed = board_detect.eightfold_career_url(html)
     links = _jobs_links(html, url)
-    if pointed and (_same_site(_host(pointed), _host(url)) or _named_jobs_host(_host(pointed), url)):
+    if pointed and board_detect.is_safe_public_url(pointed) and (
+        _same_site(_host(pointed), _host(url)) or _named_jobs_host(_host(pointed), url)
+    ):
         links = [pointed, *(link for link in links if link != pointed)]
     for link in links[:_LINKED_PAGE_LIMIT]:
         if _out_of_time(f"the jobs page {link}"):
             break
         linked, _no_answer = _careers_text(link, guessed=guessed)
-        landed = (budget.landed.get(link) if budget is not None else None) or link
-        if linked and _names_board(linked, landed):
+        landed = (budget.get_landed(link) if budget is not None else None) or link
+        if not linked or not board_detect.is_safe_public_url(landed):
+            continue
+        landed_host = _host(landed)
+        if not (
+            _same_site(landed_host, _host(url))
+            or _named_jobs_host(landed_host, url)
+            or _jobs_host(landed_host)
+        ):
+            continue
+        if _names_board(linked, landed):
             return linked, landed
     return html, url
 
@@ -1797,10 +1986,14 @@ def _board_page(html: str, url: str, *, guessed: bool = False) -> tuple[str, str
 def _named_jobs_host(host: str, page_url: str) -> bool:
     """A jobs host on another domain that carries the page's site name:
     ``explore.jobs.netflix.net`` for a page on ``jobs.netflix.com``."""
-    page_host = _host(page_url).removeprefix("www.")
-    parts = page_host.split(".")
-    name = parts[-2] if len(parts) >= 2 else ""
-    return bool(name) and len(name) >= 3 and _jobs_host(host) and name in host.split(".")
+    name = board_detect.registrable_label(_host(page_url))
+    if not name or len(name) < 3 or name in _GENERIC_HOST_LABELS:
+        return False
+    cand = (host or "").strip().rstrip(".").lower()
+    cand_url = f"https://{cand}/"
+    if not cand or not board_detect.is_safe_public_url(cand_url) or board_detect.page_host(cand_url) != cand:
+        return False
+    return _jobs_host(cand) and board_detect.registrable_label(cand) == name
 
 
 def _jobs_links(html: str, page_url: str) -> list[str]:
@@ -1809,36 +2002,39 @@ def _jobs_links(html: str, page_url: str) -> list[str]:
     search, then a jobs host on another domain that carries the site's name
     (``_named_jobs_host``). A link to the page itself or to another page of
     the same kind (a translation of it, "life at") is left out."""
-    page = urlparse(page_url)
+    page_host = _host(page_url)
+    if not page_host or not board_detect.is_safe_public_url(page_url):
+        return []
     ranked: list[tuple[int, str]] = []
-    for href in re.findall(r"""href\s*=\s*["']([^"'#\s]+)""", html, flags=re.I):
+    seen_links: set[str] = set()
+    for href in re.findall(r"""href\s*=\s*["']([^"'#\s]+)""", (html or "")[:board_detect.MAX_HTML_CHARS], flags=re.I):
         link = urljoin(page_url, unescape(href))
-        parsed = urlparse(link)
-        host = parsed.netloc.lower()
-        if parsed.scheme not in ("http", "https"):
+        if link in seen_links:
             continue
-        if not _same_site(host, page.netloc):
+        seen_links.add(link)
+        if not board_detect.is_safe_public_url(link):
+            continue
+        parsed = urlparse(link)
+        host = (parsed.hostname or "").rstrip(".").lower()
+        if not _same_site(host, page_host):
             if not _named_jobs_host(host, page_url) or _FILE_LINK.search(parsed.path):
                 continue
             rank = 2
         elif _FILE_LINK.search(parsed.path):
             continue
-        elif host != page.netloc.lower() and _jobs_host(host):
+        elif host != page_host and _jobs_host(host):
             rank = 0
-        elif host == page.netloc.lower() and _JOBS_LINK_WORDS.search(parsed.path):
+        elif host == page_host and _JOBS_LINK_WORDS.search(parsed.path):
             rank = 1
         else:
             continue
-        if all(link != seen for _rank, seen in ranked):
-            ranked.append((rank, link))
+        ranked.append((rank, link))
     return [link for _rank, link in sorted(ranked, key=lambda entry: entry[0])]
 
 
 def _same_site(host: str, site_host: str) -> bool:
     """Whether ``host`` is the site's own host or a subdomain of it."""
-    base = site_host.lower().removeprefix("www.")
-    host = host.lower().removeprefix("www.")
-    return bool(base) and (host == base or host.endswith("." + base))
+    return board_detect.same_host_or_subdomain(host, site_host)
 
 
 def _search_for_careers_url(
@@ -1859,7 +2055,7 @@ def _search_for_careers_url(
         if not isinstance(raw, dict):
             continue
         url = str(raw.get("url") or "").strip()
-        if not url or _is_search_redirect(url):
+        if not url or not board_detect.is_safe_public_url(url) or _is_search_redirect(url):
             # An ad or a search engine's own redirect is no one's careers page.
             continue
         lowered = url.lower()
@@ -1881,9 +2077,12 @@ def _is_search_redirect(url: str) -> bool:
     ``google.com/url?q=...``, ``bing.com/aclk``) rather than a page."""
     try:
         parsed = urlparse(url if "://" in url else f"https:{url}" if url.startswith("//") else f"https://{url}")
+        _ = parsed.port
     except ValueError:
         return True
-    host = parsed.netloc.lower()
+    if parsed.username is not None or parsed.password is not None:
+        return True
+    host = (parsed.hostname or "").rstrip(".").lower()
     if not any(_same_site(host, engine) for engine in _SEARCH_ENGINE_HOSTS):
         return False
     query = parsed.query.lower()
@@ -1908,13 +2107,27 @@ def _posting_board(url: str) -> str:
     """The board slug when ``url`` is one job posting on a supported board,
     else ''. A board's front page, a careers landing page, a news story or a
     search engine's link is not a posting."""
+    raw = (url or "").strip()
+    if not raw or "\\" in raw or any(ch.isspace() or ord(ch) < 0x20 or ord(ch) == 0x7F for ch in raw):
+        return ""
     try:
-        parsed = urlparse(url)
+        parsed = urlparse(raw)
+        port = parsed.port
     except ValueError:
         return ""
-    if parsed.scheme not in ("http", "https"):
+    scheme = parsed.scheme.lower()
+    if scheme not in ("http", "https"):
         return ""
-    target = parsed.netloc.lower().removeprefix("www.") + parsed.path
+    if parsed.username is not None or parsed.password is not None:
+        return ""
+    if port is not None and not (
+        (scheme == "https" and port == 443) or (scheme == "http" and port == 80)
+    ):
+        return ""
+    host = (parsed.hostname or "").rstrip(".").lower().removeprefix("www.")
+    if not host:
+        return ""
+    target = host + parsed.path
     for pattern in _POSTING_URL_PATTERNS:
         match = re.match(pattern, target, flags=re.I)
         if match:
@@ -1923,10 +2136,20 @@ def _posting_board(url: str) -> str:
 
 
 def _host(url: str) -> str:
+    raw = (url or "").strip()
+    if not raw or "\\" in raw or any(ch.isspace() or ord(ch) < 0x20 or ord(ch) == 0x7F for ch in raw):
+        return ""
     try:
-        return urlparse(url if "://" in url else f"https://{url}").netloc.lower()
+        parsed = urlparse(raw if "://" in raw else f"https://{raw}")
+        _ = parsed.port
     except ValueError:
         return ""
+    if parsed.username is not None or parsed.password is not None:
+        return ""
+    raw_host = (parsed.hostname or "").lower()
+    if not raw_host or "\\" in raw_host or ".." in raw_host or raw_host.startswith("."):
+        return ""
+    return raw_host.rstrip(".")
 
 
 def _site_hosts(company: str, site: str = "") -> list[str]:
@@ -2036,8 +2259,9 @@ def detect_ats(html: str) -> tuple[str | None, str | None]:
     """Read the ATS provider + slug off a careers page's embed/links."""
     if not html:
         return None, None
+    bounded = html[:board_detect.MAX_HTML_CHARS]
     for provider, pattern in _ATS_LINK_PATTERNS:
-        for match in re.finditer(pattern, html):
+        for match in re.finditer(pattern, bounded):
             slug = match.group(match.lastindex or 1).strip().strip("/.")
             if not slug or slug.lower() in _SLUG_STOPWORDS:
                 continue
@@ -2106,7 +2330,7 @@ def _probe_boards(
                     if budget.remaining() <= 0:
                         budget.stop(f"the {provider} probe for the slug {slug} answered")
                         return None, None, attempts, None
-                    budget.unanswered.append(
+                    budget.note_unanswered(
                         f"the {provider} API did not answer for the slug {slug}"
                     )
                 attempts.append(f"no-answer:{provider}:{slug}")
@@ -2252,11 +2476,13 @@ def read_smartrecruiters_board(
             params["offset"] = str(offset)
         return lambda http_deadline: http.get(
             url, params=params, timeout=API_TIMEOUT_SECONDS, retries=2,
-            deadline_monotonic=http_deadline,
+            deadline_monotonic=http_deadline, public_only=True,
         )
 
-    first = _workday_run([page(0)], deadline, clock)[0]
+    first, unanswered = _run_first_page(page(0), deadline, clock)
     if not isinstance(first, dict):
+        if unanswered:
+            info["board_unanswered"] = True
         return [], info
     items = parse_smartrecruiters_response(first, slug)
     total = max(_reported_total(first, "totalFound"), len(items))
@@ -2349,6 +2575,34 @@ def _workday_run(
         return [future.result() for future in futures]
 
 
+def _run_first_page(
+    call: Callable[[float], Any],
+    deadline: float,
+    clock: Callable[[], float],
+) -> tuple[Any, bool]:
+    """Run a board's first listing page and report whether it went unanswered.
+
+    No answer (deadline spent, timeout/transport error with ``status_code is
+    None``), an overload (5xx), or a rate limit (429) is retryable and marks
+    the board unanswered rather than permanently unreadable or absent.
+    """
+    failures: list[http.HTTPError] = []
+
+    def tracked(http_deadline: float) -> Any:
+        try:
+            return call(http_deadline)
+        except http.HTTPError as exc:
+            failures.append(exc)
+            raise
+
+    first = _workday_run([tracked], deadline, clock)[0]
+    if first is None or first is _OUT_OF_TIME:
+        status = failures[0].status_code if failures else None
+        unanswered = first is _OUT_OF_TIME or status is None or status == 429 or status >= 500
+        return first, unanswered
+    return first, False
+
+
 def _workday_body(offset: int, search_text: str = "") -> dict[str, Any]:
     return {
         "appliedFacets": {},
@@ -2406,8 +2660,10 @@ def search_workday_board(
         )
 
     # The total is reported on the first page only, so read that one first.
-    first = _workday_run([page(0)], deadline, clock)[0]
+    first, unanswered = _run_first_page(page(0), deadline, clock)
     if not isinstance(first, dict) or not isinstance(first.get("jobPostings"), list):
+        if unanswered:
+            info["board_unanswered"] = True
         # Not a listing: a site name the tenant does not have answers an
         # error record, which is not paged through.
         return [], info
@@ -2792,11 +3048,6 @@ def parse_smartrecruiters_response(payload: dict[str, Any], slug: str = "") -> l
 # Tier 2: JSON-LD JobPosting crawler
 # --------------------------------------------------------------------------- #
 
-_JSONLD_RE = re.compile(
-    r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
-    re.IGNORECASE | re.DOTALL,
-)
-
 
 def extract_jsonld_jobs(html: str, base_url: str = "") -> list[dict[str, Any]]:
     """Extract schema.org JobPosting objects embedded as JSON-LD in a page."""
@@ -2805,7 +3056,7 @@ def extract_jsonld_jobs(html: str, base_url: str = "") -> list[dict[str, Any]]:
     domain = _domain(base_url)
     items: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for block in _JSONLD_RE.findall(html):
+    for block in extract_jsonld_blocks(html):
         for obj in _walk_jsonld(block):
             if not isinstance(obj, dict):
                 continue
@@ -2837,14 +3088,18 @@ def extract_jsonld_jobs(html: str, base_url: str = "") -> list[dict[str, Any]]:
 def role_page_text(
     url: str, *, timeout: float, deadline_monotonic: float, landed: list | None = None,
     redirect_guard: Callable[[str], bool] | None = None,
+    max_bytes: int | None = None,
 ) -> str | None:
     """A role or sitemap page as text, or None when it is not text the lane
     can decode (a gzip sitemap, a page in another encoding): one such page
     costs its own role, not the whole read."""
+    if not board_detect.is_safe_public_url(url):
+        return None
     try:
         return http.get_text(
             url, accept="text/html,application/xml,*/*", timeout=timeout, retries=1,
-            deadline_monotonic=deadline_monotonic, landed=landed,
+            deadline_monotonic=deadline_monotonic, landed=landed, public_only=True,
+            max_bytes=max_bytes if max_bytes is not None else board_detect.MAX_HTML_BYTES,
             **({"redirect_guard": redirect_guard} if redirect_guard is not None else {}),
         )
     except UnicodeDecodeError:
@@ -2856,7 +3111,7 @@ def jsonld_role_text(html: Any) -> tuple[str, str] | None:
     breaks kept and as one line, or None when the page has none."""
     if not isinstance(html, str):
         return None
-    for block in _JSONLD_RE.findall(html):
+    for block in extract_jsonld_blocks(html):
         for obj in _walk_jsonld(block):
             if isinstance(obj, dict) and _is_job_posting(obj):
                 text = str(obj.get("description") or "")
@@ -2869,7 +3124,7 @@ def jsonld_role_text(html: Any) -> tuple[str, str] | None:
 def _walk_jsonld(block: str) -> list[Any]:
     try:
         data = json.loads(block.strip())
-    except (json.JSONDecodeError, ValueError):
+    except (json.JSONDecodeError, ValueError, RecursionError):
         return []
     out: list[Any] = []
     stack = [data]
@@ -3124,10 +3379,7 @@ def _company_slug(company: str) -> str:
 
 
 def _domain(url: str) -> str:
-    try:
-        return urlparse(url).netloc.lower().lstrip("www.")
-    except ValueError:
-        return ""
+    return _host(url).removeprefix("www.")
 
 
 def _date_part(value: Any) -> str | None:
@@ -3152,18 +3404,18 @@ def _clean_html(value: str) -> str:
     value = unescape(value)
     value = re.sub(r"<br\s*/?>", "\n", value, flags=re.I)
     value = re.sub(r"</p\s*>", "\n", value, flags=re.I)
-    value = re.sub(r"<[^>]+>", " ", value)
+    value = re.sub(r"<[^<>]+>", " ", value)
     value = re.sub(r"\s+", " ", value)
     return value.strip()
 
 
-_BLOCK_END = re.compile(r"<(?:br|/p|/li|/div|/h[1-6]|/tr|/ul|/ol)\b[^>]*>", re.I)
+_BLOCK_END = re.compile(r"<(?:br|/p|/li|/div|/h[1-6]|/tr|/ul|/ol)\b[^<>]*>", re.I)
 
 
 def _block_text(value: str) -> str:
     """Like ``_clean_html``, but each paragraph, heading and list item keeps its own line."""
     value = _BLOCK_END.sub("\n", unescape(value))
-    value = re.sub(r"<[^>]+>", " ", value)
+    value = re.sub(r"<[^<>]+>", " ", value)
     lines = (" ".join(line.split()) for line in value.splitlines())
     return "\n".join(line for line in lines if line)
 
@@ -3217,21 +3469,11 @@ def _read_newest_first(
         "board_newest_first": newest_first, "board_window_covered": False,
         "board_row_ceiling": row_ceiling, "board_reports_total": True,
     }
-    failures: list[http.HTTPError] = []
-
-    def first_page(http_deadline: float) -> Any:
-        try:
-            return page(0)(http_deadline)
-        except http.HTTPError as exc:
-            failures.append(exc)
-            raise
-
-    first = _workday_run([first_page], deadline, clock)[0]
+    first, unanswered = _run_first_page(page(0), deadline, clock)
     if first is None or first is _OUT_OF_TIME:
         # No answer, an overload or a rate limit is not the board refusing
         # to be read: the run says it did not answer, and a retry may.
-        status = failures[0].status_code if failures else None
-        info["board_unanswered"] = first is _OUT_OF_TIME or status is None or status == 429 or status >= 500
+        info["board_unanswered"] = unanswered
         return [], info
     try:
         items, total = parse(first)
@@ -3335,6 +3577,40 @@ def _paged_run(
     return pages
 
 
+def _safe_board_path_url(board: str, raw_path: Any) -> str:
+    """Resolve a remote relative path against ``https://{board}/`` only when it
+    stays strictly on ``https://{board}`` with no port/userinfo/authority smuggling."""
+    if not isinstance(raw_path, str):
+        return ""
+    path = raw_path.strip()
+    if (
+        not path
+        or not path.startswith("/")
+        or path.startswith("//")
+        or "\\" in path
+        or any(ch.isspace() or ord(ch) < 0x20 or ord(ch) == 0x7F for ch in path)
+    ):
+        return ""
+    clean_board = (board or "").strip().rstrip(".").lower()
+    if not clean_board:
+        return ""
+    candidate = urljoin(f"https://{clean_board}/", path)
+    try:
+        parsed = urlparse(candidate)
+        port = parsed.port
+    except ValueError:
+        return ""
+    if (
+        parsed.scheme.lower() != "https"
+        or parsed.username is not None
+        or parsed.password is not None
+        or port is not None
+        or (parsed.hostname or "").rstrip(".").lower() != clean_board
+    ):
+        return ""
+    return candidate
+
+
 # Amazon: one search endpoint, 100 roles per call with their full text. Errors
 # arrive as HTTP 200 with an ``error`` key.
 
@@ -3352,6 +3628,9 @@ def parse_amazon_response(payload: Any) -> tuple[list[dict[str, Any]], int]:
     for job in jobs_list:
         if not isinstance(job, dict) or not job.get("title") or not job.get("job_path"):
             continue
+        url = _safe_board_path_url("www.amazon.jobs", job.get("job_path"))
+        if not url:
+            continue
         text = "<br/>".join(
             str(job.get(key) or "")
             for key in ("description", "basic_qualifications", "preferred_qualifications")
@@ -3363,7 +3642,7 @@ def parse_amazon_response(payload: Any) -> tuple[list[dict[str, Any]], int]:
             slug="www.amazon.jobs",
             ident=str(job.get("id_icims") or job.get("id") or ""),
             title=str(job["title"]).strip(),
-            url=f"https://www.amazon.jobs{job['job_path']}",
+            url=url,
             description=_clean_html(text),
             description_blocks=_block_text(text),
             date=posted,
@@ -3399,9 +3678,13 @@ def search_amazon_story(
     entry: dict[str, Any], term: str, *, deadline_monotonic: float,
 ) -> list[dict[str, Any]]:
     """The roles Amazon's search finds for a story term (``base_query``)."""
+    url = _amazon_url(entry)
+    if not board_detect.is_safe_public_url(url):
+        raise http.HTTPError("Refused non-public URL")
     payload = http.get(
-        _amazon_url(entry), params=_amazon_params(0, term),
+        url, params=_amazon_params(0, term),
         timeout=STORY_TIMEOUT_SECONDS, retries=1, deadline_monotonic=deadline_monotonic,
+        public_only=True, redirect_guard=board_detect.same_site_redirect_guard(url),
     )
     return parse_amazon_response(payload)[0]
 
@@ -3414,10 +3697,17 @@ def read_amazon_board(
 
     def page(offset: int) -> Callable[[float], Any]:
         params = _amazon_params(offset)
-        return lambda http_deadline: http.get(
-            url, params=params, timeout=API_TIMEOUT_SECONDS, retries=2,
-            deadline_monotonic=http_deadline,
-        )
+
+        def fetch(http_deadline: float) -> Any:
+            if not board_detect.is_safe_public_url(url):
+                raise http.HTTPError("Refused non-public URL")
+            return http.get(
+                url, params=params, timeout=API_TIMEOUT_SECONDS, retries=2,
+                deadline_monotonic=http_deadline, public_only=True,
+                redirect_guard=board_detect.same_site_redirect_guard(url),
+            )
+
+        return fetch
 
     items, info = _read_newest_first(
         page, parse_amazon_response, page_size=AMAZON_PAGE_SIZE,
@@ -3463,18 +3753,22 @@ def parse_apple_response(payload: Any) -> tuple[list[dict[str, Any]], int]:
     for job in results:
         if not isinstance(job, dict) or not job.get("postingTitle") or not job.get("positionId"):
             continue
+        position_id = str(job["positionId"]).strip()
+        if not position_id:
+            continue
+        encoded_position = quote(position_id, safe="")
         team = job.get("team") if isinstance(job.get("team"), dict) else {}
         locations = [loc for loc in job.get("locations") or [] if isinstance(loc, dict)]
-        slug = str(job.get("transformedPostingTitle") or "role").strip()
+        slug = quote(str(job.get("transformedPostingTitle") or "role").strip() or "role", safe="-_.")
         # A standing requisition: flagged as managed, or typed ``PIPE``.
         pipeline = bool(job.get("managedPipelineRole")) or job.get("type") == "PIPE"
         summary = str(job.get("jobSummary") or "").strip()
         item = _ats_item(
             provider=COMPANY_PROVIDER_APPLE,
             slug="jobs.apple.com",
-            ident=str(job.get("id") or job["positionId"]),
+            ident=str(job.get("id") or position_id),
             title=str(job["postingTitle"]).strip(),
-            url=f"https://jobs.apple.com/en-us/details/{job['positionId']}/{slug}",
+            url=f"https://jobs.apple.com/en-us/details/{encoded_position}/{slug}",
             description=summary,
             description_blocks=summary,
             date=_date_part(job.get("postDateInGMT")),
@@ -3489,7 +3783,7 @@ def parse_apple_response(payload: Any) -> tuple[list[dict[str, Any]], int]:
             or str(team.get("teamName") or "").strip().lower() == "apple retail"
         )
         item["digest_excluded"] = bool(job.get("managedPipelineRole")) or retail
-        item["detail_url"] = _APPLE_DETAILS_URL.format(position=job["positionId"])
+        item["detail_url"] = _APPLE_DETAILS_URL.format(position=encoded_position)
         items.append(item)
     return items, _reported_total(res, "totalRecords")
 
@@ -3504,6 +3798,7 @@ def read_apple_board(
         return lambda http_deadline: http.post(
             _APPLE_SEARCH_URL, body, headers={"Accept": "application/json"},
             timeout=API_TIMEOUT_SECONDS, retries=2, deadline_monotonic=http_deadline,
+            public_only=True, redirect_guard=board_detect.same_site_redirect_guard(_APPLE_SEARCH_URL),
         )
 
     items, info = _read_newest_first(
@@ -3522,6 +3817,7 @@ def search_apple_story(
     payload = http.post(
         _APPLE_SEARCH_URL, _apple_search_body(1, term), headers={"Accept": "application/json"},
         timeout=STORY_TIMEOUT_SECONDS, retries=1, deadline_monotonic=deadline_monotonic,
+        public_only=True, redirect_guard=board_detect.same_site_redirect_guard(_APPLE_SEARCH_URL),
     )
     return _one_row_per_role(parse_apple_response(payload)[0])
 
@@ -3563,9 +3859,13 @@ def fetch_apple_details(
     left unfetched keeps its search summary.
     """
     def call(item: dict[str, Any]) -> Callable[[float], Any]:
+        url = str(item.get("detail_url") or "")
+        if not board_detect.is_safe_public_url(url) or board_detect.page_host(url) != "jobs.apple.com":
+            return lambda _http_deadline: None
         return lambda http_deadline: http.get(
-            str(item["detail_url"]), headers={"Accept": "application/json"},
+            url, headers={"Accept": "application/json"},
             timeout=APPLE_DETAIL_TIMEOUT_SECONDS, retries=2, deadline_monotonic=http_deadline,
+            public_only=True, redirect_guard=board_detect.same_site_redirect_guard(url),
         )
 
     def text_of(payload: Any) -> tuple[str, str] | None:
@@ -3632,13 +3932,20 @@ def parse_eightfold_response(
     for job in positions:
         if not isinstance(job, dict) or not job.get("id") or not job.get("name"):
             continue
-        ident = str(job["id"])
+        ident = str(job["id"]).strip()
+        if not ident:
+            continue
+        encoded_ident = quote(ident, safe="")
+        fallback_url = f"https://{board}/careers/job/{encoded_ident}"
         if pcsx:
-            url = f"https://{board}{job.get('positionUrl') or f'/careers/job/{ident}'}"
-            detail = f"https://{board}/api/pcsx/position_details?position_id={ident}&domain={domain}&hl=en"
+            url = _safe_board_path_url(board, job.get("positionUrl")) or fallback_url
+            query = urlencode({"position_id": ident, "domain": domain, "hl": "en"})
+            detail = f"https://{board}/api/pcsx/position_details?{query}"
         else:
-            url = str(job.get("canonicalPositionUrl") or f"https://{board}/careers/job/{ident}")
-            detail = f"https://{board}/api/apply/v2/jobs/{ident}?domain={domain}"
+            raw_canon = str(job.get("canonicalPositionUrl") or "").strip()
+            url = raw_canon if board_detect.is_safe_public_url(raw_canon) else fallback_url
+            query = urlencode({"domain": domain})
+            detail = f"https://{board}/api/apply/v2/jobs/{encoded_ident}?{query}"
         locations = [str(loc).strip() for loc in job.get("locations") or [] if loc]
         item = _ats_item(
             provider=COMPANY_PROVIDER_EIGHTFOLD,
@@ -3695,10 +4002,17 @@ def _read_eightfold_generation(
 
     def page(offset: int) -> Callable[[float], Any]:
         params = _eightfold_params(entry, offset)
-        return lambda http_deadline: http.get(
-            url, params=params, timeout=API_TIMEOUT_SECONDS, retries=2,
-            deadline_monotonic=http_deadline,
-        )
+
+        def fetch(http_deadline: float) -> Any:
+            if not board_detect.is_safe_public_url(url):
+                raise http.HTTPError("Refused non-public URL")
+            return http.get(
+                url, params=params, timeout=API_TIMEOUT_SECONDS, retries=2,
+                deadline_monotonic=http_deadline, public_only=True,
+                redirect_guard=board_detect.same_site_redirect_guard(url),
+            )
+
+        return fetch
 
     items, info = _read_newest_first(
         page, lambda payload: parse_eightfold_response(payload, entry),
@@ -3730,10 +4044,14 @@ def search_eightfold_story(
     ``read_eightfold_board`` does; that pair counts as the board's one call."""
     def ask(api: str) -> list[dict[str, Any]]:
         generation = {**entry, "api": api}
+        url = _eightfold_listing_url(entry["board"], api)
+        if not board_detect.is_safe_public_url(url):
+            raise http.HTTPError("Refused non-public URL")
         payload = http.get(
-            _eightfold_listing_url(entry["board"], api),
+            url,
             params=_eightfold_params(generation, 0, term),
             timeout=STORY_TIMEOUT_SECONDS, retries=1, deadline_monotonic=deadline_monotonic,
+            public_only=True, redirect_guard=board_detect.same_site_redirect_guard(url),
         )
         return parse_eightfold_response(payload, generation)[0]
 
@@ -3759,9 +4077,13 @@ def fetch_eightfold_details(
     Returns the counts left unfetched (late, failed), like the other fetchers.
     """
     def call(item: dict[str, Any]) -> Callable[[float], Any]:
+        url = str(item.get("detail_url") or "")
+        if not board_detect.is_safe_public_url(url):
+            return lambda _http_deadline: None
         return lambda http_deadline: http.get(
-            str(item["detail_url"]), timeout=API_TIMEOUT_SECONDS, retries=1,
-            deadline_monotonic=http_deadline,
+            url, timeout=API_TIMEOUT_SECONDS, retries=1,
+            deadline_monotonic=http_deadline, public_only=True,
+            redirect_guard=board_detect.same_site_redirect_guard(url),
         )
 
     def text_of(payload: Any) -> tuple[str, str] | None:

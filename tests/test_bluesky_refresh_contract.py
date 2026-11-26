@@ -75,8 +75,10 @@ def test_missing_access_token_does_not_replace_cached_tokens():
         result = search()
     assert request.call_count == 3
     assert "No accessJwt" in result["error"]
-    assert bluesky._cached_token == "old"
-    assert bluesky._cached_refresh_token == "refresh-old"
+    cred_key = bluesky._credential_key("fake.bsky.social", "fake-password")
+    entry = bluesky._session_cache[cred_key]
+    assert entry.access_token == "old"
+    assert entry.refresh_token == "refresh-old"
 
 
 def test_refreshed_search_second_401_is_actionable_not_sentinel():

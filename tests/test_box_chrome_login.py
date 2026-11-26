@@ -92,21 +92,24 @@ def test_main_exec_missing_box_chrome_does_not_spawn():
         assert bcl.main(["--exec"]) == 0
 
 
-def test_main_exec_spawns_box_chrome_on_extras_with_18800():
+def test_main_exec_spawns_box_chrome_on_extras_with_18800(tmp_path):
     popen = mock.MagicMock()
+    profile = tmp_path / "x-chrome"
     with (
         mock.patch("lib.env.x_extras_enabled", return_value=True),
         mock.patch("shutil.which", return_value="/usr/local/bin/box-chrome"),
         mock.patch.object(bcl.env, "get_config", return_value={}),
-        mock.patch("os.makedirs"),
+        mock.patch.object(bcl, "_default_profile_dir", return_value=str(profile)),
         mock.patch("subprocess.Popen", popen),
     ):
         rc = bcl.main(["--exec"])
     assert rc == 0
+    assert profile.is_dir()
     popen.assert_called_once()
     args, kwargs = popen.call_args
     assert args[0] == ["/usr/local/bin/box-chrome", "--new-window", "https://x.com/login"]
     assert kwargs["env"]["SAND_CHROME_REMOTE_DEBUG_PORT"] == "18800"
+    assert kwargs["env"]["CHROME_USER_DATA_DIR"] == str(profile)
 
 
 def test_default_run_prints_but_does_not_spawn():

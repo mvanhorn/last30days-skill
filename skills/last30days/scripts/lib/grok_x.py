@@ -37,6 +37,7 @@ fabricated post carries a plausible handle and a numeric id by construction.
 """
 
 import json
+import math
 import os
 import re
 import shutil
@@ -44,11 +45,12 @@ import subprocess
 import tempfile
 import time
 import unicodedata
+import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from . import grok_audit, log, usage
+from . import auth_safety, grok_audit, health, http, log, subproc, usage
 from .dates import x_date_filters
 from .relevance import token_overlap_relevance as _compute_relevance
 # One copy of the snowflake, handle-grammar, and generated-sequence helpers
@@ -375,12 +377,8 @@ _INVOCATION_FAILURE_MARKERS = (
     "tool-boundary audit", "native grok binary",
 )
 
-# Why the most recent parse returned nothing. Lets _run_query distinguish a
-# clean empty window (common, and not worth a second LLM call) from a suspect
-# response (fabricated ids, a generated sequence, a self-reported
-# non-execution), which is the only case retrying can actually fix.
-_LAST_REJECTION = {"reason": ""}
-
+# Validation rejection reasons worth a second LLM call (fabricated ids,
+# generated sequence, or invalid date window), as opposed to a clean empty window.
 _RETRYABLE_REJECTIONS = (
     "failed provenance validation",
     "near-uniform sequence",
@@ -470,7 +468,7 @@ _FIELD_LINE = re.compile(
 # ("39K", "1.2M"). Parsing only the leading digits turns 1.2M into 1, which
 # does not merely lose precision -- it inverts ranking, placing a viral post
 # below one with 500 literal likes.
-_INT_RE = re.compile(r"(-?\d[\d,]*(?:\.\d+)?)\s*([KMB])?", re.I)
+_INT_RE = re.compile(r"(-?\d[\d,]*(?:\.\d+)?(?:e[+-]?\d+)?)\s*([KMB])?", re.I)
 _SUFFIX_MULTIPLIER = {"k": 1_000, "m": 1_000_000, "b": 1_000_000_000}
 _STATUS_URL_RE = re.compile(
     r"(?:x\.com|twitter\.com)/([A-Za-z0-9_]{1,15})/status/(\d+)",
@@ -490,7 +488,12 @@ def _as_int(value: str) -> Optional[int]:
         return None
     if suffix:
         parsed *= _SUFFIX_MULTIPLIER[suffix.lower()]
-    return int(parsed)
+    if not math.isfinite(parsed):
+        return None
+    try:
+        return int(parsed)
+    except (OverflowError, ValueError):
+        return None
 
 
 def _parse_date(value: str) -> Optional[str]:
@@ -533,13 +536,16 @@ def _fields_from_json_obj(obj: Any) -> Optional[Dict[str, Any]]:
     post_id_s = str(post_id or "").strip()
     if not post_id_s.isdigit():
         return None
+    handle_s = str(handle or "").strip().lstrip("@")
+    if not handle_s:
+        return None
     text = obj.get("text") or obj.get("full_text") or ""
     # `content` is often the CLI wrapper payload, not post text.
     if not text and "content" in obj and not isinstance(obj.get("content"), (dict, list)):
         text = obj.get("content") or ""
     return {
         "post_id": post_id_s,
-        "author_handle": str(handle or "").strip().lstrip("@"),
+        "author_handle": handle_s,
         "text": str(text or ""),
         "likes": obj.get("likes") if obj.get("likes") is not None else obj.get("favorite_count"),
         "reposts": obj.get("reposts") if obj.get("reposts") is not None else obj.get("retweets"),
@@ -584,14 +590,13 @@ def _extract_json_values(text: str) -> List[Any]:
 
 
 def _posts_from_json_value(value: Any, *, depth: int = 0) -> List[Dict[str, Any]]:
-    if depth > 4:
+    if depth > 6:
         return []
     if isinstance(value, list):
-        posts = []
+        posts: List[Dict[str, Any]] = []
         for item in value:
-            fields = _fields_from_json_obj(item)
-            if fields:
-                posts.append(fields)
+            if isinstance(item, (dict, list, str)):
+                posts.extend(_posts_from_json_value(item, depth=depth + 1))
         return posts
     if isinstance(value, str):
         for nested in _extract_json_values(value):
@@ -601,9 +606,6 @@ def _posts_from_json_value(value: Any, *, depth: int = 0) -> List[Dict[str, Any]
         return []
     if not isinstance(value, dict):
         return []
-    direct = _fields_from_json_obj(value)
-    if direct:
-        return [direct]
     for key in ("posts", "items", "results", "data", "tweets"):
         if key in value:
             posts = _posts_from_json_value(value[key], depth=depth + 1)
@@ -611,10 +613,44 @@ def _posts_from_json_value(value: Any, *, depth: int = 0) -> List[Dict[str, Any]
                 return posts
     for key in ("content", "message", "result", "text", "output"):
         inner = value.get(key)
-        if isinstance(inner, (str, list, dict)):
+        if isinstance(inner, (list, dict)):
             posts = _posts_from_json_value(inner, depth=depth + 1)
             if posts:
                 return posts
+    direct = _fields_from_json_obj(value)
+    if direct is not None:
+        return [direct]
+    for key in ("content", "message", "result", "text", "output"):
+        inner = value.get(key)
+        if isinstance(inner, str):
+            posts = _posts_from_json_value(inner, depth=depth + 1)
+            if posts:
+                return posts
+    return []
+
+
+def _fields_from_wrapped_text(value: Any, *, depth: int = 0) -> List[Dict[str, Any]]:
+    """Extract post records from JSON wrapper text fields without stopping on status strings."""
+    if depth > 4:
+        return []
+    if isinstance(value, str):
+        if not value.strip():
+            return []
+        return _fields_from_json_text(value) or _fields_from_blocks(value)
+    if isinstance(value, list):
+        for item in value:
+            if isinstance(item, (str, dict, list)):
+                raw = _fields_from_wrapped_text(item, depth=depth + 1)
+                if raw:
+                    return raw
+        return []
+    if isinstance(value, dict):
+        for key in ("content", "message", "result", "text", "output"):
+            inner = value.get(key)
+            if isinstance(inner, (str, dict, list)):
+                raw = _fields_from_wrapped_text(inner, depth=depth + 1)
+                if raw:
+                    return raw
     return []
 
 
@@ -667,54 +703,42 @@ def _split_blocks(text: str) -> List[str]:
     return blocks
 
 
-def parse_x_response(
+def _parse_x_response_with_reason(
     response: Dict[str, Any],
     topic: str = "",
     from_date: str = "",
     to_date: str = "",
-) -> List[Dict[str, Any]]:
-    """Parse a grok response into normalized X item dicts.
-
-    Total: returns [] on error rather than raising.
+) -> Tuple[List[Dict[str, Any]], str]:
+    """Parse a grok response and return ``(items, rejection_reason)`` without
+    shared mutable state so concurrent pipeline worker threads never race.
     """
     if not isinstance(response, dict):
-        return []
+        return [], ""
     if response.get("error"):
         _log(f"error: {response['error']}")
-        return []
+        return [], ""
 
     text = response.get("text") or ""
     raw = _fields_from_json_text(text)
     if not raw:
-        probe = text
         try:
             loaded = json.loads(text)
         except (json.JSONDecodeError, TypeError):
             loaded = None
-        if isinstance(loaded, dict):
-            for key in ("content", "message", "result", "text", "output"):
-                inner = loaded.get(key)
-                if isinstance(inner, str) and inner.strip():
-                    probe = inner
-                    raw = _fields_from_json_text(probe)
-                    break
+        if isinstance(loaded, (dict, list)):
+            raw = _fields_from_wrapped_text(loaded)
         if not raw:
-            raw = _fields_from_blocks(probe)
+            raw = _fields_from_blocks(text)
 
     kept, reason = _validate_items(raw, from_date, to_date) if from_date else (raw, "")
     if reason:
         _log(f"rejected response: {reason}")
-        _LAST_REJECTION["reason"] = reason
-        return []
-    _LAST_REJECTION["reason"] = ""
+        return [], reason
 
     items: List[Dict[str, Any]] = []
-    seen_ids = set()
-    for index, fields in enumerate(kept, start=1):
+    by_post_id: Dict[str, Dict[str, Any]] = {}
+    for fields in kept:
         post_id = str(fields.get("post_id") or "").strip()
-        if post_id in seen_ids:
-            continue
-        seen_ids.add(post_id)
         handle = _clean_handle(fields.get("author_handle"))
         if not handle:
             author = str(fields.get("author") or "")
@@ -729,16 +753,55 @@ def parse_x_response(
             "replies": _as_int(str(fields.get("replies", ""))),
             "quotes": _as_int(str(fields.get("quotes", ""))),
         }
-        items.append({
-            "id": f"GK{index}",
+        has_engagement = any(v is not None for v in engagement.values())
+        parsed_date = _parse_date(str(fields.get("created_at", "")))
+        existing = by_post_id.get(post_id)
+        if existing is not None:
+            if existing["author_handle"].lower() != handle.lower():
+                continue
+            if len(text) > len(existing["text"]):
+                existing["text"] = text
+                existing["relevance"] = _compute_relevance(topic, text) if topic else 0.7
+            if not existing["date"] and parsed_date:
+                existing["date"] = parsed_date
+            if has_engagement:
+                if existing["engagement"] is None:
+                    existing["engagement"] = engagement
+                else:
+                    for metric, value in engagement.items():
+                        if value is not None:
+                            prev = existing["engagement"].get(metric)
+                            if prev is None or value > prev:
+                                existing["engagement"][metric] = value
+            continue
+        item = {
+            "id": f"GK{len(items) + 1}",
             "text": text,
             "url": f"https://x.com/{handle}/status/{post_id}",
             "author_handle": handle,
-            "date": _parse_date(str(fields.get("created_at", ""))),
-            "engagement": engagement if any(v is not None for v in engagement.values()) else None,
+            "date": parsed_date,
+            "engagement": engagement if has_engagement else None,
             "why_relevant": "",
             "relevance": _compute_relevance(topic, text) if topic else 0.7,
-        })
+        }
+        by_post_id[post_id] = item
+        items.append(item)
+    return items, ""
+
+
+def parse_x_response(
+    response: Dict[str, Any],
+    topic: str = "",
+    from_date: str = "",
+    to_date: str = "",
+) -> List[Dict[str, Any]]:
+    """Parse a grok response into normalized X item dicts.
+
+    Total: returns [] on error rather than raising.
+    """
+    items, _ = _parse_x_response_with_reason(
+        response, topic=topic, from_date=from_date, to_date=to_date,
+    )
     return items
 
 
@@ -872,17 +935,13 @@ def _research_argv(binary: str, prompt: str, agent_file: Path) -> List[str]:
 def _check_cli_version(binary: str, workdir: str, timeout: float) -> Tuple[Optional[str], str]:
     """Return (error, version line). Rejects builds below the floor or off stable."""
     try:
-        result = subprocess.run(
+        result = subproc.run_with_timeout(
             [binary, "--version"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
             timeout=min(timeout, 5),
             cwd=workdir,
             env=_subprocess_env(os.path.join(workdir, "home")),
         )
-    except subprocess.TimeoutExpired:
+    except (subproc.SubprocTimeout, subprocess.TimeoutExpired):
         return "grok CLI version check timed out", ""
     except OSError as exc:
         return f"could not verify grok CLI version: {type(exc).__name__}: {exc}", ""
@@ -897,6 +956,124 @@ def _check_cli_version(binary: str, workdir: str, timeout: float) -> Tuple[Optio
             line,
         )
     return None, line
+
+
+_JWT_RE = re.compile(r"\beyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]*(?![A-Za-z0-9_-])")
+_API_KEY_RE = re.compile(r"\b(?:xai|sk)-[A-Za-z0-9_-]{8,}\b")
+_COOKIE_HEADER_RE = re.compile(r"(?i)(\b(?:set-)?cookie\s*:\s*)[^\r\n]+")
+_CRED_KEY_PATTERN = (
+    r"refresh_token|access_token|id_token|auth_token|ct0|token|"
+    r"api_key|xai_api_key|x-api-key|authorization|bearer|jwt|cookie|secret|password|key"
+)
+_KV_CRED_KEY_PATTERN = (
+    r"refresh_token|access_token|id_token|auth_token|ct0|token|"
+    r"api_key|xai_api_key|x-api-key|authorization|bearer|jwt|cookie|secret|password|key"
+)
+_JSON_CRED_RE = re.compile(
+    rf'((["\'])(?:{_CRED_KEY_PATTERN})\2\s*:\s*")((?:[^"\\\r\n]|\\.)*)(")',
+    re.IGNORECASE,
+)
+_PY_DICT_CRED_RE = re.compile(
+    rf"(([\"'])(?:{_CRED_KEY_PATTERN})\2\s*:\s*')((?:[^'\\\r\n]|\\.)*)(')",
+    re.IGNORECASE,
+)
+_KV_QUOTED_CRED_RE = re.compile(
+    rf"""(\b(?:{_KV_CRED_KEY_PATTERN})\s*[:=]\s*)(?:"(?:[^"\\\r\n]|\\.)*"|'(?:[^'\\\r\n]|\\.)*')""",
+    re.IGNORECASE,
+)
+_KV_CRED_RE = re.compile(
+    rf"(\b(?:{_KV_CRED_KEY_PATTERN})\s*[:=]\s*)([^\s'\"\\,;]+)",
+    re.IGNORECASE,
+)
+_HTTP_401_RE = re.compile(r"\b(?:http(?:/[\d.]+)?|status)\s*[:=]?\s*401\b", re.IGNORECASE)
+_CONTROL_DEBUG_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+_SECRET_STORE_KEY_NAMES = frozenset({
+    "key", "refresh_token", "access_token", "id_token", "auth_token", "ct0",
+    "token", "api_key", "xai_api_key", "x-api-key", "authorization",
+    "bearer", "jwt", "cookie", "secret", "password",
+})
+
+
+def _extract_store_secrets(obj: Any, out: List[str]) -> None:
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if isinstance(k, str) and k.lower() in _SECRET_STORE_KEY_NAMES and isinstance(v, str):
+                val = v.strip()
+                if len(val) >= 6:
+                    out.append(val)
+            else:
+                _extract_store_secrets(v, out)
+    elif isinstance(obj, list):
+        for item in obj:
+            _extract_store_secrets(item, out)
+
+
+def _collect_auth_secrets(store_path: Optional[Path] = None) -> List[str]:
+    """Collect active Grok credential values so debug logs always redact opaque tokens."""
+    secrets: List[str] = []
+    env_key = (os.environ.get("XAI_API_KEY") or "").strip()
+    if len(env_key) >= 6:
+        secrets.append(env_key)
+    for candidate in (store_path, token_store_path()):
+        if candidate is None:
+            continue
+        try:
+            if not candidate.is_file():
+                continue
+            data = json.loads(candidate.read_text(encoding="utf-8", errors="replace"))
+        except (OSError, ValueError, TypeError):
+            continue
+        _extract_store_secrets(data, secrets)
+        break
+    expanded: List[str] = []
+    seen: set[str] = set()
+    for secret in secrets:
+        for variant in (secret, urllib.parse.quote(secret, safe="")):
+            if len(variant) >= 6 and variant not in seen:
+                seen.add(variant)
+                expanded.append(variant)
+    return expanded
+
+
+def _scrub_cli_output(text: str, extra_secrets: Iterable[str] = ()) -> str:
+    """Redact credentials, cookies, JWTs, API keys, and control chars for debug logs."""
+    scrubbed = auth_safety.scrub_secrets(text or "", extra_secrets)
+    scrubbed = _COOKIE_HEADER_RE.sub(r"\1<redacted>", scrubbed)
+    scrubbed = _JWT_RE.sub("<redacted>", scrubbed)
+    scrubbed = _API_KEY_RE.sub("<redacted>", scrubbed)
+    scrubbed = _JSON_CRED_RE.sub(r"\1<redacted>\4", scrubbed)
+    scrubbed = _PY_DICT_CRED_RE.sub(r"\1<redacted>\4", scrubbed)
+    scrubbed = _KV_QUOTED_CRED_RE.sub(r"\1<redacted>", scrubbed)
+    scrubbed = _KV_CRED_RE.sub(r"\1<redacted>", scrubbed)
+    return _CONTROL_DEBUG_RE.sub("", scrubbed)
+
+
+def _classify_exit_error(returncode: int, combined_output: str) -> Dict[str, Any]:
+    """Map non-zero CLI exit to a fixed engine-authored error without echoing raw output."""
+    if is_auth_revoked_error(combined_output):
+        return {
+            "error": "grok CLI auth failed (session expired or revoked)",
+            "auth_revoked": True,
+        }
+    state = http.classify_failure(message=combined_output)
+    if state == health.PAYMENT_REQUIRED:
+        error_msg = f"grok CLI exited {returncode}: payment required"
+    elif state == health.RATE_LIMITED:
+        error_msg = f"grok CLI exited {returncode}: rate limit exceeded"
+    elif state == health.AUTH_FAILED:
+        if _HTTP_401_RE.search(combined_output or ""):
+            error_msg = f"grok CLI exited {returncode}: http 401"
+        else:
+            error_msg = f"grok CLI exited {returncode}: forbidden"
+    elif state == health.TIMEOUT:
+        error_msg = f"grok CLI exited {returncode}: timed out"
+    elif state == health.SCHEMA_DRIFT:
+        error_msg = f"grok CLI exited {returncode}: invalid JSON or unexpected response schema"
+    elif state == health.UNREACHABLE:
+        error_msg = f"grok CLI exited {returncode}: connection error"
+    else:
+        error_msg = f"grok CLI exited {returncode}"
+    return {"error": error_msg}
 
 
 def _invoke(prompt: str, timeout: int) -> Dict[str, Any]:
@@ -949,28 +1126,30 @@ def _invoke(prompt: str, timeout: int) -> Dict[str, Any]:
                     "no_retry": True,
                 }
             child_home = _stage_child_home(workdir)
+            store = token_store_path()
+            staged_store = Path(child_home) / store.parent.name / store.name
             agent_file = _write_agent_profile(workdir)
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return {"error": f"grok CLI timed out after {timeout}s"}
             usage.begin("grok")
-            result = subprocess.run(
+            # subproc.run_with_timeout decodes UTF-8 (errors="replace") and
+            # registers the child in subproc's cleanup set so engine SIGTERM
+            # terminates the grok CLI even under direct-child signaling.
+            result = subproc.run_with_timeout(
                 _research_argv(binary, prompt, agent_file),
-                capture_output=True,
-                text=True,
-                # X posts are not cp1252. Without this, text=True decodes the CLI's
-                # stdout with the locale codec and a reader thread dies on the first
-                # emoji or smart quote, which surfaces as "no items parsed" rather
-                # than an error. Matches the auth-store read above.
-                encoding="utf-8",
-                errors="replace",
                 timeout=remaining,
                 cwd=workdir,
                 env=_subprocess_env(child_home),
             )
+            debug_secrets = (
+                _collect_auth_secrets(staged_store)
+                if result.returncode != 0 and log.is_debug()
+                else []
+            )
     except FileNotFoundError:
         return {"error": "grok CLI not found on PATH"}
-    except subprocess.TimeoutExpired:
+    except (subproc.SubprocTimeout, subprocess.TimeoutExpired):
         return {"error": f"grok CLI timed out after {timeout}s"}
     except OSError as exc:
         return {"error": f"grok CLI failed: {type(exc).__name__}: {exc}"}
@@ -978,12 +1157,12 @@ def _invoke(prompt: str, timeout: int) -> Dict[str, Any]:
         return {"error": f"grok CLI failed: {type(exc).__name__}: {exc}"}
 
     if result.returncode != 0:
-        detail = (result.stderr or result.stdout or "").strip()[:300]
-        error_msg = f"grok CLI exited {result.returncode}: {detail}"
-        response: Dict[str, Any] = {"error": error_msg}
-        if is_auth_revoked_error(detail):
-            response["auth_revoked"] = True
-        return response
+        combined = f"{result.stderr or ''}\n{result.stdout or ''}"
+        if log.is_debug():
+            scrubbed = _scrub_cli_output(combined, extra_secrets=debug_secrets).strip()
+            if scrubbed:
+                _log(f"grok CLI exited {result.returncode} (debug output): {scrubbed[:500]}")
+        return _classify_exit_error(result.returncode, combined)
     return {"text": result.stdout or ""}
 
 
@@ -1041,7 +1220,7 @@ def _run_query(
             if response.get("no_retry"):
                 return [], last_error, False
             continue
-        items = parse_x_response(
+        items, reason = _parse_x_response_with_reason(
             response,
             topic=relevance_topic or query,
             from_date=from_date,
@@ -1049,7 +1228,6 @@ def _run_query(
         )
         if items:
             return items, "", False
-        reason = _LAST_REJECTION.get("reason", "")
         if not any(marker in reason for marker in _RETRYABLE_REJECTIONS):
             return [], "", False
         last_error = reason or "no verified in-window posts returned"
@@ -1071,12 +1249,13 @@ def search_x(
     ahead of bird in the chain -- silently downgrading a `--deep` run from 60
     posts to 10.
 
-    ``deadline`` is the X chain's shared ``time.monotonic()`` budget (see
-    pipeline's ``X_CHAIN_DEADLINE_SECONDS``): each fan-out call clamps its
-    per-call timeout to the time left, and calls past the deadline are never
-    started, so grok cannot consume the whole chain budget alone. ``cancel``
-    is an optional ``threading.Event`` (the enrichment batch's cooperative
-    cancel): set means not-yet-started fan-out queries are skipped.
+    ``deadline`` is the X chain's shared ``time.monotonic()`` budget (pipeline's
+    ``X_CHAIN_DEADLINE_SECONDS``, or ``LAST30DAYS_X_BUDGET_SECONDS`` when set):
+    each fan-out call clamps its per-call timeout to the time left, and calls
+    past the deadline are never started, so grok cannot consume the whole chain
+    budget alone. ``cancel`` is an optional ``threading.Event`` (the enrichment
+    batch's cooperative cancel): set means not-yet-started fan-out queries are
+    skipped.
 
     Returns {'items': [...]}; 'error' is set only for an actual invocation
     failure. A completed run that found nothing returns an empty list with no

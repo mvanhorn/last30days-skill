@@ -78,7 +78,9 @@ def _search_queries(topic):
         return_value=subproc.SubprocResult(returncode=0, stdout='{"items": []}', stderr=""),
     ) as run:
         bird_x.search_x(topic, "2026-11-01", "2026-11-20")
-    return [call.args[0][2] for call in run.call_args_list]
+    for call in run.call_args_list:
+        assert call.args[0][-2] == "--"
+    return [call.args[0][-1] for call in run.call_args_list]
 
 
 def test_topic_operators_are_removed_before_selecting_retry_keywords():

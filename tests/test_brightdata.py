@@ -54,6 +54,7 @@ def test_gate_false_when_binary_missing(monkeypatch):
 
 
 def test_gate_reports_unauthenticated_when_no_credential_signal(monkeypatch, tmp_path):
+    monkeypatch.delenv("BRIGHTDATA_API_KEY", raising=False)
     monkeypatch.setattr(brightdata.shutil, "which", lambda _: "/usr/local/bin/brightdata")
     monkeypatch.setattr(brightdata, "_config_dir", lambda: tmp_path / "absent")
     status = brightdata.gate_status({})
@@ -216,7 +217,7 @@ def test_record_is_sent_as_typed_input_json(monkeypatch):
     )
     brightdata.run_pipeline("gd_x", {"url": "https://a/dp/X", "max_reviews": 50}, timeout=60)
     cmd = seen["cmd"]
-    assert cmd[:5] == ["brightdata", "pipelines", "run", "gd_x", "collect_by_url"]
+    assert cmd[:5] == ["/usr/local/bin/brightdata", "pipelines", "run", "gd_x", "collect_by_url"]
     assert json.loads(cmd[cmd.index("--input") + 1]) == [{"url": "https://a/dp/X", "max_reviews": 50}]
     assert "--json" in cmd
 

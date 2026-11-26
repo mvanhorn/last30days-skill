@@ -96,7 +96,7 @@ def test_pass_explicit_replace_updates_existing_entry(password_store):
     assert result.returncode == 0, result.stderr
     assert entry.read_text() == "dummy-new-key\n"
     assert "added=0 replaced=1" in result.stdout
-    assert "insert -m -f last30days/OPENAI_API_KEY" in calls.read_text()
+    assert "insert -m -f -- last30days/OPENAI_API_KEY" in calls.read_text()
 
 
 def test_pass_entry_created_while_prompting_is_not_overwritten(password_store):

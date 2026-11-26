@@ -1,6 +1,7 @@
 """Tests for scripts/lib/reddit_shreddit.py — keyless shreddit comment scrape."""
 
 from pathlib import Path
+import time
 from unittest import mock
 
 from lib import reddit_shreddit as rs
@@ -220,10 +221,11 @@ class TestFetchCommentsFallback:
 
     def test_arctic_fallback_when_shreddit_empty(self):
         comments = [self._arctic_comment(score=42)]
+        future_deadline = time.monotonic() + 123.0
         with mock.patch.object(rs.http, "get_text", return_value=None), \
              mock.patch.object(rs.reddit_arctic, "fetch_post_comments",
                                return_value=comments) as arctic:
-            out = rs.fetch_comments(self.URL, deadline=123.0)
+            out = rs.fetch_comments(self.URL, deadline=future_deadline)
         assert out["top_comments"] == [{
             "score": 42, "date": "2026-07-02", "author": "u",
             "excerpt": "great thread", "url": "https://reddit.com/r/Rakuten/comments/1taeiw0/x/",
@@ -233,7 +235,7 @@ class TestFetchCommentsFallback:
         assert out["num_comments"] is None  # archive rows carry no post total
         arctic.assert_called_once_with(
             "1taeiw0", limit=rs.MAX_COMMENTS, skip_author=rs._is_bot_author,
-            deadline=123.0)
+            deadline=future_deadline)
 
     def test_shreddit_results_skip_arctic(self):
         with mock.patch.object(rs.http, "get_text", return_value=_html()), \

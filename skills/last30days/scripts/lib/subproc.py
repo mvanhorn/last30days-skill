@@ -167,6 +167,7 @@ def run_with_timeout(
     *,
     timeout: float,
     env: Optional[dict] = None,
+    cwd: Optional[str | os.PathLike[str]] = None,
     on_pid: Optional[callable] = None,
     input_text: Optional[str] = None,
     deadline_monotonic: Optional[float] = None,
@@ -187,6 +188,7 @@ def run_with_timeout(
         cmd: Command and arguments to spawn.
         timeout: Timeout in seconds passed to ``communicate()``.
         env: Optional environment dict. If None, inherits parent env.
+        cwd: Optional working directory for the child process.
         on_pid: Optional callable invoked with the child PID right after
             spawn. Exceptions raised by the callback are suppressed. The
             child is registered for cleanup_children() regardless.
@@ -233,6 +235,7 @@ def run_with_timeout(
             errors="replace",
             start_new_session=own_group,
             env=env,
+            cwd=cwd,
             **({"creationflags": CREATE_SUSPENDED} if native_windows else {}),
         )
     except BaseException as exc:

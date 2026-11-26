@@ -1,0 +1,1 @@
+Added V2EX, the largest Chinese-language developer community, as a free, keyless, opt-in source. `INCLUDE_SOURCES=v2ex` (or `--search v2ex`) searches topics from the window through the community-run SOV2EX index and attaches replies from the top topics. It stays off, with no traffic to V2EX or SOV2EX, until you turn it on.

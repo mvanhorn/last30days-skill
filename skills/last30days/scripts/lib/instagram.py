@@ -269,8 +269,16 @@ def _parse_items(raw_items: List[Dict[str, Any]], core_topic: str) -> List[Dict[
         else:
             text = raw.get("desc", raw.get("text", ""))
 
-        # Engagement metrics
-        play_count = raw.get("video_play_count") or raw.get("video_view_count") or raw.get("play_count") or 0
+        # Engagement metrics (keep missing play counts as None so unreported
+        # views are distinct from a measured 0).
+        play_count = next(
+            (
+                raw[k]
+                for k in ("video_play_count", "video_view_count", "play_count")
+                if raw.get(k) is not None
+            ),
+            None,
+        )
         like_count = raw.get("like_count") or 0
         comment_count = raw.get("comment_count") or 0
 
@@ -395,7 +403,14 @@ def _normalize_google_post(
         "url": url,
         "caption": caption or "",
         "taken_at": media.get("taken_at_timestamp") or media.get("created_at"),
-        "video_play_count": media.get("video_play_count") or 0,
+        "video_play_count": next(
+            (
+                media[k]
+                for k in ("video_play_count", "video_view_count", "play_count")
+                if media.get(k) is not None
+            ),
+            None,
+        ),
         "like_count": likes or 0,
         "comment_count": comments or 0,
         "owner": media.get("owner") or media.get("user") or {},
@@ -701,7 +716,7 @@ def search_instagram(
         _log(f"No reels within date range, keeping all {len(items)}")
 
     # Sort by views descending
-    items.sort(key=lambda x: x["engagement"]["views"], reverse=True)
+    items.sort(key=lambda x: x.get("engagement", {}).get("views") or 0, reverse=True)
 
     _log(f"Found {len(items)} Instagram reels")
     if _budget_expired(deadline, cancel):

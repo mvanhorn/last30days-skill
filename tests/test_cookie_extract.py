@@ -39,7 +39,7 @@ def test_firefox_cookie_host_family_and_requested_names(tmp_path, domain):
         ])
     assert _query_cookies_db(
         db, domain, ["auth_token", "ct0", "sub_cookie", "near_cookie", "suffix_cookie"],
-    ) == {"auth_token": "dummy-auth", "ct0": "dummy-ct0", "sub_cookie": "dummy-sub"}
+    ) == {"auth_token": "dummy-auth", "ct0": "dummy-ct0"}
 
 
 @pytest.fixture

@@ -104,7 +104,7 @@ def test_fetch_x_backend_forwards_deadline(monkeypatch):
         pipeline.xai_x, "search_x",
         lambda *a, **k: (seen.update(xai=k.get("deadline_monotonic")), {"items": []})[1],
     )
-    monkeypatch.setattr(pipeline.xai_x, "parse_x_response", lambda r: [])
+    monkeypatch.setattr(pipeline.xai_x, "parse_x_response", lambda *a, **k: [])
     monkeypatch.setattr(
         pipeline.xquik, "search_xquik",
         lambda *a, **k: (seen.update(xquik=k.get("deadline")), {"items": []})[1],
@@ -287,7 +287,7 @@ def test_grok_fanout_respects_cancel(monkeypatch):
         import subprocess
         calls.append(cmd)
         return subprocess.CompletedProcess(cmd, 0, "no posts", "")
-    monkeypatch.setattr(grok_x.subprocess, "run", fake_run)
+    monkeypatch.setattr(grok_x.subproc, "run_with_timeout", fake_run)
     cancel = threading.Event()
     cancel.set()
     result = grok_x.search_x("topic", "2026-08-01", "2026-08-31", cancel=cancel)
@@ -604,7 +604,7 @@ def test_tiktok_returns_videos_before_stalled_transport_is_released(monkeypatch)
         if len(calls) == 1:
             response.read.return_value = b'{"aweme_list": [{"aweme_id": "1", "desc": "travel storytelling", "author": {"unique_id": "traveler"}}]}'
         else:
-            def held_read():
+            def held_read(size=-1):
                 try:
                     release.wait(HANG_SECONDS)
                     return b"{}"
@@ -650,7 +650,7 @@ def test_bird_decode_retry_skipped_when_delay_exceeds_budget(monkeypatch):
     timeouts, sleeps = [], []
     monkeypatch.setattr(
         bird_x, "_invoke_bird_subprocess",
-        lambda q, c, timeout, top=False: (timeouts.append(timeout), (_interstitial(), None))[1],
+        lambda q, c, timeout, top=False, **_kwargs: (timeouts.append(timeout), (_interstitial(), None))[1],
     )
     monkeypatch.setattr(bird_x.time, "sleep", lambda s: sleeps.append(s))
     response = bird_x._run_bird_search(
@@ -667,7 +667,7 @@ def test_bird_decode_retry_reclamps_timeout_to_remaining_budget(monkeypatch):
     timeouts = []
     monkeypatch.setattr(
         bird_x, "_invoke_bird_subprocess",
-        lambda q, c, timeout, top=False: (timeouts.append(timeout), (_interstitial(), None))[1],
+        lambda q, c, timeout, top=False, **_kwargs: (timeouts.append(timeout), (_interstitial(), None))[1],
     )
     monkeypatch.setattr(bird_x.time, "sleep", lambda s: None)
     bird_x._run_bird_search("q", count=10, timeout=60, deadline=time.monotonic() + 30)

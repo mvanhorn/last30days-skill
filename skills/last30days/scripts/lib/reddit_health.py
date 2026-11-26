@@ -35,14 +35,16 @@ path tokens ``session``, ``host``, ``search``, ``web``, ``listing``,
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
+import stat
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional
 
-from . import env, log
+from . import env, log, private_files
 
 SCHEMA = 1
 CACHE_FILENAME = "reddit-health.json"
@@ -109,18 +111,84 @@ def _read() -> dict[str, dict[str, Any]]:
     return {k: v for k, v in paths.items() if isinstance(v, dict)}
 
 
+@contextlib.contextmanager
+def _file_lock(path: Optional[Path]):
+    """Serialize read-modify-write on ``reddit-health.json`` across processes.
+
+    Yields ``True`` when the cross-process lock is held, or ``False`` when no
+    cache path is configured or locking failed (callers must skip disk writes
+    when ``False`` so concurrent writers cannot clobber each other).
+    """
+    if path is None:
+        yield False
+        return
+    # Persistent sidecar lock file keeps writers on the same inode across atomic replaces.
+    lock_path = path.with_suffix(".lock")
+    fd: Optional[int] = None
+    locked = False
+    try:
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        flags = (
+            os.O_CREAT
+            | os.O_RDWR
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+        )
+        fd = os.open(lock_path, flags, 0o600)
+        if os.name == "posix":
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode):
+                raise OSError(f"Expected a regular lock file: {lock_path}")
+            import fcntl
+
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            locked = True
+        elif os.name == "nt":
+            import msvcrt
+
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+            locked = True
+    except OSError as exc:
+        _log(f"could not lock Reddit path health: {exc}")
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            fd = None
+    try:
+        yield locked
+    finally:
+        if fd is not None:
+            try:
+                if locked:
+                    if os.name == "posix":
+                        import fcntl
+
+                        fcntl.flock(fd, fcntl.LOCK_UN)
+                    elif os.name == "nt":
+                        import msvcrt
+
+                        os.lseek(fd, 0, os.SEEK_SET)
+                        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+            except OSError:
+                pass
+            finally:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+
+
 def _write(paths: Mapping[str, Any]) -> None:
     path = cache_path()
     if path is None:
         return
+    payload = json.dumps({"schema": SCHEMA, "paths": dict(paths)}, indent=2, sort_keys=True)
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(path.name + f".tmp.{os.getpid()}.{threading.get_ident()}")
-        tmp.write_text(
-            json.dumps({"schema": SCHEMA, "paths": dict(paths)}, indent=2, sort_keys=True),
-            encoding="utf-8",
-        )
-        os.replace(tmp, path)
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        private_files.replace_private_text(path, payload)
     except OSError as exc:
         _log(f"could not save Reddit path health: {exc}")
 
@@ -192,25 +260,33 @@ def record(
         return
     with _LOCK:
         current = _RUN.get(path)
-        # A path already down this run stays down for it.
-        if current not in _RUN_DOWN:
+        # A path already down this run stays down for it; never let a stale
+        # in-flight OK clobber a persisted BLOCKED cooldown on disk.
+        if current in _RUN_DOWN and state == OK:
+            return
+        if current == BLOCKED and state != BLOCKED:
+            return
+        if current not in _RUN_DOWN or state == BLOCKED:
             _RUN[path] = state
         if state not in _PERSISTED:
             return
-        paths = _read()
-        previous = paths.get(path) or {}
-        if state == OK and previous.get("state") == OK:
-            # Re-dating a good answer on every run is churn; one write a TTL is plenty.
-            at = _parse_at(previous.get("at"))
-            if at is not None and _now(now) - at < timedelta(seconds=SKIP_TTL_SECONDS):
+        with _file_lock(cache_path()) as locked:
+            if not locked:
                 return
-        paths[path] = {
-            "state": state,
-            "at": _now(now).isoformat(),
-            "reason": str(reason or "")[:120],
-            "cookie_fp": cookie_fp or None,
-        }
-        _write(paths)
+            paths = _read()
+            previous = paths.get(path) or {}
+            if state == OK and previous.get("state") == OK:
+                # Re-dating a good answer on every run is churn; one write a TTL is plenty.
+                at = _parse_at(previous.get("at"))
+                if at is not None and _now(now) - at < timedelta(seconds=SKIP_TTL_SECONDS):
+                    return
+            paths[path] = {
+                "state": state,
+                "at": _now(now).isoformat(),
+                "reason": str(reason or "")[:120],
+                "cookie_fp": cookie_fp or None,
+            }
+            _write(paths)
     if state == BLOCKED:
         _log(f"{path} refused this network ({reason or 'blocked'}); skipping it for "
              f"{SKIP_TTL_SECONDS // 3600} h")
@@ -245,12 +321,17 @@ def seed_web_rungs(now: Optional[datetime] = None) -> dict[str, str]:
 def clear() -> list[str]:
     """Drop every persisted skip and this run's states (doctor). Returns the
     paths whose skip was still in force."""
+    global _seeded
+    cleared: list[str] = []
     with _LOCK:
-        paths = _read()
-        cleared = [p for p in paths if paths[p].get("state") == BLOCKED]
-        if paths:
-            _write({})
-    reset_run_state()
+        with _file_lock(cache_path()) as locked:
+            if locked:
+                paths = _read()
+                cleared = [p for p in paths if paths[p].get("state") == BLOCKED]
+                if paths:
+                    _write({})
+        _RUN.clear()
+        _seeded = False
     return cleared
 
 

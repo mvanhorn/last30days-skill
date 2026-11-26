@@ -197,7 +197,7 @@ class TestDescriptorRegistry:
         assert tuple(s.name for s in yt.backends) == ("yt-dlp", "scrapecreators")
         web = backends.get_descriptor("web")
         assert tuple(s.name for s in web.backends) == (
-            "brave", "exa", "serper", "parallel", "keyless",
+            "brave", "exa", "serper", "parallel", "keyless", "parallel-mcp",
         )
         assert web.pin_flag == "--web-backend"
 
@@ -543,7 +543,7 @@ class TestXurlLocalProbe:
         finding = self._finding((xurl_x.AUTH_MISSING, "no token store at ~/.xurl"))
         assert finding.status == health.MISSING
         assert "not authenticated" in finding.detail
-        assert "xurl auth oauth2 login" in finding.prescription
+        assert "xurl auth app-only <bearer-token>" in finding.prescription
 
     def test_unreadable_token_store_is_error_tier(self):
         # F10: binary resolvable but the token-store read fails -> typed
@@ -570,8 +570,7 @@ class TestXurlLocalProbe:
         stored_auth_status code path (filesystem only) is exercised."""
         store = tmp_path / ".xurl"
         store.write_text(
-            "apps:\n  app:\n    oauth2_tokens:\n      me:\n        oauth2:\n"
-            "          access_token: dummy-not-real\n",
+            "apps:\n  app:\n    bearer_token:\n      bearer: dummy-not-real\n",
             encoding="utf-8",
         )
         config = {"AUTH_TOKEN": "dummy-token", "CT0": "dummy-ct0"}

@@ -30,8 +30,8 @@ func TestEnsureExtractsEngine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
-	if cacheDir != filepath.Join(base, cacheSubdir, "v1") {
-		t.Fatalf("cacheDir = %q, want %q", cacheDir, filepath.Join(base, cacheSubdir, "v1"))
+	if cacheDir != filepath.Join(cacheParentDir(base), "v1") {
+		t.Fatalf("cacheDir = %q, want %q", cacheDir, filepath.Join(cacheParentDir(base), "v1"))
 	}
 	mustReadFile(t, filepath.Join(cacheDir, "last30days.py"), "# last30days entry\n")
 	mustReadFile(t, filepath.Join(cacheDir, "lib/env.py"), "# env helpers\n")
@@ -167,7 +167,7 @@ func TestEnsureConcurrentProcesses(t *testing.T) {
 	for _, initialState := range []string{"missing", "incomplete", "stale"} {
 		t.Run(initialState, func(t *testing.T) {
 			base := t.TempDir()
-			cacheDir := filepath.Join(base, cacheSubdir, "v1")
+			cacheDir := filepath.Join(cacheParentDir(base), "v1")
 			if initialState != "missing" {
 				if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 					t.Fatal(err)
@@ -272,7 +272,7 @@ func TestEnsureUserCacheHonorsOverride(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnsureUserCache: %v", err)
 	}
-	want := filepath.Join(override, cacheSubdir, "v1")
+	want := filepath.Join(cacheParentDir(override), "v1")
 	if cacheDir != want {
 		t.Fatalf("cacheDir = %q, want %q", cacheDir, want)
 	}

@@ -61,7 +61,7 @@ class TestTikTokStatsZeroPreserved(unittest.TestCase):
             "author": {"unique_id": "u"},
         }
         items = _parse_items([raw], "test")
-        self.assertEqual(0, items[0]["engagement"]["views"])
+        self.assertIsNone(items[0]["engagement"]["views"])
 
     def test_stats_as_non_dict(self):
         raw = {
@@ -72,7 +72,7 @@ class TestTikTokStatsZeroPreserved(unittest.TestCase):
             "statistics": "invalid",
         }
         items = _parse_items([raw], "test")
-        self.assertEqual(0, items[0]["engagement"]["views"])
+        self.assertIsNone(items[0]["engagement"]["views"])
 
 
 class TestExpandTikTokQueries(unittest.TestCase):

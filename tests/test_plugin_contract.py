@@ -196,6 +196,25 @@ class TestPluginContract(unittest.TestCase):
         env_map = manifest["server"]["mcp_config"]["env"]
         self.assertEqual("${user_config.x_bearer_token}", env_map["X_BEARER_TOKEN"])
 
+    def test_mcp_manifest_declares_bsky_handle_and_x_backend(self) -> None:
+        manifest = _json(ROOT / "mcp" / "manifest.json")
+        user_config = manifest["user_config"]
+        env_map = manifest["server"]["mcp_config"]["env"]
+
+        bsky = user_config["bsky_handle"]
+        self.assertEqual("BSKY_HANDLE", bsky["title"])
+        self.assertEqual("string", bsky["type"])
+        self.assertIs(False, bsky["sensitive"])
+        self.assertIs(False, bsky["required"])
+        self.assertEqual("${user_config.bsky_handle}", env_map["BSKY_HANDLE"])
+
+        x_backend = user_config["last30days_x_backend"]
+        self.assertEqual("LAST30DAYS_X_BACKEND", x_backend["title"])
+        self.assertEqual("string", x_backend["type"])
+        self.assertIs(False, x_backend["sensitive"])
+        self.assertIs(False, x_backend["required"])
+        self.assertEqual("${user_config.last30days_x_backend}", env_map["LAST30DAYS_X_BACKEND"])
+
     def test_mcp_manifest_env_and_user_config_cross_reference(self) -> None:
         # Python-side mirror of mcp/internal/manifest/manifest_test.go so the
         # invariant is checked by `uv run pytest` too.

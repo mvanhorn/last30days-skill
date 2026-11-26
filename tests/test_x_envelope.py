@@ -805,7 +805,7 @@ class TestPipelineWiring:
 
         with mock.patch("lib.pipeline._retrieve_stream_impl", side_effect=spy):
             report = _run(envelope, plan=_two_x_plan(), config={"_max_source_fetches": 5})
-        assert "primary" in calls and "angle" in calls and "retry" in calls
+        assert calls == ["primary", "retry"]
         assert len(report.items_by_source["x"]) == 1
         assert "x" not in report.errors_by_source
         assert report.source_status["x"].state == health.OK

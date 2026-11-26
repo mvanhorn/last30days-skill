@@ -1,8 +1,9 @@
 """Chromium-family cookie extraction for macOS.
 
 Extracts cookies from Chromium-based browser SQLite databases using only
-stdlib modules and the system openssl CLI (ships with macOS). Zero pip
-dependencies.
+stdlib modules and in-process AES-128-CBC decryption (macOS CommonCrypto via
+ctypes, with a pure-Python fallback). Zero pip dependencies and zero key
+exposure on subprocess argv.
 
 Chromium on macOS uses v10 encryption (AES-128-CBC with Keychain-stored key).
 Every Chromium-based browser (Chrome, Brave, Edge, Vivaldi, Opera, Arc, Dia,
@@ -11,19 +12,31 @@ service name differ, so they all run through the same decryption core.
 This is NOT affected by Windows App-Bound Encryption (v20).
 """
 
+import ctypes
 import hashlib
 import logging
 import os
 import sqlite3
 import subprocess
+import sys
 import tempfile
+import time
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from .cookie_paths import path_exists, path_is_dir
 from .sqlite_snapshot import copy_snapshot
 
 logger = logging.getLogger(__name__)
+
+_SECURITY_BIN = "/usr/bin/security"
+_COMMONCRYPTO_LIB_PATH = "/usr/lib/system/libcommonCrypto.dylib"
+_KCC_DECRYPT = 1
+_KCC_ALG_AES128 = 0
+_KCC_OPT_PKCS7_PADDING = 1
+_KCC_SUCCESS = 0
+_CHROME_EPOCH_OFFSET_SECONDS = 11644473600
+_SQLITE_TEMP_SIDECARS = ("", "-wal", "-shm", "-journal")
 
 
 def _lock_temp_cookie_copy(path: str) -> None:
@@ -31,6 +44,17 @@ def _lock_temp_cookie_copy(path: str) -> None:
     if os.name == "nt":
         return
     Path(path).chmod(0o600)
+
+
+def _unlink_sqlite_temp_files(path: Optional[str]) -> None:
+    """Remove a temporary SQLite copy and any WAL/SHM/journal sidecars."""
+    if not path:
+        return
+    for suffix in _SQLITE_TEMP_SIDECARS:
+        try:
+            Path(path + suffix).unlink(missing_ok=True)
+        except OSError:
+            pass
 
 # Cookie DB locations on macOS
 _APP_SUPPORT = Path.home() / "Library" / "Application Support"
@@ -59,20 +83,205 @@ CHROME_SALT = b"saltysalt"
 CHROME_PBKDF2_ITERATIONS = 1003
 CHROME_KEY_LENGTH = 16
 # IV is 16 space characters (0x20)
+CHROME_IV = b" " * 16
 CHROME_IV_HEX = "20" * 16
+
+
+def _gf_mul(a: int, b: int) -> int:
+    res = 0
+    while b:
+        if b & 1:
+            res ^= a
+        hi = a & 0x80
+        a = (a << 1) & 0xFF
+        if hi:
+            a ^= 0x1B
+        b >>= 1
+    return res
+
+
+def _gf_inv(a: int) -> int:
+    if a == 0:
+        return 0
+    res = 1
+    base = a
+    exp = 254
+    while exp:
+        if exp & 1:
+            res = _gf_mul(res, base)
+        base = _gf_mul(base, base)
+        exp >>= 1
+    return res
+
+
+def _rotl8(value: int, shift: int) -> int:
+    return ((value << shift) | (value >> (8 - shift))) & 0xFF
+
+
+def _build_aes_tables() -> tuple[tuple[int, ...], tuple[int, ...]]:
+    sbox = [0] * 256
+    inv_sbox = [0] * 256
+    for x in range(256):
+        inv = _gf_inv(x)
+        sub = (
+            inv
+            ^ _rotl8(inv, 1)
+            ^ _rotl8(inv, 2)
+            ^ _rotl8(inv, 3)
+            ^ _rotl8(inv, 4)
+            ^ 0x63
+        )
+        sbox[x] = sub
+        inv_sbox[sub] = x
+    return tuple(sbox), tuple(inv_sbox)
+
+
+_AES_SBOX, _AES_INV_SBOX = _build_aes_tables()
+_AES_RCON = (0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1B, 0x36)
+_AES_MUL9 = tuple(_gf_mul(x, 0x09) for x in range(256))
+_AES_MUL11 = tuple(_gf_mul(x, 0x0B) for x in range(256))
+_AES_MUL13 = tuple(_gf_mul(x, 0x0D) for x in range(256))
+_AES_MUL14 = tuple(_gf_mul(x, 0x0E) for x in range(256))
+
+
+def _aes128_expand_key(key: bytes) -> list[bytes]:
+    words = [list(key[i : i + 4]) for i in range(0, 16, 4)]
+    for i in range(4, 44):
+        temp = list(words[i - 1])
+        if i % 4 == 0:
+            temp = [_AES_SBOX[b] for b in (temp[1], temp[2], temp[3], temp[0])]
+            temp[0] ^= _AES_RCON[i // 4 - 1]
+        prev = words[i - 4]
+        words.append([prev[j] ^ temp[j] for j in range(4)])
+    return [
+        bytes(words[4 * r] + words[4 * r + 1] + words[4 * r + 2] + words[4 * r + 3])
+        for r in range(11)
+    ]
+
+
+def _aes128_decrypt_block(block: bytes, round_keys: list[bytes]) -> bytes:
+    rk = round_keys[10]
+    s = [block[i] ^ rk[i] for i in range(16)]
+    for rnd in range(9, 0, -1):
+        s[1], s[5], s[9], s[13] = s[13], s[1], s[5], s[9]
+        s[2], s[6], s[10], s[14] = s[10], s[14], s[2], s[6]
+        s[3], s[7], s[11], s[15] = s[7], s[11], s[15], s[3]
+        rk = round_keys[rnd]
+        s = [_AES_INV_SBOX[s[i]] ^ rk[i] for i in range(16)]
+        for c in (0, 4, 8, 12):
+            a0, a1, a2, a3 = s[c], s[c + 1], s[c + 2], s[c + 3]
+            s[c] = _AES_MUL14[a0] ^ _AES_MUL11[a1] ^ _AES_MUL13[a2] ^ _AES_MUL9[a3]
+            s[c + 1] = _AES_MUL9[a0] ^ _AES_MUL14[a1] ^ _AES_MUL11[a2] ^ _AES_MUL13[a3]
+            s[c + 2] = _AES_MUL13[a0] ^ _AES_MUL9[a1] ^ _AES_MUL14[a2] ^ _AES_MUL11[a3]
+            s[c + 3] = _AES_MUL11[a0] ^ _AES_MUL13[a1] ^ _AES_MUL9[a2] ^ _AES_MUL14[a3]
+    s[1], s[5], s[9], s[13] = s[13], s[1], s[5], s[9]
+    s[2], s[6], s[10], s[14] = s[10], s[14], s[2], s[6]
+    s[3], s[7], s[11], s[15] = s[7], s[11], s[15], s[3]
+    rk0 = round_keys[0]
+    return bytes(_AES_INV_SBOX[s[i]] ^ rk0[i] for i in range(16))
+
+
+def _decrypt_aes128_cbc_pure(ciphertext: bytes, aes_key: bytes, iv: bytes) -> Optional[bytes]:
+    """Decrypt AES-128-CBC with PKCS7 padding in pure Python (no subprocesses)."""
+    round_keys = _aes128_expand_key(aes_key)
+    out = bytearray()
+    prev = iv
+    for offset in range(0, len(ciphertext), 16):
+        block = ciphertext[offset : offset + 16]
+        plain = _aes128_decrypt_block(block, round_keys)
+        out.extend(plain[i] ^ prev[i] for i in range(16))
+        prev = block
+    return _remove_pkcs7_padding(bytes(out))
+
+
+_COMMONCRYPTO_FUNC: Any = None
+_COMMONCRYPTO_LOADED = False
+
+
+def _load_commoncrypto() -> Any:
+    """Load macOS CommonCrypto's CCCrypt symbol in-process, or return None."""
+    global _COMMONCRYPTO_FUNC, _COMMONCRYPTO_LOADED
+    if _COMMONCRYPTO_LOADED:
+        return _COMMONCRYPTO_FUNC
+    cc_crypt: Any = None
+    if sys.platform == "darwin":
+        try:
+            lib = ctypes.CDLL(_COMMONCRYPTO_LIB_PATH)
+            candidate = lib.CCCrypt
+            candidate.argtypes = [
+                ctypes.c_uint32,
+                ctypes.c_uint32,
+                ctypes.c_uint32,
+                ctypes.c_void_p,
+                ctypes.c_size_t,
+                ctypes.c_void_p,
+                ctypes.c_void_p,
+                ctypes.c_size_t,
+                ctypes.c_void_p,
+                ctypes.c_size_t,
+                ctypes.POINTER(ctypes.c_size_t),
+            ]
+            candidate.restype = ctypes.c_int32
+            cc_crypt = candidate
+        except (OSError, AttributeError):
+            cc_crypt = None
+    _COMMONCRYPTO_FUNC = cc_crypt
+    _COMMONCRYPTO_LOADED = True
+    return _COMMONCRYPTO_FUNC
+
+
+def _decrypt_aes128_cbc_commoncrypto(
+    ciphertext: bytes, aes_key: bytes, iv: bytes, cc_crypt: Any
+) -> Optional[bytes]:
+    """Decrypt AES-128-CBC with PKCS7 padding in-process via macOS CommonCrypto."""
+    out_buf = ctypes.create_string_buffer(len(ciphertext) + 16)
+    out_len = ctypes.c_size_t(0)
+    status = cc_crypt(
+        _KCC_DECRYPT,
+        _KCC_ALG_AES128,
+        _KCC_OPT_PKCS7_PADDING,
+        aes_key,
+        len(aes_key),
+        iv,
+        ciphertext,
+        len(ciphertext),
+        out_buf,
+        len(out_buf),
+        ctypes.byref(out_len),
+    )
+    if status != _KCC_SUCCESS:
+        return None
+    return out_buf.raw[: out_len.value]
+
+
+def _decrypt_aes128_cbc(
+    ciphertext: bytes, aes_key: bytes, iv: bytes = CHROME_IV
+) -> Optional[bytes]:
+    """Decrypt AES-128-CBC ciphertext in-process without exposing key material."""
+    if (
+        len(aes_key) != CHROME_KEY_LENGTH
+        or len(iv) != 16
+        or not ciphertext
+        or len(ciphertext) % 16 != 0
+    ):
+        return None
+    cc_crypt = _load_commoncrypto()
+    if cc_crypt is not None:
+        return _decrypt_aes128_cbc_commoncrypto(ciphertext, aes_key, iv, cc_crypt)
+    return _decrypt_aes128_cbc_pure(ciphertext, aes_key, iv)
 
 
 def _get_chromium_encryption_key(service_name: str) -> Optional[bytes]:
     """Retrieve the encryption passphrase for a Chromium-based browser from macOS Keychain.
 
-    Calls `security find-generic-password` which may trigger a system dialog
+    Calls `/usr/bin/security find-generic-password` which may trigger a system dialog
     on first access.
 
     Returns the raw passphrase bytes, or None on failure.
     """
     try:
         result = subprocess.run(
-            ["security", "find-generic-password", "-w", "-s", service_name],
+            [_SECURITY_BIN, "find-generic-password", "-w", "-s", service_name],
             capture_output=True,
             text=True,
             timeout=10,
@@ -86,7 +295,7 @@ def _get_chromium_encryption_key(service_name: str) -> Optional[bytes]:
             return None
         return passphrase.encode("utf-8")
     except FileNotFoundError:
-        logger.info("'security' command not found — not on macOS?")
+        logger.info("'%s' command not found — not on macOS?", _SECURITY_BIN)
         return None
     except subprocess.TimeoutExpired:
         logger.info("%s Keychain access timed out", service_name)
@@ -112,57 +321,33 @@ def _derive_aes_key(passphrase: bytes) -> bytes:
 
 
 def _decrypt_v10_value(encrypted_value: bytes, aes_key: bytes, db_version: int) -> Optional[str]:
-    """Decrypt a Chrome v10-encrypted cookie value.
+    """Decrypt a Chrome v10-encrypted cookie value in-process (zero subprocesses).
 
-    Uses system openssl CLI for AES-128-CBC decryption (zero pip deps).
+    Uses macOS CommonCrypto via ctypes on Darwin (with a pure-Python fallback)
+    so ``aes_key`` never leaves process memory.
     For Chrome 130+ (db_version >= 24), strips 32-byte SHA-256 prefix after decryption.
 
     Returns decrypted string or None on failure.
     """
-    # Strip the 'v10' prefix
-    ciphertext = encrypted_value[3:]
+    if not isinstance(encrypted_value, (bytes, bytearray, memoryview)):
+        return None
+    raw_bytes = bytes(encrypted_value)
+    if not raw_bytes.startswith(b"v10"):
+        return None
+    ciphertext = raw_bytes[3:]
     if not ciphertext:
         return None
 
-    hex_key = aes_key.hex()
-
     try:
-        result = subprocess.run(
-            [
-                "openssl", "enc", "-aes-128-cbc", "-d",
-                "-K", hex_key,
-                "-iv", CHROME_IV_HEX,
-                "-nopad",
-            ],
-            input=ciphertext,
-            capture_output=True,
-            timeout=5,
-        )
-        if result.returncode != 0:
-            logger.debug("openssl decryption failed: %s", result.stderr.decode(errors="replace").strip())
-            return None
-
-        decrypted = result.stdout
-        if not decrypted:
-            return None
-
-        # Remove PKCS7 padding
-        decrypted = _remove_pkcs7_padding(decrypted)
+        decrypted = _decrypt_aes128_cbc(ciphertext, aes_key, CHROME_IV)
         if decrypted is None:
             return None
 
         # Chrome 130+ (db version >= 24): strip 32-byte SHA-256 prefix
-        if db_version >= 24 and len(decrypted) > 32:
+        if db_version >= 24 and len(decrypted) >= 32:
             decrypted = decrypted[32:]
 
         return decrypted.decode("utf-8", errors="replace")
-
-    except FileNotFoundError:
-        logger.info("openssl not found — cannot decrypt Chrome cookies")
-        return None
-    except subprocess.TimeoutExpired:
-        logger.info("openssl decryption timed out")
-        return None
     except Exception as e:
         logger.debug("Chrome cookie decryption error: %s", e)
         return None
@@ -211,8 +396,9 @@ def _extract_chromium_cookies_macos(
 ) -> Optional[dict[str, str]]:
     """Extract cookies from any Chromium-based browser on macOS.
 
-    Snapshots committed Cookies database state to a temp file, reads specified cookies,
-    and decrypts v10-encrypted values using the Keychain-stored key.
+    Snapshots committed Cookies database state to a temp file, reads specified cookies
+    from a single non-expired scope, and decrypts v10-encrypted values in-process using
+    the Keychain-stored key.
 
     Args:
         db_path: Path to the browser's Cookies SQLite file.
@@ -221,7 +407,7 @@ def _extract_chromium_cookies_macos(
         cookie_names: List of cookie names to extract.
 
     Returns:
-        Dict mapping cookie name to decrypted value, or None on failure.
+        Dict mapping cookie name to decrypted value from one scope, or None on failure.
         Only includes cookies that were successfully found and decrypted.
     """
     try:
@@ -232,11 +418,18 @@ def _extract_chromium_cookies_macos(
         logger.info("%s cookies database not found at %s", keychain_service, db_path)
         return None
 
+    wanted = domain.strip().lstrip(".").lower()
+    if not wanted or not cookie_names:
+        return None
+    preferred_host = domain.strip().lower()
+    if preferred_host not in (wanted, f".{wanted}"):
+        preferred_host = f".{wanted}"
+
     # The backup includes committed WAL updates while the browser is running.
-    tmp_fd = None
     tmp_path = None
     try:
         tmp_fd, tmp_path = tempfile.mkstemp(suffix=".sqlite")
+        os.close(tmp_fd)
         # Snapshot content only; preserve mkstemp's 0600 permissions.
         copy_snapshot(db_path, tmp_path)
         _lock_temp_cookie_copy(tmp_path)
@@ -246,18 +439,10 @@ def _extract_chromium_cookies_macos(
             logger.info("Permission denied reading %s cookies database", keychain_service)
         else:
             logger.info("Failed to copy %s cookies database: %s", keychain_service, e)
-        if tmp_path:
-            try:
-                Path(tmp_path).unlink(missing_ok=True)
-            except Exception:
-                pass
+        _unlink_sqlite_temp_files(tmp_path)
         if browser_read_denied:
             raise
         return None
-    finally:
-        if tmp_fd is not None:
-            import os
-            os.close(tmp_fd)
 
     conn = None
     try:
@@ -267,54 +452,177 @@ def _extract_chromium_cookies_macos(
         db_version = _get_db_version(cursor)
         logger.debug("%s cookie DB version: %d", keychain_service, db_version)
 
-        placeholders = ",".join("?" for _ in cookie_names)
-        host = domain.lstrip(".")
-        query = (
-            f"SELECT name, value, encrypted_value FROM cookies "
-            f"WHERE (host_key = ? OR host_key LIKE ?) AND name IN ({placeholders})"
+        cursor.execute("PRAGMA table_info(cookies)")
+        col_map = {str(row[1]).lower(): str(row[1]) for row in cursor.fetchall()}
+        if not {"name", "value", "encrypted_value", "host_key"}.issubset(col_map):
+            logger.info("%s cookies table missing required columns", keychain_service)
+            return None
+
+        path_expr = col_map["path"] if "path" in col_map else "'/'"
+        expires_expr = col_map["expires_utc"] if "expires_utc" in col_map else "0"
+        secure_expr = col_map["is_secure"] if "is_secure" in col_map else "1"
+        httponly_expr = col_map["is_httponly"] if "is_httponly" in col_map else "1"
+        partition_expr = (
+            col_map["top_frame_site_key"] if "top_frame_site_key" in col_map else "''"
         )
-        params = [host, f"%.{host}"] + list(cookie_names)
+        cross_site_expr = (
+            col_map["has_cross_site_ancestor"]
+            if "has_cross_site_ancestor" in col_map
+            else "0"
+        )
+
+        placeholders = ",".join("?" for _ in cookie_names)
+        query = (
+            f"SELECT name, value, encrypted_value, host_key, "
+            f"{path_expr}, {expires_expr}, {secure_expr}, {httponly_expr}, "
+            f"{partition_expr}, {cross_site_expr} "
+            f"FROM cookies "
+            f"WHERE LOWER(host_key) IN (?, ?) AND name IN ({placeholders})"
+        )
+        params = [wanted, f".{wanted}"] + list(cookie_names)
         cursor.execute(query, params)
 
-        results: dict[str, str] = {}
-        aes_key = None
-        key_fetched = False
-        for name, value, encrypted_value in cursor.fetchall():
-            if value:
-                results[name] = value
+        now_chrome_utc = (int(time.time()) + _CHROME_EPOCH_OFFSET_SECONDS) * 1_000_000
+        allowed_hosts = (wanted, f".{wanted}")
+        scopes: dict[
+            tuple[str, str, tuple[str, int]],
+            dict[str, list[tuple[int, int, bool, int, Any, Any]]],
+        ] = {}
+        for (
+            name,
+            value,
+            encrypted_value,
+            host_key,
+            path,
+            expires_utc,
+            is_secure,
+            is_httponly,
+            top_frame_site_key,
+            has_cross_site_ancestor,
+        ) in cursor.fetchall():
+            try:
+                expires_val = int(expires_utc) if expires_utc is not None else 0
+            except (TypeError, ValueError):
                 continue
+            if expires_val != 0 and expires_val <= now_chrome_utc:
+                continue
+            host_norm = str(host_key or "").strip().lower()
+            if host_norm not in allowed_hosts:
+                continue
+            path_norm = path if isinstance(path, str) and path else "/"
+            partition_site = str(top_frame_site_key or "").strip()
+            cross_site_flag = 1 if has_cross_site_ancestor else 0
+            partition_key = (partition_site, cross_site_flag)
+            secure_flag = 1 if is_secure else 0
+            httponly_flag = 1 if is_httponly else 0
+            # Host-only (x.com) and domain (.x.com) cookies apply to the same
+            # apex origin per RFC 6265; pair them within one (path, partition).
+            # Chromium CHIPS partitions are keyed by (top_frame_site_key, has_cross_site_ancestor).
+            scope_key = (host_norm.lstrip("."), path_norm, partition_key)
+            scopes.setdefault(scope_key, {}).setdefault(str(name), []).append(
+                (
+                    secure_flag,
+                    httponly_flag,
+                    host_norm == preferred_host,
+                    expires_val,
+                    value,
+                    encrypted_value,
+                )
+            )
 
-            if encrypted_value and encrypted_value[:3] == b"v10":
-                if not key_fetched:
-                    # Fetch the Keychain key lazily — only once we actually have
-                    # an encrypted cookie to decrypt. This avoids a macOS
-                    # Keychain prompt for browsers that don't hold the requested
-                    # cookie, which matters for FROM_BROWSER=auto across several
-                    # installed Chromium browsers.
-                    if key_cache is not None and keychain_service in key_cache:
-                        aes_key = key_cache[keychain_service]
-                    else:
-                        passphrase = _get_chromium_encryption_key(keychain_service)
-                        aes_key = _derive_aes_key(passphrase) if passphrase else None
-                        if key_cache is not None:
-                            key_cache[keychain_service] = aes_key
-                    key_fetched = True
-                if aes_key is None:
-                    logger.debug("Skipping encrypted cookie %s — no Keychain access", name)
-                    continue
-                decrypted = _decrypt_v10_value(encrypted_value, aes_key, db_version)
-                if decrypted:
-                    results[name] = decrypted
-                else:
-                    logger.debug("Failed to decrypt cookie %s", name)
-            elif encrypted_value:
-                logger.debug("Unknown encryption for cookie %s (prefix: %r)", name, encrypted_value[:3])
-
-        if not results:
+        if not scopes:
             logger.info("No matching cookies found in %s for domain %s", keychain_service, domain)
             return None
 
-        return results
+        requested = list(dict.fromkeys(cookie_names))
+        for by_name in scopes.values():
+            for candidates in by_name.values():
+                candidates.sort(
+                    key=lambda item: (
+                        item[0] == 0,
+                        item[1] == 0,
+                        not item[2],
+                        0 if item[3] == 0 else -item[3],
+                    )
+                )
+
+        def _scope_sort_key(
+            item: tuple[
+                tuple[str, str, tuple[str, int]],
+                dict[str, list[tuple[int, int, bool, int, Any, Any]]],
+            ]
+        ) -> tuple[Any, ...]:
+            (host_base, path_norm, (partition_site, cross_site_flag)), by_name = item
+            has_all_names = all(name in by_name for name in requested)
+            all_secure = all(cands[0][0] == 1 for cands in by_name.values())
+            all_httponly = all(cands[0][1] == 1 for cands in by_name.values())
+            return (
+                not has_all_names,
+                partition_site != "",
+                cross_site_flag != 0,
+                path_norm != "/",
+                not all_secure,
+                not all_httponly,
+                path_norm,
+                host_base,
+                partition_site,
+                cross_site_flag,
+            )
+
+        aes_key = None
+        key_fetched = False
+        best_partial: Optional[dict[str, str]] = None
+
+        for _scope_key, by_name in sorted(scopes.items(), key=_scope_sort_key):
+            scope_results: dict[str, str] = {}
+            for name, candidates in by_name.items():
+                for _sec, _http, _pref, _exp, value, encrypted_value in candidates:
+                    if isinstance(value, str) and value:
+                        scope_results[name] = value
+                        break
+
+                    if isinstance(encrypted_value, (bytes, bytearray, memoryview)):
+                        enc_bytes = bytes(encrypted_value)
+                        if enc_bytes[:3] == b"v10":
+                            if not key_fetched:
+                                # Fetch the Keychain key lazily — only once we actually have
+                                # a non-expired encrypted cookie to decrypt.
+                                if key_cache is not None and keychain_service in key_cache:
+                                    aes_key = key_cache[keychain_service]
+                                else:
+                                    passphrase = _get_chromium_encryption_key(keychain_service)
+                                    aes_key = _derive_aes_key(passphrase) if passphrase else None
+                                    if key_cache is not None:
+                                        key_cache[keychain_service] = aes_key
+                                key_fetched = True
+                            if aes_key is None:
+                                logger.debug("Skipping encrypted cookie %s — no Keychain access", name)
+                                continue
+                            decrypted = _decrypt_v10_value(enc_bytes, aes_key, db_version)
+                            if decrypted:
+                                scope_results[name] = decrypted
+                                break
+                            logger.debug("Failed to decrypt cookie %s", name)
+                        elif enc_bytes:
+                            logger.debug(
+                                "Unknown encryption for cookie %s (prefix: %r)",
+                                name,
+                                enc_bytes[:3],
+                            )
+                    elif encrypted_value:
+                        logger.debug("Malformed encrypted cookie %s", name)
+
+            if scope_results:
+                if all(name in scope_results for name in requested):
+                    return scope_results
+                if best_partial is None:
+                    best_partial = scope_results
+
+        if not best_partial:
+            logger.info("No matching cookies found in %s for domain %s", keychain_service, domain)
+            return None
+
+        return best_partial
 
     except sqlite3.Error as e:
         logger.info("Failed to read %s cookies database: %s", keychain_service, e)
@@ -325,10 +633,7 @@ def _extract_chromium_cookies_macos(
     finally:
         if conn is not None:
             conn.close()
-        try:
-            Path(tmp_path).unlink(missing_ok=True)
-        except Exception:
-            pass
+        _unlink_sqlite_temp_files(tmp_path)
 
 
 def extract_chrome_cookies_macos(domain: str, cookie_names: list[str]) -> Optional[dict[str, str]]:

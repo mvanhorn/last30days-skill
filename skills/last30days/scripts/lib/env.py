@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import datetime
+import errno
 import json
 import locale
 import os
 import re
+import stat
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -125,6 +127,7 @@ class ConfigLoadPolicy:
     allow_project_config: bool = False
     inspect_ignored_project_config: bool = False
     require_recorded_browser_consent: bool = False
+    load_secret_stores: bool = True
 
 
 def _truthy(value: Any) -> bool:
@@ -174,17 +177,36 @@ def templated_config_keys(config: dict[str, Any]) -> list[str]:
 def _rotate_scrapecreators_key(config: dict[str, Any]) -> None:
     """Round-robin a comma-separated SCRAPECREATORS_API_KEY to one key per run.
 
-    Extracted so the placeholder sweep can reapply it: the sweep may restore a
-    value from a lower-priority source after the ordinary rotation already ran,
-    and a comma-separated list handed to a backend whole fails authentication.
-    A second call on an already-rotated value is a no-op (no comma remains).
+    Filters any unsubstituted ``${user_config.*}`` placeholders from the list
+    so a partial placeholder entry cannot be selected over a real key.
     """
     raw = config.get('SCRAPECREATORS_API_KEY') or ''
     if ',' not in raw:
         return
     import random
-    sc_keys = [k.strip() for k in raw.split(',') if k.strip()]
+    sc_keys = [
+        k.strip()
+        for k in raw.split(',')
+        if k.strip() and not is_unsubstituted_template(k)
+    ]
     config['SCRAPECREATORS_API_KEY'] = random.choice(sc_keys) if sc_keys else ''
+
+
+def _strip_layer_templates(
+    mapping: dict[str, str],
+    allowed_keys: frozenset[str],
+    templated_seen: set[str],
+    *,
+    canonical_map: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Return a copy of ``mapping`` without ``${user_config.*}`` placeholders."""
+    cleaned: dict[str, str] = {}
+    for key, value in mapping.items():
+        if key in allowed_keys and is_unsubstituted_template(value):
+            templated_seen.add((canonical_map or {}).get(key, key))
+            continue
+        cleaned[key] = value
+    return cleaned
 
 
 def is_timestamp_fresh(timestamp_value: Any, ttl_seconds: int) -> bool:
@@ -216,7 +238,7 @@ def _project_config_trusted(policy: ConfigLoadPolicy, file_env: dict[str, Any]) 
     if policy.allow_project_config:
         return True
     process_value = os.environ.get("LAST30DAYS_TRUST_PROJECT_CONFIG")
-    if process_value is not None:
+    if process_value is not None and not is_unsubstituted_template(process_value):
         return _truthy(process_value)
     return _truthy(file_env.get("LAST30DAYS_TRUST_PROJECT_CONFIG"))
 
@@ -283,11 +305,108 @@ def env_line_key(lhs: str) -> str:
     return key[match.end():] if match else key
 
 
-def load_env_file(path: Path) -> dict[str, str]:
-    """Load environment variables from a file."""
-    env = {}
-    if not path or not path.exists():
+_MAX_ENV_FILE_BYTES = 256 * 1024
+_ENV_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _is_symlink_or_junction(path: Path) -> bool:
+    if path.is_symlink():
+        return True
+    isjunction = getattr(os.path, "isjunction", None)
+    return bool(isjunction and isjunction(path))
+
+
+class ConfigReadError(OSError):
+    """A config file that exists could not be read right now (the cause is chained)."""
+
+
+# A missing file, a path that is not a file, or a refused symlink is an ordinary
+# absent or unsafe config. Any other read failure may pass on a later attempt.
+_ABSENT_OR_UNSAFE_ERRNOS = frozenset({
+    errno.ENOENT, errno.ENOTDIR, errno.ELOOP, errno.EMLINK, errno.EISDIR,
+})
+
+
+def _is_transient_read_error(exc: OSError) -> bool:
+    if isinstance(exc, (FileNotFoundError, NotADirectoryError, IsADirectoryError)):
+        return False
+    return exc.errno not in _ABSENT_OR_UNSAFE_ERRNOS
+
+
+def load_env_file(
+    path: Path,
+    *,
+    allow_symlink: bool = True,
+    strict_keys: bool = False,
+    raise_read_errors: bool = False,
+) -> dict[str, str]:
+    """Load environment variables from a file.
+
+    An unreadable file yields ``{}`` unless ``raise_read_errors`` is set. Then a
+    read failure that could pass on a later attempt raises ``ConfigReadError``, while a
+    missing file or a refused symlink still yields ``{}``.
+    """
+    env: dict[str, str] = {}
+    if not path:
         return env
+    if not allow_symlink and (
+        _is_symlink_or_junction(path) or _is_symlink_or_junction(path.parent)
+    ):
+        return env
+
+    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
+    if not allow_symlink:
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+    fd = -1
+    parent_fd = -1
+    try:
+        if (
+            not allow_symlink
+            and path.name
+            and os.open in os.supports_dir_fd
+            and hasattr(os, "O_DIRECTORY")
+            and hasattr(os, "O_NOFOLLOW")
+        ):
+            parent_fd = os.open(
+                path.parent,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+            )
+            fd = os.open(path.name, flags, dir_fd=parent_fd)
+        else:
+            fd = os.open(path, flags)
+    except OSError as exc:
+        if raise_read_errors and _is_transient_read_error(exc):
+            raise ConfigReadError(f"config file could not be opened ({type(exc).__name__})") from exc
+        return env
+    finally:
+        if parent_fd >= 0:
+            try:
+                os.close(parent_fd)
+            except OSError:
+                pass
+
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_size > _MAX_ENV_FILE_BYTES:
+            return env
+        handle = os.fdopen(fd, "rb")
+        fd = -1
+        with handle:
+            raw = handle.read(_MAX_ENV_FILE_BYTES + 1)
+    except OSError as exc:
+        if raise_read_errors and _is_transient_read_error(exc):
+            raise ConfigReadError(f"config file could not be read ({type(exc).__name__})") from exc
+        return env
+    finally:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+    if len(raw) > _MAX_ENV_FILE_BYTES:
+        return env
+
     _check_file_permissions(path)
 
     # Prefer UTF-8 (utf-8-sig transparently strips a BOM written by Windows
@@ -296,9 +415,9 @@ def load_env_file(path: Path) -> dict[str, str]:
     # keeps loading. If it decodes as neither, let UnicodeDecodeError surface
     # rather than corrupting keys/secrets with replacement characters.
     try:
-        text = path.read_text(encoding='utf-8-sig')
+        text = raw.decode('utf-8-sig')
     except UnicodeDecodeError:
-        text = path.read_text(encoding=locale.getpreferredencoding(False))
+        text = raw.decode(locale.getpreferredencoding(False))
 
     for line in text.splitlines():
         line = line.strip()
@@ -307,6 +426,8 @@ def load_env_file(path: Path) -> dict[str, str]:
         if '=' in line:
             key, _, value = line.partition('=')
             key = env_line_key(key)
+            if strict_keys and not _ENV_IDENT_RE.fullmatch(key):
+                continue
             value = _strip_inline_comment(value).strip()
             # Remove quotes if present
             if value and value[0] in ('"', "'") and value[-1] == value[0]:
@@ -449,11 +570,12 @@ def _load_pass(keys: list[str], prefix: str) -> dict[str, str]:
     looked up at pass path ``f"{prefix}{key}"`` — mirroring Keychain's
     ``last30days-<key>`` service-name convention — so any user stores keys under
     that namespace without editing code (prefix overridable via
-    ``LAST30DAYS_PASS_PREFIX``). The secret is decrypted in a subprocess and
-    read from stdout's first line (pass keeps the secret there; any metadata
-    follows) — never written to disk, never logged. Honors ``PASSWORD_STORE_DIR``.
-    Missing entries and failures are silent: pass is a lowest-priority, additive
-    source like Keychain, so an explicit .env or process-env value still wins.
+    ``LAST30DAYS_PASS_PREFIX``, used verbatim to match ``setup-pass.sh``). The
+    secret is decrypted in a subprocess and read from stdout's first line (pass
+    keeps the secret there; any metadata follows) — never written to disk, never
+    logged. Honors ``PASSWORD_STORE_DIR``. Missing entries and failures are
+    silent: pass is a lowest-priority, additive source like Keychain, so an
+    explicit .env or process-env value still wins.
     """
     import shutil
     pass_bin = shutil.which("pass")
@@ -465,7 +587,7 @@ def _load_pass(keys: list[str], prefix: str) -> dict[str, str]:
     for key in keys:
         try:
             result = subprocess.run(
-                [pass_bin, "show", f"{prefix}{key}"],
+                [pass_bin, "show", "--", f"{prefix}{key}"],
                 capture_output=True, text=True, timeout=5,
                 encoding="utf-8", errors="replace",
             )
@@ -483,7 +605,13 @@ def _load_pass(keys: list[str], prefix: str) -> dict[str, str]:
 
 def get_openai_auth(file_env: dict[str, str]) -> OpenAIAuth:
     """Resolve OpenAI API auth from explicit user-provided API keys."""
-    api_key = read_secret_env('OPENAI_API_KEY') or file_env.get('OPENAI_API_KEY')
+    env_key = read_secret_env('OPENAI_API_KEY')
+    if is_unsubstituted_template(env_key):
+        env_key = None
+    file_key = file_env.get('OPENAI_API_KEY')
+    if is_unsubstituted_template(file_key):
+        file_key = None
+    api_key = env_key or file_key
     if api_key:
         return OpenAIAuth(
             token=api_key,
@@ -503,12 +631,20 @@ def _find_project_env() -> Path | None:
 
     Searches for .claude/last30days.env in each parent directory,
     stopping at the git root, user's home directory, or filesystem root.
+    Rejects symlinks, junctions, and non-regular files so an untrusted
+    repository cannot redirect config reads outside the project tree.
     """
     cwd = Path.cwd()
     for parent in [cwd, *cwd.parents]:
-        candidate = parent / '.claude' / 'last30days.env'
-        if candidate.exists():
-            return candidate
+        claude_dir = parent / '.claude'
+        candidate = claude_dir / 'last30days.env'
+        if not _is_symlink_or_junction(claude_dir) and not _is_symlink_or_junction(candidate):
+            try:
+                st = candidate.lstat()
+            except OSError:
+                st = None
+            if st is not None and stat.S_ISREG(st.st_mode):
+                return candidate
         if (parent / ".git").exists():
             break
         # Stop at filesystem root or home
@@ -519,16 +655,43 @@ def _find_project_env() -> Path | None:
 
 def _load_config_files(
     policy: ConfigLoadPolicy,
+    *,
+    raise_read_errors: bool = False,
 ) -> tuple[dict[str, str], dict[str, str], Path | None]:
-    file_env = load_env_file(CONFIG_FILE) if CONFIG_FILE else {}
+    file_env = (
+        load_env_file(CONFIG_FILE, raise_read_errors=raise_read_errors) if CONFIG_FILE else {}
+    )
     project_path = _find_project_env() if _project_config_trusted(policy, file_env) else None
-    project_env = load_env_file(project_path) if project_path else {}
+    project_env = (
+        load_env_file(project_path, allow_symlink=False, raise_read_errors=raise_read_errors)
+        if project_path else {}
+    )
     return file_env, project_env, project_path
+
+
+def resolve_searxng_url() -> str | None:
+    """Read only the approved SearXNG setting, without exporting process settings."""
+    key = "LAST30DAYS_SEARXNG_URL"
+    value = os.environ.get(key)
+    if value and not is_unsubstituted_template(value):
+        return value
+    # A read failure that may pass raises ConfigReadError, so a caller can retry instead of
+    # remembering "no URL". A missing or unsafe file is still just absent.
+    file_env, project_env, _ = _load_config_files(ConfigLoadPolicy(), raise_read_errors=True)
+    for layer in (project_env, file_env):
+        value = layer.get(key)
+        if value is not None and not is_unsubstituted_template(value):
+            return value
+    return None
 
 
 def has_recorded_browser_consent() -> bool:
     """Check whether setup can reuse explicit consent without opening credential stores."""
     file_env, project_env, _ = _load_config_files(ConfigLoadPolicy())
+    consent_keys = frozenset({"BROWSER_CONSENT", "FROM_BROWSER"})
+    discarded: set[str] = set()
+    file_env = _strip_layer_templates(file_env, consent_keys, discarded)
+    project_env = _strip_layer_templates(project_env, consent_keys, discarded)
     file_settings = {**file_env, **project_env}
     config = {}
     for key in ("BROWSER_CONSENT", "FROM_BROWSER"):
@@ -561,6 +724,8 @@ def resolve_memory_dir(save_dir: str | None = None) -> str:
         )
     if value is None:
         value = str(Path.home() / "Documents" / "Last30Days")
+    if value and not value.strip():
+        raise ValueError("--save-dir / LAST30DAYS_MEMORY_DIR cannot be whitespace-only.")
     return str(Path(value).expanduser().absolute()) if value else ""
 
 
@@ -574,51 +739,6 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
       4. macOS Keychain items prefixed ``last30days-`` (Darwin only)
     """
     policy = policy or ConfigLoadPolicy()
-    # Load per-project config only when trust comes from process env, global
-    # user config, or an explicit policy. A project file cannot grant trust to
-    # itself because it is not parsed until after this decision.
-    file_env, project_env, project_env_path = _load_config_files(policy)
-    ignored_project_env_path = None
-    ignored_project_keys: list[str] = []
-    if policy.inspect_ignored_project_config and not _project_config_trusted(policy, file_env):
-        ignored_project_env_path = _find_project_env()
-        if ignored_project_env_path:
-            ignored_project_keys = sorted(load_env_file(ignored_project_env_path).keys())
-
-    # Merge file sources: project > global
-    merged_env = {**file_env, **project_env}
-
-    # Keychain is the lowest-priority source (Darwin only; no-op elsewhere).
-    # Loaded before openai_auth so OPENAI_API_KEY can come from Keychain too.
-    keychain_aliases_raw = os.environ.get(KEYCHAIN_ALIASES_ENV) or merged_env.get(KEYCHAIN_ALIASES_ENV)
-    keychain_aliases = _parse_keychain_aliases(keychain_aliases_raw)
-    keychain_env = _load_keychain(list(KEYCHAIN_KEYS), keychain_aliases)
-    merged_env = {**keychain_env, **merged_env}
-    # pass(1) store: Linux/Unix analog of Keychain at convention path
-    # {prefix}<KEY>. Decrypts transiently so secrets stay encrypted at rest (no
-    # plaintext .env). Lowest priority: Keychain, the config files, and process
-    # env all win over it. Two efficiency guards so a user who merely has `pass`
-    # on PATH doesn't pay for it: resolve the prefix from the loaded config/env
-    # (not import time, so a .env-set LAST30DAYS_PASS_PREFIX is honored), and
-    # probe ONLY keys still unset after the higher-priority sources — an empty
-    # list short-circuits with no gpg/pinentry calls at all.
-    pass_prefix = (
-        os.environ.get("LAST30DAYS_PASS_PREFIX")
-        or merged_env.get("LAST30DAYS_PASS_PREFIX")
-        or DEFAULT_PASS_PATH_PREFIX
-    )
-    pass_missing = [k for k in KEYCHAIN_KEYS if k not in os.environ and not merged_env.get(k)]
-    pass_env = _load_pass(pass_missing, pass_prefix)
-    merged_env = {**pass_env, **merged_env}
-
-    openai_auth = get_openai_auth(merged_env)
-
-    # Build config: Codex/OpenAI auth + process.env > project .env > global .env
-    config = {
-        'OPENAI_API_KEY': openai_auth.token,
-        'OPENAI_AUTH_SOURCE': openai_auth.source,
-        'OPENAI_AUTH_STATUS': openai_auth.status,
-    }
 
     keys = [
         # Debug flag; also exported to os.environ below so log.py's lazy
@@ -634,6 +754,13 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         ('LAST30DAYS_RERANK_MODEL', None),
         ('LAST30DAYS_X_MODEL', None),
         ('LAST30DAYS_X_BACKEND', None),
+        # Wall-clock budget (seconds) for the X backend chain. Default 90; a
+        # grok call on a subscription account measured 150-170s, so pinning
+        # grok needs a larger budget to return the first call's posts. Read
+        # from the resolved config only (pipeline._x_chain_budget_seconds);
+        # blank/invalid/non-finite/non-positive falls back to 90, values above
+        # 240 clamp to 240 (the default-depth grok per-call ceiling).
+        ('LAST30DAYS_X_BUDGET_SECONDS', None),
         ('LAST30DAYS_REDDIT_BACKEND', None),
         ('LAST30DAYS_YOUTUBE_BACKEND', None),
         # Jobs lane: skip a job listing its site's robots.txt disallows.
@@ -816,8 +943,118 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         (X_HOST_LANE_VAR, None),
     ]
 
+    # Strip unsubstituted ``${user_config.*}`` extension placeholders per source
+    # layer *before* trust checks, secret-store probing, layer merging, legacy
+    # alias lookup, lazy env exports, and browser-cookie preflight calculation.
+    # Bounded to registered keys so unregistered env vars (such as
+    # LAST30DAYS_API_KEY or an unused SCRAPE_CREATORS_API_KEY) remain untouched.
+    legacy_alias_map = {
+        'SCRAPE_CREATORS_API_KEY': 'SCRAPECREATORS_API_KEY',
+        'SCRAPE_CREATORS_BASE_URL': 'SCRAPECREATORS_BASE_URL',
+    }
+    registered_keys = frozenset({'OPENAI_API_KEY', *(key for key, _ in keys)})
+    file_strip_keys = registered_keys | frozenset(legacy_alias_map)
+    process_only_keys = frozenset({X_HOST_LANE_VAR, SCHEDULED_RUN_VAR})
+    preserve_none_keys = frozenset({
+        'BROWSER_CONSENT',
+        'LAST30DAYS_MEMORY_DIR',
+        X_HOST_LANE_VAR,
+        SCHEDULED_RUN_VAR,
+    })
+    templated_seen: set[str] = set()
+    for key in registered_keys:
+        if is_unsubstituted_template(os.environ.get(key)):
+            os.environ.pop(key, None)
+            templated_seen.add(key)
+
+    # Load per-project config only when trust comes from process env, global
+    # user config, or an explicit policy. A project file cannot grant trust to
+    # itself because it is not parsed until after this decision.
+    file_env, project_env, project_env_path = _load_config_files(policy)
+    ignored_project_env_path = None
+    ignored_project_keys: list[str] = []
+    if policy.inspect_ignored_project_config and not _project_config_trusted(policy, file_env):
+        ignored_project_env_path = _find_project_env()
+        if ignored_project_env_path:
+            ignored_project_keys = sorted(
+                load_env_file(
+                    ignored_project_env_path,
+                    allow_symlink=False,
+                    strict_keys=True,
+                ).keys()
+            )
+
+    file_env = _strip_layer_templates(
+        file_env, file_strip_keys, templated_seen, canonical_map=legacy_alias_map
+    )
+    project_env = _strip_layer_templates(
+        project_env, file_strip_keys, templated_seen, canonical_map=legacy_alias_map
+    )
+
+    # Merge file sources: project > global
+    merged_env = {**file_env, **project_env}
+
+    # Keychain and pass(1) are the lowest-priority credential stores. Skip both
+    # when the caller's ConfigLoadPolicy opts out (e.g. offline, mock, invalid,
+    # or hosted-API invocations) so users are never prompted for unused secrets.
+    keychain_env: dict[str, str] = {}
+    pass_env: dict[str, str] = {}
+    if policy.load_secret_stores:
+        keychain_aliases_raw = os.environ.get(KEYCHAIN_ALIASES_ENV) or merged_env.get(KEYCHAIN_ALIASES_ENV)
+        keychain_aliases = _parse_keychain_aliases(keychain_aliases_raw)
+        keychain_env = _strip_layer_templates(
+            _load_keychain(list(KEYCHAIN_KEYS), keychain_aliases),
+            registered_keys,
+            templated_seen,
+        )
+        merged_env = {**keychain_env, **merged_env}
+        # pass(1) store: Linux/Unix analog of Keychain at convention path
+        # {prefix}<KEY>. Decrypts transiently so secrets stay encrypted at rest (no
+        # plaintext .env). Lowest priority: Keychain, the config files, and process
+        # env all win over it. Two efficiency guards so a user who merely has `pass`
+        # on PATH doesn't pay for it: resolve the prefix from the loaded config/env
+        # (not import time, so a .env-set LAST30DAYS_PASS_PREFIX is honored), and
+        # probe ONLY keys still unset after the higher-priority sources — an empty
+        # list short-circuits with no gpg/pinentry calls at all.
+        env_pass_prefix = os.environ.get("LAST30DAYS_PASS_PREFIX")
+        if is_unsubstituted_template(env_pass_prefix):
+            env_pass_prefix = None
+        file_pass_prefix = next(
+            (
+                value
+                for value in (
+                    project_env.get("LAST30DAYS_PASS_PREFIX"),
+                    file_env.get("LAST30DAYS_PASS_PREFIX"),
+                )
+                if value and not is_unsubstituted_template(value)
+            ),
+            None,
+        )
+        pass_prefix = env_pass_prefix or file_pass_prefix or DEFAULT_PASS_PATH_PREFIX
+        pass_missing = [
+            k
+            for k in KEYCHAIN_KEYS
+            if (not os.environ.get(k) or is_unsubstituted_template(os.environ.get(k)))
+            and not merged_env.get(k)
+        ]
+        pass_env = _strip_layer_templates(
+            _load_pass(pass_missing, pass_prefix),
+            registered_keys,
+            templated_seen,
+        )
+        merged_env = {**pass_env, **merged_env}
+
+    openai_auth = get_openai_auth(merged_env)
+
+    # Build config: Codex/OpenAI auth + process.env > project .env > global .env
+    config = {
+        'OPENAI_API_KEY': openai_auth.token,
+        'OPENAI_AUTH_SOURCE': openai_auth.source,
+        'OPENAI_AUTH_STATUS': openai_auth.status,
+    }
+
     for key, default in keys:
-        if key in (X_HOST_LANE_VAR, SCHEDULED_RUN_VAR):
+        if key in process_only_keys:
             # Process env only; the .env value never reaches config.
             config[key] = os.environ.get(key) or default
             continue
@@ -834,6 +1071,37 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         else:
             config[key] = os.environ.get(key) or merged_env.get(key, default)
 
+    # Backward-compat: ScrapeCreators' own examples and tutorials use the
+    # SCRAPE_CREATORS_API_KEY spelling (with underscore between SCRAPE and
+    # CREATORS). Accept that form too so users who follow the vendor's docs
+    # don't silently end up with has_scrapecreators=False. Canonical name
+    # wins when both are set.
+    if not config.get('SCRAPECREATORS_API_KEY'):
+        env_legacy = read_secret_env('SCRAPE_CREATORS_API_KEY')
+        if is_unsubstituted_template(env_legacy):
+            templated_seen.add('SCRAPECREATORS_API_KEY')
+            env_legacy = None
+        legacy = env_legacy or merged_env.get('SCRAPE_CREATORS_API_KEY')
+        if legacy:
+            config['SCRAPECREATORS_API_KEY'] = legacy
+
+    if not config.get('SCRAPECREATORS_BASE_URL'):
+        env_legacy_base = os.environ.get('SCRAPE_CREATORS_BASE_URL')
+        if is_unsubstituted_template(env_legacy_base):
+            templated_seen.add('SCRAPECREATORS_BASE_URL')
+            env_legacy_base = None
+        legacy_base = env_legacy_base or merged_env.get('SCRAPE_CREATORS_BASE_URL')
+        if legacy_base:
+            config['SCRAPECREATORS_BASE_URL'] = legacy_base
+
+    # Multi-key rotation: comma-separated SCRAPECREATORS_API_KEY round-robins
+    # via random.choice per run. Originally added in #268, accidentally dropped
+    # in v3.0.6, restored here.
+    _rotate_scrapecreators_key(config)
+    if is_unsubstituted_template(config.get('SCRAPECREATORS_API_KEY')):
+        templated_seen.add('SCRAPECREATORS_API_KEY')
+        config['SCRAPECREATORS_API_KEY'] = None
+
     # Export debug flag to os.environ so log.py's lazy os.environ.get()
     # picks up .env values. setdefault ensures a shell-exported value is
     # never overwritten by the (lower-priority) .env value.
@@ -841,7 +1109,8 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         os.environ.setdefault('LAST30DAYS_DEBUG', config['LAST30DAYS_DEBUG'])
 
     # youtube_yt reads these tuning knobs lazily from os.environ, so values
-    # loaded from .env must be exported into the current engine process.
+    # loaded from .env (including fallbacks restored after stripping a
+    # placeholder) must be exported into the current engine process.
     for key in (
         'LAST30DAYS_YT_SUB_LANGS',
         'LAST30DAYS_YT_TRANSCRIPT_FAST_TIMEOUT',
@@ -860,26 +1129,6 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
                 os.environ.setdefault(key, value)
         elif value:
             os.environ.setdefault(key, value)
-
-    # Backward-compat: ScrapeCreators' own examples and tutorials use the
-    # SCRAPE_CREATORS_API_KEY spelling (with underscore between SCRAPE and
-    # CREATORS). Accept that form too so users who follow the vendor's docs
-    # don't silently end up with has_scrapecreators=False. Canonical name
-    # wins when both are set.
-    if not config.get('SCRAPECREATORS_API_KEY'):
-        legacy = read_secret_env('SCRAPE_CREATORS_API_KEY') or merged_env.get('SCRAPE_CREATORS_API_KEY')
-        if legacy:
-            config['SCRAPECREATORS_API_KEY'] = legacy
-
-    if not config.get('SCRAPECREATORS_BASE_URL'):
-        legacy_base = os.environ.get('SCRAPE_CREATORS_BASE_URL') or merged_env.get('SCRAPE_CREATORS_BASE_URL')
-        if legacy_base:
-            config['SCRAPECREATORS_BASE_URL'] = legacy_base
-
-    # Multi-key rotation: comma-separated SCRAPECREATORS_API_KEY round-robins
-    # via random.choice per run. Originally added in #268, accidentally dropped
-    # in v3.0.6, restored here.
-    _rotate_scrapecreators_key(config)
 
     # Track which config source was used (highest-priority file source wins
     # the label; keychain is only reported when nothing else is configured).
@@ -900,54 +1149,26 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
     # A LAST30DAYS_X_HOST_LANE line in a config file is ignored;
     # remember that it was there so doctor can say so.
     config['_X_HOST_LANE_FILE_IGNORED'] = bool(merged_env.get(X_HOST_LANE_VAR))
-    # Evaluated after the host and pin keys are merged: on an official-only
-    # host the browser list is empty unless bird is pinned (x_policy).
+    # Evaluated after placeholder stripping and fallback restoration so preflight
+    # and runtime agree on browser-cookie reads.
     config['_BROWSER_COOKIE_BROWSERS'] = cookie_extraction_browsers(config)
 
-    # Reject unsubstituted extension placeholders last among the value-producing
-    # steps, so the legacy ScrapeCreators spelling, the multi-key rotation, and
-    # the OpenAI auth fields assembled above are all covered by one sweep rather
-    # than by a predicate repeated at each presence check. Rejection means
-    # "absent", not "empty": the placeholder is removed from the process
-    # environment and the key is then re-resolved from the lower-priority
-    # sources exactly as it would be had the host never written it, so a real
-    # .env, Keychain, or pass credential it was shadowing is not discarded.
-    # Every consumer of a rejected config key therefore agrees the credential is
-    # unset, and the keys left genuinely unset are published for the diagnostics
-    # to report. The sweep is bounded by the keys get_config registers: a
-    # credential read straight from the environment under a name it does not
-    # register - LAST30DAYS_API_KEY, or a bare SCRAPE_CREATORS_API_KEY spelling
-    # left behind after the canonical key resolved - keeps its placeholder.
-    declared_defaults = {key: default for key, default in keys}
-    templated_keys = sorted(
-        key
-        for key, value in config.items()
-        if not key.startswith('_') and is_unsubstituted_template(value)
-    )
-    for key in templated_keys:
-        os.environ.pop(key, None)
-        fallback = (
-            _configured_memory_dir(project_env.get(key), file_env.get(key))
-            if key == 'LAST30DAYS_MEMORY_DIR'
-            else merged_env.get(key)
-        )
-        # A lower-priority value that is itself a placeholder is not a credential.
-        if is_unsubstituted_template(fallback):
-            fallback = None
-        resolved = fallback if fallback is not None else declared_defaults.get(key)
-        config[key] = resolved if resolved is not None else ''
-    # The rotation ran before this sweep, so a fallback restored from a
-    # comma-separated list would otherwise reach a backend whole. Reapply it,
-    # then reject the picked key if it is itself a placeholder.
-    _rotate_scrapecreators_key(config)
-    if is_unsubstituted_template(config.get('SCRAPECREATORS_API_KEY')):
-        config['SCRAPECREATORS_API_KEY'] = ''
-    # Report only the keys still leaving the credential unset. A placeholder that
-    # fell through to a real lower-priority credential (or to a usable default)
-    # is handled, and reporting it would nag about a setup that works.
+    # Report only the keys still leaving the setting unset. Preserve None for
+    # keys where None != "" (BROWSER_CONSENT, LAST30DAYS_MEMORY_DIR, and
+    # process-env-only keys), while keeping "" for ordinary unset templated keys.
+    templated_keys = sorted(templated_seen)
     config[TEMPLATE_CONFIG_KEYS] = [
-        key for key in templated_keys if not config.get(key)
+        key
+        for key in templated_keys
+        if (
+            config.get(key) is None
+            if key in {'LAST30DAYS_MEMORY_DIR', 'LAST30DAYS_YT_PLAYER_CLIENT'}
+            else not config.get(key)
+        )
     ]
+    for key in templated_keys:
+        if config.get(key) is None and key not in preserve_none_keys:
+            config[key] = ''
     if 'OPENAI_API_KEY' in templated_keys and not config.get('OPENAI_API_KEY'):
         # Keep the derived auth record consistent with the token it describes.
         config['OPENAI_AUTH_SOURCE'] = AUTH_SOURCE_NONE
@@ -1249,7 +1470,7 @@ def reddit_session_gate(config: dict[str, Any]) -> tuple[bool, str]:
 def reddit_scrapecreators_primary(config: dict[str, Any]) -> bool:
     return bool(
         config.get("SCRAPECREATORS_API_KEY")
-        and (config.get(REDDIT_BACKEND_PIN_VAR) or "").lower() == "scrapecreators"
+        and (config.get(REDDIT_BACKEND_PIN_VAR) or "").strip().lower() == "scrapecreators"
     )
 
 
@@ -1584,7 +1805,7 @@ def _inject_bird_credentials(config: dict[str, Any]) -> None:
 # label is the cookie source recorded in ``_AUTH_TOKEN_SOURCE``).
 _X_METHOD_LABELS = {
     "xai": "xai",
-    "xurl": "oauth2",  # xurl CLI (official X API v2, OAuth2, free developer app)
+    "xurl": "bearer",  # xurl CLI (official X API v2, app-only bearer, free developer app)
     "xapi": "bearer",
     "xquik": "api_key",
 }
@@ -1748,6 +1969,19 @@ def report_checklist_disabled(environ: Any = None) -> bool:
     source = os.environ if environ is None else environ
     return _truthy(source.get(NO_REPORT_CHECKLIST_VAR))
 
+
+# Set by the MCP wrapper when X_BEARER_TOKEN was explicitly configured in MCP
+# host config so xapi activates automatically when unpinned and no higher-
+# priority X backend (from env, .env, Keychain, or pass) is available.
+# Process environment only so a .env line cannot opt ambient tokens in.
+X_API_OPT_IN_VAR = 'LAST30DAYS_X_API_OPT_IN'
+
+
+def x_api_opt_in(environ: Any = None) -> bool:
+    """True when ``LAST30DAYS_X_API_OPT_IN`` allows fallback xapi selection."""
+    source = os.environ if environ is None else environ
+    return _truthy(source.get(X_API_OPT_IN_VAR))
+
 # Public routing definitions for the doctor/backend-descriptor layer
 # (lib/backends.py). These are aliases for knowledge this module already
 # owns — the declared X chain order and the pin/floor env var names — so
@@ -1827,10 +2061,11 @@ def x_backend_pin(config: dict[str, Any]) -> str:
 
 
 def x_policy(config: dict[str, Any]) -> XPolicy:
-    """Resolve the X policy from ``LAST30DAYS_HOST`` and the pin.
+    """Resolve the X policy from ``LAST30DAYS_HOST``, ``LAST30DAYS_X_API_OPT_IN``, and the pin.
 
     This is the ONLY place the Grok Bot host string is compared. It reads
-    just the host key, the pin, and the config dict: no platform, PATH, home
+    just the host key, the pin, the process-env ``LAST30DAYS_X_API_OPT_IN``
+    fallback signal, and the config dict: no platform, PATH, home
     directory, or agent env-var inspection (the same rule ``x_extras_enabled``
     follows), and nothing imported from ``lib``. The pin keeps its exclusive
     semantics on every host and may name any known backend; a ``bird`` pin
@@ -1839,10 +2074,13 @@ def x_policy(config: dict[str, Any]) -> XPolicy:
     host = str(config.get(X_HOST_VAR) or '').strip().lower()
     official_only = host == GROK_BOT_HOST
     pin = x_backend_pin(config)
+    auto_chain = _X_OFFICIAL if official_only else _X_BACKEND_ORDER
+    if not official_only and x_api_opt_in() and 'xapi' not in auto_chain:
+        auto_chain = auto_chain + ('xapi',)
     return XPolicy(
         host=host,
         official_only=official_only,
-        auto_chain=_X_OFFICIAL if official_only else _X_BACKEND_ORDER,
+        auto_chain=auto_chain,
         cookie_discovery=(not official_only) or pin == 'bird',
     )
 
@@ -1988,6 +2226,11 @@ def x_pending_browser_auth(config: dict[str, Any], local_only: bool = False) -> 
     # local_only (doctor/safe-diagnose) answers the xurl leg from the token
     # store instead of the live `xurl whoami` network call.
     if get_x_source(config, local_only=local_only):
+        return False
+    # An explicit pin to any backend other than bird forbids browser-cookie
+    # fallback: runtime x_backend_chain() will never select bird.
+    preferred = x_backend_pin(config)
+    if preferred in _X_BACKEND_KNOWN and preferred != 'bird':
         return False
     # Only meaningful in inspection modes that skip extraction; a real ``read``
     # run has already attempted extraction and must report its true state.
@@ -2239,15 +2482,44 @@ def _parse_include_sources(config: dict[str, Any]) -> set[str]:
     return {s.strip().lower() for s in raw.split(',') if s.strip()}
 
 
+_EXCLUDE_SOURCE_ALIASES: dict[str, tuple[str, ...]] = {
+    'web': ('grounding',),
+    'grounding': ('web',),
+}
+
+
 def _parse_exclude_sources(config: dict[str, Any]) -> set[str]:
     """Parse EXCLUDE_SOURCES config value into a set of lowercase source names."""
     raw = config.get('EXCLUDE_SOURCES') or ''
-    return {s.strip().lower() for s in raw.split(',') if s.strip()}
+    return {s.strip().lower() for s in str(raw).split(',') if s.strip()}
 
 
 def exclude_sources(config: dict[str, Any]) -> set[str]:
-    """Public view of the parsed EXCLUDE_SOURCES set."""
-    return _parse_exclude_sources(config)
+    """Public view of EXCLUDE_SOURCES with canonical web/grounding alias parity."""
+    raw = _parse_exclude_sources(config)
+    expanded = set(raw)
+    for token in raw:
+        expanded.update(_EXCLUDE_SOURCE_ALIASES.get(token, ()))
+    return expanded
+
+
+def excluded_source_tokens(source: str, config: dict[str, Any]) -> list[str]:
+    """Return all configured EXCLUDE_SOURCES tokens matching ``source``."""
+    raw = _parse_exclude_sources(config)
+    key = (source or '').strip().lower()
+    tokens: list[str] = []
+    if key in raw:
+        tokens.append(key)
+    for alias in _EXCLUDE_SOURCE_ALIASES.get(key, ()):
+        if alias in raw and alias not in tokens:
+            tokens.append(alias)
+    return tokens
+
+
+def excluded_source_token(source: str, config: dict[str, Any]) -> str | None:
+    """Return the configured EXCLUDE_SOURCES token matching ``source``, or None."""
+    tokens = excluded_source_tokens(source, config)
+    return tokens[0] if tokens else None
 
 
 def include_sources(config: dict[str, Any]) -> set[str]:
@@ -2364,8 +2636,15 @@ def _xiaohongshu_api_base_candidates(config: dict[str, Any]) -> list[str]:
 
 
 def _xiaohongshu_base_logged_in(base: str, http_module: Any) -> bool:
+    from . import xiaohongshu_api
+
+    try:
+        normalized, req_kwargs = xiaohongshu_api._request_options(base)
+    except ValueError:
+        return False
+
     # Keep the health probe snappy, but allow one retry for transient hiccups.
-    health = http_module.get(f"{base}/health", timeout=3, retries=2)
+    health = http_module.get(f"{normalized}/health", timeout=3, retries=2, **req_kwargs)
     if not isinstance(health, dict):
         return False
     if not health.get("success"):
@@ -2373,30 +2652,37 @@ def _xiaohongshu_base_logged_in(base: str, http_module: Any) -> bool:
 
     # Login checks can be slower because some services consult the browser
     # profile/session, so use a slightly longer timeout than the health probe.
-    login = http_module.get(f"{base}/api/v1/login/status", timeout=8, retries=2)
-    is_logged_in = (
-        login.get("data", {}).get("is_logged_in")
-        if isinstance(login, dict) else False
+    login = http_module.get(
+        f"{normalized}/api/v1/login/status", timeout=8, retries=2, **req_kwargs
     )
-    return bool(is_logged_in)
+    login_data = login.get("data") if isinstance(login, dict) else None
+    is_logged_in = (
+        bool(login_data.get("is_logged_in"))
+        if isinstance(login_data, dict) else False
+    )
+    return is_logged_in
 
 
 def is_xiaohongshu_available(config: dict[str, Any]) -> bool:
     """Check whether Xiaohongshu HTTP API is reachable and logged in."""
     # Import here to avoid heavy imports at module load.
-    from . import http
+    from . import http, xiaohongshu_api
 
     for base in _xiaohongshu_api_base_candidates(config):
         try:
-            if _xiaohongshu_base_logged_in(base, http):
-                config[XIAOHONGSHU_RESOLVED_API_BASE_KEY] = base
+            normalized, _ = xiaohongshu_api._validate_base_url(base)
+        except ValueError:
+            continue
+        try:
+            if _xiaohongshu_base_logged_in(normalized, http):
+                config[XIAOHONGSHU_RESOLVED_API_BASE_KEY] = normalized
                 return True
         except (OSError, http.HTTPError):
             continue
         except Exception as exc:
             sys.stderr.write(
                 f"[last30days] WARNING: unexpected error checking Xiaohongshu "
-                f"at {base}: {type(exc).__name__}: {exc}\n"
+                f"at {normalized}: {type(exc).__name__}: {exc}\n"
             )
             sys.stderr.flush()
     return False

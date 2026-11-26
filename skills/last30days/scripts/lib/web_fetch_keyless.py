@@ -18,16 +18,23 @@ through or report degradation instead of seeing a bare empty string.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Optional
-from urllib.parse import urlparse
+from urllib.parse import urlsplit
 
-from . import http
+from . import http, public_host
 
 JINA_READER_PREFIX = "https://r.jina.ai/"
+_RESERVED_HOST_SUFFIXES = frozenset({"localhost", "local", "internal", "localdomain", "arpa"})
+_VALID_DOMAIN_RE = re.compile(
+    r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+"
+)
+_VALID_TLD_RE = re.compile(r"[a-z]{2,63}|xn--[a-z0-9-]{2,59}")
 
 # Conservative timeout: Jina renders the page server-side, so it is slower than
 # a plain GET, but we are the floor tier and must not stall the pipeline.
 DEFAULT_FETCH_TIMEOUT = 30
+_MAX_MARKDOWN_BYTES = 4 * 1024 * 1024
 
 
 @dataclass
@@ -46,11 +53,59 @@ class KeylessFetchResult:
 
 
 def _looks_like_http_url(url: str) -> bool:
-    try:
-        parsed = urlparse(url)
-    except (ValueError, AttributeError):
+    if not isinstance(url, str) or not url or "\\" in url:
         return False
-    return parsed.scheme in ("http", "https") and bool(parsed.netloc)
+    if not public_host.is_public_address_syntax(url):
+        return False
+    try:
+        parsed = urlsplit(url)
+        port = parsed.port
+    except ValueError:
+        return False
+    scheme = parsed.scheme.lower()
+    if scheme not in ("http", "https"):
+        return False
+    if parsed.username is not None or parsed.password is not None:
+        return False
+    # Reject percent-escapes, non-ASCII, and backslashes in authority to avoid
+    # RFC-3986 vs WHATWG URL parser differentials at Jina Reader.
+    if not parsed.netloc.isascii() or "%" in parsed.netloc or "\\" in parsed.netloc:
+        return False
+    if port is not None and not (
+        (scheme == "https" and port == 443) or (scheme == "http" and port == 80)
+    ):
+        return False
+    host = (parsed.hostname or "").rstrip(".").lower()
+    if not host or not host.isascii() or not _VALID_DOMAIN_RE.fullmatch(host):
+        return False
+    if public_host._parse_ip_literal(host) is not None:
+        return False
+    labels = host.split(".")
+    if host == "localhost" or labels[-1] in _RESERVED_HOST_SUFFIXES:
+        return False
+    if not _VALID_TLD_RE.fullmatch(labels[-1]):
+        return False
+    return True
+
+
+def _reader_redirect_guard(target: str) -> bool:
+    if not isinstance(target, str) or not target or "\\" in target:
+        return False
+    if not public_host.is_public_address_syntax(target):
+        return False
+    try:
+        parsed = urlsplit(target)
+        port = parsed.port
+    except ValueError:
+        return False
+    if not parsed.netloc.isascii() or "%" in parsed.netloc or "\\" in parsed.netloc:
+        return False
+    if port is not None and port != 443:
+        return False
+    host = (parsed.hostname or "").rstrip(".").lower()
+    return parsed.scheme.lower() == "https" and (
+        host == "r.jina.ai" or host.endswith(".r.jina.ai")
+    )
 
 
 def _detect_cached_snapshot(markdown: str) -> bool:
@@ -84,12 +139,19 @@ def fetch_markdown(
         return KeylessFetchResult(url=url or "", ok=False, reason="invalid-url")
 
     reader_url = f"{JINA_READER_PREFIX}{url}"
-    text = http.get_text(
-        reader_url,
-        timeout=timeout,
-        retries=retries,
-        accept="text/plain",
-    )
+    try:
+        text = http.get_text(
+            reader_url,
+            timeout=timeout,
+            retries=retries,
+            accept="text/plain",
+            public_only=True,
+            redirect_guard=_reader_redirect_guard,
+            max_bytes=_MAX_MARKDOWN_BYTES,
+            decode_errors="replace",
+        )
+    except UnicodeDecodeError:
+        return KeylessFetchResult(url=url, ok=False, reason="decode-error")
 
     if text is None:
         return KeylessFetchResult(url=url, ok=False, reason="fetch-failed")

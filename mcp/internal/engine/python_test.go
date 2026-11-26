@@ -222,3 +222,29 @@ func TestPythonCandidatesCaseInsensitiveNames(t *testing.T) {
 		t.Fatalf("case-sensitive candidates = %q, want none", got)
 	}
 }
+
+func TestCheckPythonVersionRejectsOversizedStdout(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX executable fixture")
+	}
+	path := filepath.Join(t.TempDir(), "python3")
+	// Emit a valid-looking version line followed by >64 KiB of whitespace and
+	// stderr noise so an unbounded probe would both bloat memory and falsely
+	// accept "3.12" after TrimSpace.
+	script := `#!/bin/sh
+printf '3.12\n'
+dd if=/dev/zero bs=4096 count=32 2>/dev/null | tr '\0' ' '
+dd if=/dev/zero bs=4096 count=32 2>/dev/null | tr '\0' 'E' >&2
+`
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	err := checkPythonVersion(context.Background(), path)
+	if time.Since(started) > 2*time.Second {
+		t.Fatalf("checkPythonVersion took %s; oversized output may have stalled", time.Since(started))
+	}
+	if err == nil || !strings.Contains(err.Error(), "exceeded") {
+		t.Fatalf("checkPythonVersion error = %v, want output limit exceeded", err)
+	}
+}

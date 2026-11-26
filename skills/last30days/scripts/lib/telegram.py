@@ -14,7 +14,7 @@ import os
 import re
 from typing import Any
 
-from . import dates, http, log
+from . import auth_safety, dates, health, http, log
 from .relevance import token_overlap_relevance as _compute_relevance
 
 SCRAPECREATORS_BASE = "https://api.scrapecreators.com/v1/telegram"
@@ -179,6 +179,17 @@ def _parse_post(
     }
 
 
+def _error_severity(message: str, status_code: int | None = None) -> int:
+    state = http.classify_failure(status_code=status_code, message=message)
+    return health.FAILURE_SPECIFICITY.get(
+        state, health.FAILURE_SPECIFICITY[health.ERROR],
+    )
+
+
+def _select_primary_error(errors: list[tuple[int, str]]) -> str:
+    return min(errors, key=lambda item: item[0])[1]
+
+
 def _fetch_channel_posts(
     handle: str,
     token: str,
@@ -186,8 +197,18 @@ def _fetch_channel_posts(
     from_date: str,
     topic: str,
     max_pages: int,
+    errors_out: list[tuple[int, str]] | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch posts from a single channel, paginating until date cutoff."""
+    raw_token = token
+    clean_token, token_err = auth_safety.normalize_header_token(raw_token)
+    if token_err or not clean_token:
+        err_msg = token_err or "No SCRAPECREATORS_API_KEY configured"
+        _log(f"Skipping @{handle}: {err_msg}")
+        if errors_out is not None:
+            errors_out.append((_error_severity(err_msg), f"@{handle}: {err_msg}"))
+        return []
+
     items: list[dict[str, Any]] = []
     cursor: str | None = None
     pages_fetched = 0
@@ -203,17 +224,37 @@ def _fetch_channel_posts(
             data = http.get(
                 f"{_sc_base()}/channel/posts",
                 params=params,
-                headers=http.scrapecreators_headers(token),
+                headers=http.scrapecreators_headers(clean_token),
                 timeout=30,
                 retries=2,
             )
         except http.HTTPError as exc:
-            _log(f"HTTP error fetching @{handle}: {exc}")
+            safe_err = auth_safety.scrub_secrets(str(exc), (raw_token, clean_token))
+            if exc.status_code is not None and str(exc.status_code) not in safe_err:
+                safe_err = f"HTTP {exc.status_code}: {safe_err}"
+            _log(f"HTTP error fetching @{handle}: {safe_err}")
+            if errors_out is not None:
+                errors_out.append(
+                    (_error_severity(safe_err, status_code=exc.status_code), f"@{handle}: {safe_err}")
+                )
+            break
+        except Exception as exc:
+            safe_err = auth_safety.scrub_secrets(str(exc), (raw_token, clean_token))
+            detail = f"{type(exc).__name__}: {safe_err}"
+            _log(f"Error fetching @{handle}: {detail}")
+            if errors_out is not None:
+                errors_out.append((_error_severity(detail), f"@{handle}: {detail}"))
             break
 
-        if not data.get("success"):
-            error_msg = data.get("error") or data.get("message") or "Unknown error"
-            _log(f"API error for @{handle}: {error_msg}")
+        if not isinstance(data, dict) or not data.get("success"):
+            raw_msg = (
+                data.get("error") or data.get("message") or "Unknown error"
+                if isinstance(data, dict) else "Unexpected response shape"
+            )
+            safe_msg = auth_safety.scrub_secrets(str(raw_msg), (raw_token, clean_token))
+            _log(f"API error for @{handle}: {safe_msg}")
+            if errors_out is not None:
+                errors_out.append((_error_severity(safe_msg), f"@{handle}: {safe_msg}"))
             break
 
         channel = data.get("channel") or {}
@@ -266,7 +307,12 @@ def search_telegram(
     """
     config = config or {}
 
-    if not token:
+    raw_token = token
+    clean_token, token_err = auth_safety.normalize_header_token(raw_token)
+    if token_err:
+        _log(f"ScrapeCreators error: {token_err}")
+        return {"items": [], "error": token_err}
+    if not clean_token:
         return {"items": [], "error": "No SCRAPECREATORS_API_KEY configured"}
 
     channels = _get_channel_sources(config)
@@ -286,13 +332,15 @@ def search_telegram(
     _log(f"Searching {len(channels)} channel(s) for '{topic}' (depth={depth}, max_pages={max_pages})")
 
     all_items: list[dict[str, Any]] = []
+    errors: list[tuple[int, str]] = []
     for handle in channels:
         channel_items = _fetch_channel_posts(
             handle,
-            token,
+            clean_token,
             from_date=from_date,
             topic=topic,
             max_pages=max_pages,
+            errors_out=errors,
         )
         all_items.extend(channel_items)
 
@@ -311,8 +359,18 @@ def search_telegram(
 
     items.sort(key=lambda x: x.get("relevance", 0), reverse=True)
 
+    primary_error = _select_primary_error(errors) if errors else None
+    if not items and primary_error:
+        return {"items": [], "error": primary_error}
+
+    result: dict[str, Any] = {"items": items}
+    if primary_error:
+        result["partial"] = True
+        result["error"] = primary_error
+        _log(f"PARTIAL — {len(errors)} channel failure(s); primary: {primary_error}")
+
     _log(f"Found {len(items)} Telegram posts")
-    return {"items": items}
+    return result
 
 
 def parse_telegram_response(response: dict[str, Any]) -> list[dict[str, Any]]:

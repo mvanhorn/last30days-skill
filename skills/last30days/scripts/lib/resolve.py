@@ -10,9 +10,11 @@ from __future__ import annotations
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
+from html.parser import HTMLParser
 from typing import Optional
+from urllib.parse import urlsplit
 
-from . import categories, dates, grounding, http, log
+from . import categories, dates, grounding, http, log, public_host
 
 MAX_SUBS = 10
 
@@ -73,14 +75,58 @@ def _has_backend(config: dict) -> bool:
     return grounding.configured_backend(config) is not None
 
 
+# Prose URL / mention path-segment terminator: allows next path segment (/),
+# query/fragment (?/#), whitespace, end-of-string, prose delimiters, or a
+# trailing sentence period NOT followed by another URL path character. Rejects
+# dotted segments like "github.com/team.example/project" or "@alice.bsky.social".
+_PROSE_SEG_END = r"(?=[/?#\s)\]\"'\u2019\u201d`,;:!]|$|\.(?=$|[\s)\]\"'\u2019\u201d`,;:!?]))"
+
+_REDDIT_URL_SUBREDDIT_RE = re.compile(
+    r"^(?:https?://)?(?:[A-Za-z0-9-]+\.)*reddit\.com/r/([A-Za-z0-9_]{2,21})(?=[/?#]|$)",
+    re.IGNORECASE,
+)
+_TEXT_SUBREDDIT_RE = re.compile(
+    r"(?:(?i:(?<![A-Za-z0-9./-])(?:https?://)?(?:[a-z0-9-]+\.)*reddit\.com/r/)"
+    rf"|(?:^|(?<=[\s(\[\"'`\u2018\u201c,]))/?r/)([A-Za-z0-9_]{{2,21}}){_PROSE_SEG_END}"
+)
+_X_MENTION_RE = re.compile(
+    rf"(?<![A-Za-z0-9_.+-])@([A-Za-z0-9_]{{1,15}}){_PROSE_SEG_END}"
+)
+_X_URL_HANDLE_RE = re.compile(
+    r"^(?:https?://)?(?:www\.|mobile\.)?(?:twitter|x)\.com/([A-Za-z0-9_]{1,15})(?:/|$|\?|#)",
+    re.IGNORECASE,
+)
+_GITHUB_URL_USER_RE = re.compile(
+    r"^(?:https?://)?(?:www\.)?github\.com/([A-Za-z0-9_-]{1,39})(?:/|$|\?|#)",
+    re.IGNORECASE,
+)
+_GITHUB_TEXT_USER_RE = re.compile(
+    rf"(?<![A-Za-z0-9./-])(?:https?://)?(?:www\.)?github\.com/([A-Za-z0-9_-]{{1,39}}){_PROSE_SEG_END}",
+    re.IGNORECASE,
+)
+_GITHUB_URL_REPO_RE = re.compile(
+    r"^(?:https?://)?(?:www\.)?github\.com/([A-Za-z0-9_-]{1,39}/[A-Za-z0-9_.-]*[A-Za-z0-9_-])(?:/|$|\?|#)",
+    re.IGNORECASE,
+)
+_GITHUB_TEXT_REPO_RE = re.compile(
+    rf"(?<![A-Za-z0-9./-])(?:https?://)?(?:www\.)?github\.com/([A-Za-z0-9_-]{{1,39}}/[A-Za-z0-9_.-]*[A-Za-z0-9_-]){_PROSE_SEG_END}",
+    re.IGNORECASE,
+)
+
+
 def _extract_subreddits(items: list[dict]) -> list[str]:
-    """Parse subreddit names from search result titles and snippets."""
-    pattern = re.compile(r"r/([A-Za-z0-9_]{2,21})")
+    """Parse subreddit names from search result titles, snippets, and Reddit URLs."""
     seen: set[str] = set()
     results: list[str] = []
     for item in items:
-        text = f"{item.get('title', '')} {item.get('snippet', '')} {item.get('url', '')}"
-        for match in pattern.findall(text):
+        text = f"{item.get('title') or ''} {item.get('snippet') or ''}"
+        url = str(item.get("url") or "").strip()
+        for match in _TEXT_SUBREDDIT_RE.findall(text):
+            lower = match.lower()
+            if lower not in seen:
+                seen.add(lower)
+                results.append(match)
+        for match in _REDDIT_URL_SUBREDDIT_RE.findall(url):
             lower = match.lower()
             if lower not in seen:
                 seen.add(lower)
@@ -90,16 +136,14 @@ def _extract_subreddits(items: list[dict]) -> list[str]:
 
 def _extract_x_handle(items: list[dict]) -> str:
     """Extract the most likely X/Twitter handle from search results."""
-    pattern = re.compile(r"@([A-Za-z0-9_]{1,15})")
-    url_pattern = re.compile(r"(?:twitter\.com|x\.com)/([A-Za-z0-9_]{1,15})(?:/|$|\?)")
     counts: dict[str, int] = {}
     for item in items:
-        text = f"{item.get('title', '')} {item.get('snippet', '')}"
-        url = item.get("url", "")
-        for match in pattern.findall(text):
+        text = f"{item.get('title') or ''} {item.get('snippet') or ''}"
+        url = str(item.get("url") or "").strip()
+        for match in _X_MENTION_RE.findall(text):
             lower = match.lower()
             counts[lower] = counts.get(lower, 0) + 1
-        for match in url_pattern.findall(url):
+        for match in _X_URL_HANDLE_RE.findall(url):
             lower = match.lower()
             # URL matches are stronger signals
             counts[lower] = counts.get(lower, 0) + 3
@@ -113,15 +157,14 @@ def _extract_x_handle(items: list[dict]) -> str:
 
 def _extract_github_user(items: list[dict]) -> str:
     """Extract GitHub username from search results."""
-    url_pattern = re.compile(r"github\.com/([A-Za-z0-9_-]{1,39})(?:/|$|\?)")
     counts: dict[str, int] = {}
     for item in items:
-        url = item.get("url", "")
-        text = f"{item.get('title', '')} {item.get('snippet', '')}"
-        for match in url_pattern.findall(url):
+        url = str(item.get("url") or "").strip()
+        text = f"{item.get('title') or ''} {item.get('snippet') or ''}"
+        for match in _GITHUB_URL_USER_RE.findall(url):
             lower = match.lower()
             counts[lower] = counts.get(lower, 0) + 3
-        for match in url_pattern.findall(text):
+        for match in _GITHUB_TEXT_USER_RE.findall(text):
             lower = match.lower()
             counts[lower] = counts.get(lower, 0) + 1
     # Filter out org/repo-like names and generic pages
@@ -144,6 +187,62 @@ _PLATFORM_HOSTS = {
 }
 
 
+_RESERVED_HOST_SUFFIXES = frozenset({"localhost", "local", "internal", "localdomain", "arpa"})
+_VALID_DOMAIN_RE = re.compile(
+    r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+"
+)
+_VALID_TLD_RE = re.compile(r"[a-z]{2,63}|xn--[a-z0-9-]{2,59}")
+_URL_TOKEN_RE = re.compile(r"https?://[^\s\"'<>)\]]+", re.IGNORECASE)
+
+
+def _public_site_host(site: str) -> str:
+    """Return a validated public DNS hostname from a domain or http(s) URL, or ''."""
+    if not isinstance(site, str):
+        return ""
+    text = site.strip()
+    if not text or "\\" in text or any(ch.isspace() or ord(ch) < 0x20 or ord(ch) == 0x7F for ch in text):
+        return ""
+    if "://" in text:
+        candidate = text
+    else:
+        if text.startswith("//"):
+            return ""
+        candidate = f"https://{text}"
+    try:
+        parsed = urlsplit(candidate)
+        port = parsed.port
+    except ValueError:
+        return ""
+    scheme = parsed.scheme.lower()
+    if scheme not in ("http", "https"):
+        return ""
+    if parsed.username is not None or parsed.password is not None:
+        return ""
+    if not parsed.netloc.isascii() or "%" in parsed.netloc:
+        return ""
+    if port is not None and not (
+        (scheme == "https" and port == 443) or (scheme == "http" and port == 80)
+    ):
+        return ""
+    host = (parsed.hostname or "").strip().lower().rstrip(".")
+    if not host or not _VALID_DOMAIN_RE.fullmatch(host):
+        return ""
+    if public_host._parse_ip_literal(host) is not None:
+        return ""
+    labels = host.split(".")
+    if host == "localhost" or labels[-1] in _RESERVED_HOST_SUFFIXES:
+        return ""
+    if not _VALID_TLD_RE.fullmatch(labels[-1]):
+        return ""
+    if not public_host.is_public_address_syntax(f"https://{host}/"):
+        return ""
+    return host
+
+
+def _official_site_redirect_guard(target: str) -> bool:
+    return bool(public_host.is_public_address_syntax(target) and _public_site_host(target))
+
+
 def _extract_official_domain(topic: str, items: list[dict]) -> str:
     """Extract the brand's own domain from search-result URLs.
 
@@ -156,24 +255,25 @@ def _extract_official_domain(topic: str, items: list[dict]) -> str:
     want = re.sub(r"[^a-z0-9]", "", topic.lower())
     if not want:
         return ""
-    host_pattern = re.compile(r"https?://([A-Za-z0-9.-]+)")
     for item in items:
         for source in [item.get("url", ""), f"{item.get('title', '')} {item.get('snippet', '')}"]:
-            for host in host_pattern.findall(source):
-                host = host.lower().strip(".")
+            for raw_url in _URL_TOKEN_RE.findall(source or ""):
+                host = _public_site_host(raw_url.rstrip(".,;:!?"))
+                if not host:
+                    continue
                 bare = host.removeprefix("www.")
                 if any(bare == p or bare.endswith("." + p) for p in _PLATFORM_HOSTS):
                     continue
                 labels = bare.split(".")
                 if len(labels) < 2:
                     continue
-                registrable = labels[-2] if labels[-2] not in ("co", "com") or len(labels) < 3 else labels[-3]
+                is_ccsld = labels[-2] in ("co", "com") and len(labels[-1]) == 2 and len(labels) >= 3
+                registrable = labels[-3] if is_ccsld else labels[-2]
                 if re.sub(r"[^a-z0-9]", "", registrable) == want:
                     return bare
     return ""
 
 
-_HREF = re.compile(r"""href\s*=\s*["']([^"']+)["']""", re.IGNORECASE)
 # Profile links only: x.com/{handle} with nothing after the handle but a slash,
 # query or fragment. /status/, /intent/ and /share links name someone else's
 # post or a share widget, never the site's own account.
@@ -199,19 +299,50 @@ _GITHUB_NON_OWNERS = {
 
 def _official_site_url(site: str) -> str:
     """Normalize a domain or URL to the site's homepage URL, or ""."""
-    text = (site or "").strip()
-    if not text:
-        return ""
-    host = re.sub(r"^[a-z][a-z0-9+.-]*://", "", text, flags=re.IGNORECASE)
-    host = re.split(r"[/?#]", host, maxsplit=1)[0].strip().lower()
-    if not re.fullmatch(r"[a-z0-9-]+(\.[a-z0-9-]+)+(:\d+)?", host):
-        return ""
-    return f"https://{host}/"
+    host = _public_site_host(site)
+    return f"https://{host}/" if host else ""
 
 
-_CHROME_REGION = re.compile(
-    r"<(header|footer|nav)\b[^>]*>(.*?)</\1\s*>", re.IGNORECASE | re.DOTALL,
-)
+_CHROME_TAGS = frozenset({"header", "footer", "nav"})
+_MAX_OFFICIAL_SITE_HTML_BYTES = 1 * 1024 * 1024
+
+
+class _SocialLinkParser(HTMLParser):
+    """Single-pass O(N) HTML link extractor tracking header/footer/nav depth."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._chrome_depths = {tag: 0 for tag in _CHROME_TAGS}
+        self._chrome_active = 0
+        self.hrefs: list[tuple[str, bool]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, Optional[str]]]) -> None:
+        tag_lower = tag.lower()
+        if tag_lower in _CHROME_TAGS:
+            self._chrome_depths[tag_lower] += 1
+            self._chrome_active += 1
+        in_chrome = self._chrome_active > 0
+        for name, value in attrs:
+            if name.lower() == "href" and value:
+                href = value.strip()
+                if href:
+                    self.hrefs.append((href, in_chrome))
+
+    def handle_endtag(self, tag: str) -> None:
+        tag_lower = tag.lower()
+        if tag_lower in _CHROME_TAGS and self._chrome_depths[tag_lower] > 0:
+            self._chrome_depths[tag_lower] -= 1
+            self._chrome_active -= 1
+
+
+def _extract_homepage_hrefs(html_text: str) -> list[tuple[str, bool]]:
+    """Extract (href, in_chrome) pairs from homepage HTML in a single linear pass."""
+    if not html_text:
+        return []
+    parser = _SocialLinkParser()
+    parser.feed(html_text[:_MAX_OFFICIAL_SITE_HTML_BYTES])
+    parser.close()
+    return parser.hrefs
 
 
 def _site_label(url: str) -> str:
@@ -260,24 +391,31 @@ def official_site_socials(site: str, *, timeout: int = 10) -> dict[str, str]:
     """
     result = {"x_handle": "", "github_user": ""}
     url = _official_site_url(site)
-    if not url:
+    if not url or not public_host.is_public_address_syntax(url):
         return result
-    html, url = http.text_on_either_host_form(
-        lambda page: http.get_text(page, timeout=timeout, retries=1, accept="text/html"), url,
-    )
+    try:
+        html, url = http.text_on_either_host_form(
+            lambda page: http.get_text(
+                page,
+                timeout=timeout,
+                retries=1,
+                accept="text/html",
+                public_only=True,
+                redirect_guard=_official_site_redirect_guard,
+                max_bytes=_MAX_OFFICIAL_SITE_HTML_BYTES,
+                decode_errors="replace",
+            ),
+            url,
+        )
+    except (UnicodeDecodeError, ValueError) as exc:
+        _log(f"Official site {url} could not be fetched: {exc}")
+        return result
     if not html:
         _log(f"Official site {url} could not be fetched")
         return result
-    chrome_hrefs = {
-        href.strip()
-        for match in _CHROME_REGION.finditer(html)
-        for href in _HREF.findall(match.group(2))
-    }
     x_links: list[tuple[str, bool]] = []
     github_links: list[tuple[str, bool]] = []
-    for href in _HREF.findall(html):
-        href = href.strip()
-        in_chrome = href in chrome_hrefs
+    for href, in_chrome in _extract_homepage_hrefs(html):
         x_match = _X_PROFILE_LINK.match(href)
         if x_match and x_match.group(1).lower() not in _X_NON_ACCOUNTS:
             x_links.append((x_match.group(1), in_chrome))
@@ -297,15 +435,14 @@ def official_site_socials(site: str, *, timeout: int = 10) -> dict[str, str]:
 
 def _extract_github_repos(items: list[dict]) -> list[str]:
     """Extract owner/repo strings from search results."""
-    repo_pattern = re.compile(r"github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)")
     skip_owners = {"topics", "explore", "settings", "orgs", "search", "features", "about", "pricing", "enterprise"}
     seen: set[str] = set()
     repos: list[str] = []
     for item in items:
-        url = item.get("url", "")
-        text = f"{item.get('title', '')} {item.get('snippet', '')}"
-        for source in [url, text]:
-            for match in repo_pattern.findall(source):
+        url = str(item.get("url") or "").strip()
+        text = f"{item.get('title') or ''} {item.get('snippet') or ''}"
+        for pattern, source in ((_GITHUB_URL_REPO_RE, url), (_GITHUB_TEXT_REPO_RE, text)):
+            for match in pattern.findall(source):
                 owner = match.split("/")[0].lower()
                 if owner in skip_owners:
                     continue

@@ -5,26 +5,180 @@ Supports two backends:
 2. reddit.com/.json (fallback) - free but 429-prone
 """
 
+import math
 import re
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlsplit
 
-from . import http, dates, snippet
+from . import http, dates, reddit_refs, snippet
+
+_SAFE_SLUG_SEG = re.compile(r"^[A-Za-z0-9_.~%-]{1,200}\Z")
+
+
+def _is_finite_int(value: int) -> bool:
+    try:
+        return math.isfinite(float(value))
+    except OverflowError:
+        return False
+
+
+def _coerce_int_or_none(value: Any) -> Optional[int]:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if _is_finite_int(value) else None
+    if isinstance(value, float):
+        return int(value) if math.isfinite(value) else None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            parsed = int(text)
+        except ValueError:
+            return None
+        return parsed if _is_finite_int(parsed) else None
+    return None
+
+
+def _coerce_int(value: Any, default: Optional[int] = 0) -> Optional[int]:
+    coerced = _coerce_int_or_none(value)
+    return default if coerced is None else coerced
+
+
+def _first_int(*values: Any, default: int = 0) -> int:
+    for v in values:
+        coerced = _coerce_int_or_none(v)
+        if coerced is not None:
+            return coerced
+    return default
+
+
+def _coerce_float(value: Any) -> Optional[float]:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            num = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return num if math.isfinite(num) else None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            num = float(text)
+        except (ValueError, OverflowError):
+            return None
+        return num if math.isfinite(num) else None
+    return None
+
+
+def _coerce_timestamp(value: Any) -> Optional[float | int]:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        if isinstance(value, float) and not math.isfinite(value):
+            return None
+        ts: float | int = value
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            ts = float(text)
+        except ValueError:
+            return None
+        if not math.isfinite(ts):
+            return None
+    else:
+        return None
+    try:
+        datetime.fromtimestamp(ts, tz=timezone.utc)
+    except (ValueError, TypeError, OSError, OverflowError):
+        return None
+    return ts
+
+
+def _safe_timestamp_to_date(value: Any) -> Optional[str]:
+    ts = _coerce_timestamp(value)
+    if ts is None:
+        return None
+    return dates.timestamp_to_date(ts)
+
+
+def _coerce_text(value: Any) -> str:
+    if value is None or isinstance(value, bool):
+        return ""
+    return value if isinstance(value, str) else str(value)
+
+
+def _coerce_author(value: Any, default: str = "[deleted]") -> str:
+    text = _coerce_text(value)
+    return text or default
 
 
 def extract_reddit_path(url: str) -> Optional[str]:
-    """Extract the path from a Reddit URL.
+    """Extract a validated thread path from a Reddit URL.
 
     Args:
-        url: Reddit URL
+        url: Reddit thread URL
 
     Returns:
         Path component or None
     """
-    parsed = urlparse(url)
-    if "reddit.com" not in parsed.netloc:
+    if not isinstance(url, str):
         return None
-    return parsed.path
+    text = url.strip()
+    if not text or "://" not in text:
+        return None
+    try:
+        parsed = urlsplit(text)
+        port = parsed.port
+    except (ValueError, AttributeError):
+        return None
+    if parsed.scheme not in ("http", "https"):
+        return None
+    if parsed.username is not None or parsed.password is not None or "@" in parsed.netloc:
+        return None
+    default_port = 443 if parsed.scheme == "https" else 80
+    if port is not None and port != default_port:
+        return None
+    host = (parsed.hostname or "").lower()
+    if host not in reddit_refs._HOSTS:
+        return None
+    ref = reddit_refs.canonical_thread_url(text)
+    if ref is None:
+        return None
+    raw_path = parsed.path or ""
+    if not raw_path.startswith("/") or raw_path.startswith("//") or "\\" in raw_path:
+        return None
+    if any(ord(ch) <= 0x20 or ord(ch) == 0x7F for ch in raw_path):
+        return None
+    segments = [seg for seg in raw_path.split("/") if seg]
+    if not segments:
+        return None
+    for seg in segments:
+        if not _SAFE_SLUG_SEG.match(seg):
+            return None
+        if seg in (".", ".."):
+            return None
+        decoded = unquote(seg)
+        decoded_twice = unquote(decoded)
+        for candidate in (decoded, decoded_twice):
+            if (
+                candidate in (".", "..")
+                or any(ch in candidate for ch in ("/", "\\", "?", "#"))
+                or any(ord(ch) <= 0x20 or ord(ch) == 0x7F for ch in candidate)
+            ):
+                return None
+    # Tail segments after /r/<sub>/comments/<id> or /comments/<id> are at most slug + comment_id.
+    tail_start = 4 if ref.subreddit else 2
+    if len(segments) < tail_start or len(segments) > tail_start + 2:
+        return None
+    return raw_path
 
 
 class RedditRateLimitError(Exception):
@@ -88,42 +242,58 @@ def parse_thread_data(data: Any) -> Dict[str, Any]:
     # First element is submission listing
     submission_listing = data[0]
     if isinstance(submission_listing, dict):
-        children = submission_listing.get("data", {}).get("children", [])
-        if children:
-            sub_data = children[0].get("data", {})
-            result["submission"] = {
-                "score": sub_data.get("score"),
-                "num_comments": sub_data.get("num_comments"),
-                "upvote_ratio": sub_data.get("upvote_ratio"),
-                "created_utc": sub_data.get("created_utc"),
-                "permalink": sub_data.get("permalink"),
-                "title": sub_data.get("title"),
-                "selftext": sub_data.get("selftext", "")[:500],  # Truncate
-            }
+        listing_data = submission_listing.get("data")
+        children = listing_data.get("children") if isinstance(listing_data, dict) else None
+        if isinstance(children, list) and children:
+            first_child = children[0]
+            sub_data = first_child.get("data") if isinstance(first_child, dict) else None
+            if isinstance(sub_data, dict):
+                raw_permalink = sub_data.get("permalink")
+                raw_title = sub_data.get("title")
+                title = (
+                    raw_title
+                    if isinstance(raw_title, str)
+                    else (None if raw_title is None or isinstance(raw_title, bool) else str(raw_title))
+                )
+                result["submission"] = {
+                    "score": _coerce_int(sub_data.get("score"), default=None),
+                    "num_comments": _coerce_int(sub_data.get("num_comments"), default=None),
+                    "upvote_ratio": _coerce_float(sub_data.get("upvote_ratio")),
+                    "created_utc": _coerce_timestamp(sub_data.get("created_utc")),
+                    "permalink": raw_permalink if isinstance(raw_permalink, str) else None,
+                    "title": title,
+                    "selftext": _coerce_text(sub_data.get("selftext"))[:500],  # Truncate
+                }
 
     # Second element is comments listing
     if len(data) >= 2:
         comments_listing = data[1]
         if isinstance(comments_listing, dict):
-            children = comments_listing.get("data", {}).get("children", [])
-            for child in children:
-                if child.get("kind") != "t1":  # t1 = comment
-                    continue
-                c_data = child.get("data", {})
-                if not c_data.get("body"):
-                    continue
+            comments_data = comments_listing.get("data")
+            children = comments_data.get("children") if isinstance(comments_data, dict) else None
+            if isinstance(children, list):
+                for child in children:
+                    if not isinstance(child, dict) or child.get("kind") != "t1":  # t1 = comment
+                        continue
+                    c_data = child.get("data")
+                    if not isinstance(c_data, dict):
+                        continue
+                    body = _coerce_text(c_data.get("body"))
+                    if not body:
+                        continue
 
-                comment = {
-                    "score": c_data.get("score", 0),
-                    "created_utc": c_data.get("created_utc"),
-                    "author": c_data.get("author", "[deleted]"),
-                    "body": c_data.get("body", "")[:600],  # Truncate; the stored excerpt is cut cleanly from this
-                    "permalink": c_data.get("permalink"),
-                }
-                # Reddit says whether the thread's own poster wrote this.
-                if isinstance(c_data.get("is_submitter"), bool):
-                    comment["is_submitter"] = c_data["is_submitter"]
-                result["comments"].append(comment)
+                    raw_permalink = c_data.get("permalink")
+                    comment = {
+                        "score": _coerce_int(c_data.get("score"), default=0),
+                        "created_utc": _coerce_timestamp(c_data.get("created_utc")),
+                        "author": _coerce_author(c_data.get("author")),
+                        "body": body[:600],  # Truncate; the stored excerpt is cut cleanly from this
+                        "permalink": raw_permalink if isinstance(raw_permalink, str) else None,
+                    }
+                    # Reddit says whether the thread's own poster wrote this.
+                    if isinstance(c_data.get("is_submitter"), bool):
+                        comment["is_submitter"] = c_data["is_submitter"]
+                    result["comments"].append(comment)
 
     return result
 
@@ -132,14 +302,19 @@ def stored_top_comments(comments: List[Dict]) -> List[Dict[str, Any]]:
     """Parsed comments in the shape an item stores them. ``is_uploader`` is
     Reddit's ``is_submitter`` (the thread's own poster wrote the comment), and
     is left out when the thread data did not say."""
+    if not isinstance(comments, list):
+        return []
     stored = []
     for c in comments:
-        permalink = c.get("permalink", "")
+        if not isinstance(c, dict):
+            continue
+        raw_permalink = c.get("permalink")
+        permalink = raw_permalink if isinstance(raw_permalink, str) else ""
         entry = {
-            "score": c.get("score", 0),
-            "date": dates.timestamp_to_date(c.get("created_utc")),
-            "author": c.get("author", ""),
-            "excerpt": snippet.cut_quote(c.get("body", "")),
+            "score": _coerce_int(c.get("score"), default=0),
+            "date": _safe_timestamp_to_date(c.get("created_utc")),
+            "author": _coerce_text(c.get("author")),
+            "excerpt": snippet.cut_quote(_coerce_text(c.get("body"))),
             "url": f"https://reddit.com{permalink}" if permalink else "",
         }
         if isinstance(c.get("is_submitter"), bool):
@@ -158,11 +333,21 @@ def get_top_comments(comments: List[Dict], limit: int = 10) -> List[Dict[str, An
     Returns:
         Top comments sorted by score
     """
-    # Filter out deleted/removed
-    valid = [c for c in comments if c.get("author") not in ("[deleted]", "[removed]")]
+    if not isinstance(comments, list):
+        return []
+
+    # Filter out non-dicts and deleted/removed
+    valid = [
+        c for c in comments
+        if isinstance(c, dict) and c.get("author") not in ("[deleted]", "[removed]")
+    ]
 
     # Sort by score descending
-    sorted_comments = sorted(valid, key=lambda c: c.get("score", 0), reverse=True)
+    sorted_comments = sorted(
+        valid,
+        key=lambda c: _coerce_int(c.get("score"), default=0),
+        reverse=True,
+    )
 
     return sorted_comments[:limit]
 
@@ -182,10 +367,14 @@ def extract_comment_insights(comments: List[Dict], limit: int = 7) -> List[str]:
     Returns:
         List of insight strings
     """
+    if not isinstance(comments, list):
+        return []
     insights = []
 
     for comment in comments[:limit * 2]:  # Look at more comments than we need
-        body = comment.get("body", "").strip()
+        if not isinstance(comment, dict):
+            continue
+        body = _coerce_text(comment.get("body")).strip()
         if not body or len(body) < 30:
             continue
 
@@ -259,7 +448,7 @@ def enrich_reddit_item(
         # Update date from actual data
         created_utc = submission.get("created_utc")
         if created_utc:
-            item["date"] = dates.timestamp_to_date(created_utc)
+            item["date"] = _safe_timestamp_to_date(created_utc)
 
     # Get top comments
     top_comments = get_top_comments(comments)
@@ -295,30 +484,35 @@ def enrich_reddit_item_sc(
         return item
 
     raw_comments = reddit_mod.fetch_post_comments(url, token)
-    if not raw_comments:
+    if not isinstance(raw_comments, list) or not raw_comments:
+        return item
+
+    dict_comments = [c for c in raw_comments if isinstance(c, dict)]
+    if not dict_comments:
         return item
 
     top_comments = []
-    for c in raw_comments[:10]:
-        body = c.get("body", "")
+    for c in dict_comments[:10]:
+        body = _coerce_text(c.get("body"))
         if not body or body in ("[deleted]", "[removed]"):
             continue
 
-        score = c.get("ups") or c.get("score", 0)
-        author = c.get("author", "[deleted]")
-        permalink = c.get("permalink", "")
+        score = _first_int(c.get("ups"), c.get("score"), default=0)
+        author = _coerce_author(c.get("author"))
+        raw_permalink = c.get("permalink")
+        permalink = raw_permalink if isinstance(raw_permalink, str) else ""
         comment_url = f"https://reddit.com{permalink}" if permalink else ""
 
         top_comments.append({
             "score": score,
-            "date": dates.timestamp_to_date(c.get("created_utc")) if c.get("created_utc") else None,
+            "date": _safe_timestamp_to_date(c.get("created_utc")) if c.get("created_utc") else None,
             "author": author,
             "body": body[:300],
             "excerpt": snippet.cut_quote(body),
             "url": comment_url,
         })
 
-    top_comments.sort(key=lambda c: c.get("score", 0), reverse=True)
+    top_comments.sort(key=lambda c: _coerce_int(c.get("score"), default=0), reverse=True)
 
     item["top_comments"] = []
     for c in top_comments:

@@ -12,6 +12,7 @@ Priority: xAI API > Bird/GraphQL > xurl > web-only fallback
 """
 
 import json
+import os
 import re
 import shutil
 import stat
@@ -20,7 +21,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import health, http, log, usage
+from . import health, http, log, private_files, usage
 from . import x_api
 # One X API v2 depth table and one parser: xurl_x re-imports both.
 from .x_api import DEPTH_CONFIG
@@ -71,11 +72,13 @@ def _is_available_uncached() -> bool:
             ["xurl", "auth", "status"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=10,
         )
         return (
             result.returncode == 0
-            and _BEARER_CONFIGURED_RE.search(result.stdout) is not None
+            and _BEARER_CONFIGURED_RE.search(result.stdout or "") is not None
         )
     except (OSError, subprocess.TimeoutExpired):
         # OSError covers FileNotFoundError (no xurl on PATH) and
@@ -101,14 +104,107 @@ AUTH_OK = "ok"            # token store present with stored credentials
 AUTH_MISSING = "missing"  # no token store, or no credentials stored in it
 AUTH_ERROR = "error"      # token store exists but could not be read
 
-# Substrings a populated store carries in both the YAML and legacy JSON
-# formats (per-user oauth2 token blocks, or an app-only bearer token).
+# Substrings a populated store carries in both YAML and legacy JSON formats.
+# Runtime search pins ``--auth app`` (app-only bearer), so only a non-empty
+# ``bearer_token`` satisfies AUTH_OK; OAuth1/OAuth2 user tokens alone do not.
 _TOKEN_STORE_MARKERS = (
-    "access_token",
     "bearer_token",
+)
+_OAUTH_USER_TOKEN_MARKERS = (
+    "access_token",
     "oauth2_tokens",
     "oauth1_tokens",
 )
+_YAML_EMPTY_VALUES = frozenset({"", "''", '""', "null", "~", "{}", "[]"})
+_BEARER_VALUE_KEYS = frozenset({"bearer", "token", "value"})
+_BEARER_KEY_LINE_RE = re.compile(r"^(\s*)['\"]?bearer_token['\"]?\s*:\s*(.*)$")
+_MAX_TOKEN_STORE_BYTES = 65536
+
+
+def _json_has_bearer_token(obj: Any) -> bool:
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            if key == "bearer_token":
+                if isinstance(value, str) and value.strip():
+                    return True
+                if isinstance(value, dict) and any(
+                    isinstance(subkey, str)
+                    and subkey.strip().lower() in _BEARER_VALUE_KEYS
+                    and isinstance(subval, str)
+                    and subval.strip()
+                    for subkey, subval in value.items()
+                ):
+                    return True
+            elif _json_has_bearer_token(value):
+                return True
+    elif isinstance(obj, list):
+        return any(_json_has_bearer_token(item) for item in obj)
+    return False
+
+
+def _content_has_bearer_token(content: str) -> bool:
+    stripped = content.lstrip()
+    if stripped.startswith(("{", "[")):
+        try:
+            return _json_has_bearer_token(json.loads(content))
+        except (ValueError, TypeError):
+            pass
+    lines = content.splitlines()
+    for idx, line in enumerate(lines):
+        if line.lstrip().startswith("#"):
+            continue
+        match = _BEARER_KEY_LINE_RE.match(line)
+        if not match:
+            continue
+        indent = len(match.group(1))
+        rest = match.group(2).split("#", 1)[0].strip()
+        if rest.lower() not in _YAML_EMPTY_VALUES:
+            return True
+        if rest:
+            continue
+        for child in lines[idx + 1 :]:
+            child_stripped = child.strip()
+            if not child_stripped or child_stripped.startswith("#"):
+                continue
+            child_indent = len(child) - len(child.lstrip())
+            if child_indent <= indent:
+                break
+            if ":" in child_stripped:
+                child_key, child_raw = child_stripped.split(":", 1)
+                if child_key.strip().strip("'\"").lower() not in _BEARER_VALUE_KEYS:
+                    continue
+                child_val = child_raw.split("#", 1)[0].strip()
+                if child_val.lower() not in _YAML_EMPTY_VALUES:
+                    return True
+    return False
+
+
+def _read_token_store_text(path: Any) -> str:
+    """Read an on-disk xurl token store safely (no symlink follow, non-blocking, bounded)."""
+    if not isinstance(path, (str, os.PathLike)):
+        return path.read_text(encoding="utf-8", errors="replace")[:_MAX_TOKEN_STORE_BYTES]
+    target = Path(path)
+    if os.name == "posix":
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+        )
+        fd = os.open(target, flags)
+        try:
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode):
+                raise OSError(f"Expected a regular token store file: {target}")
+            with os.fdopen(fd, "r", encoding="utf-8", errors="replace") as stream:
+                fd = -1
+                return stream.read(_MAX_TOKEN_STORE_BYTES)
+        finally:
+            if fd != -1:
+                os.close(fd)
+    private_files._reject_symlink_or_nonregular(target)
+    with target.open("r", encoding="utf-8", errors="replace") as stream:
+        return stream.read(_MAX_TOKEN_STORE_BYTES)
 
 
 def _is_file(path: Path) -> bool:
@@ -165,10 +261,10 @@ def stored_auth_status() -> Tuple[str, str]:
     """Local-only evidence of xurl authentication: ``(status, detail)``.
 
     Reads only the on-disk token store — never spawns xurl, never touches
-    the network. ``status`` is AUTH_OK (store holds credentials),
-    AUTH_MISSING (no store / empty store / no credential markers), or
-    AUTH_ERROR (store exists but cannot be read — surfaced as a typed
-    error, not as "unconfigured").
+    the network. ``status`` is AUTH_OK (store holds an app-only bearer token),
+    AUTH_MISSING (no store / empty store / OAuth user tokens only without
+    ``bearer_token``), or AUTH_ERROR (store exists but cannot be read —
+    surfaced as a typed error, not as "unconfigured").
     """
     # Resolve the actual credential file across layouts. Current xurl keeps
     # ~/.xurl/auth.yml inside the ~/.xurl directory; legacy installs wrote a
@@ -206,14 +302,19 @@ def stored_auth_status() -> Tuple[str, str]:
             f"token store {base} unreadable: {type(exc).__name__}: {exc}",
         )
     try:
-        content = path.read_text(encoding="utf-8", errors="replace")
+        content = _read_token_store_text(path)
     except OSError as exc:
         return (
             AUTH_ERROR,
             f"token store {path} unreadable: {type(exc).__name__}: {exc}",
         )
-    if any(marker in content for marker in _TOKEN_STORE_MARKERS):
-        return AUTH_OK, f"stored OAuth credentials found in {path}"
+    if _content_has_bearer_token(content):
+        return AUTH_OK, f"stored app-only bearer credentials found in {path}"
+    if any(marker in content for marker in _OAUTH_USER_TOKEN_MARKERS):
+        return (
+            AUTH_MISSING,
+            f"token store {path} has OAuth user tokens only; search requires app-only bearer auth",
+        )
     return AUTH_MISSING, f"token store {path} has no stored credentials"
 
 
@@ -318,6 +419,8 @@ def search_x(
             ["xurl", "search", search_query, "-n", str(max_results), "--auth", "app"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
         )
 

@@ -117,7 +117,7 @@ class _Response:
         self._body = json.dumps(payload).encode("utf-8")
         self.headers = {}
 
-    def read(self):
+    def read(self, size=-1):
         return self._body
 
     def geturl(self):

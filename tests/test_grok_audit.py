@@ -43,9 +43,34 @@ if behavior == "external":
     except Exception:
         pass
 
+def _auth_token():
+    # Match real CLI precedence: XAI_API_KEY wins over auth.json when set.
+    key = os.environ.get("XAI_API_KEY", "")
+    if key:
+        return key
+    auth_path = os.path.join(os.environ["HOME"], ".grok", "auth.json")
+    if os.path.isfile(auth_path):
+        data = json.load(open(auth_path))
+        for entry in data.values():
+            if isinstance(entry, dict) and entry.get("key"):
+                return entry["key"]
+    return ""
+
+if behavior == "signed_catalog" and not os.environ.get("XAI_API_KEY"):
+    # A custom model endpoint requires an API key; the signed-in client must
+    # instead discover models through the session-authenticated proxy.
+    if os.environ.get("GROK_MODELS_BASE_URL") or os.environ.get("GROK_MODELS_LIST_URL"):
+        sys.exit(1)
+    request = urllib.request.Request(os.environ["GROK_CLI_CHAT_PROXY_BASE_URL"] + "/models", headers={{"authorization": "Bearer " + _auth_token()}})
+    urllib.request.urlopen(request, timeout=10).read()
+
 def post(body):
+    headers = {{"content-type": "application/json"}}
+    token = _auth_token()
+    if token:
+        headers["authorization"] = "Bearer " + token
     req = urllib.request.Request(base + "/responses", data=json.dumps(body).encode(),
-                                 headers={{"content-type": "application/json"}})
+                                 headers=headers)
     events = urllib.request.urlopen(req, timeout=10).read().decode()
     for line in events.splitlines():
         if line.startswith("data: ") and '"response.completed"' in line:
@@ -108,6 +133,23 @@ def _audit(binary, seconds=60):
 
 def test_build_that_refuses_forced_calls_passes(tmp_path):
     assert _audit(_fake_grok(tmp_path, "obey")) == grok_audit.Verdict(grok_audit.PASS)
+
+
+def test_signed_in_catalog_uses_proxy_without_a_custom_model_endpoint(tmp_path):
+    assert _audit(_fake_grok(tmp_path, "signed_catalog")) == grok_audit.Verdict(grok_audit.PASS)
+
+
+def test_signed_in_catalog_fails_closed_without_the_session_proxy(monkeypatch, tmp_path):
+    original_env = grok_audit._audit_env
+
+    def wrong_proxy(home, fixture, signed_in=False):
+        result = original_env(home, fixture, signed_in=signed_in)
+        if signed_in:
+            result["GROK_CLI_CHAT_PROXY_BASE_URL"] = "http://127.0.0.1:1/v1"
+        return result
+
+    monkeypatch.setattr(grok_audit, "_audit_env", wrong_proxy)
+    assert _audit(_fake_grok(tmp_path, "signed_catalog")).status == grok_audit.INCONCLUSIVE
 
 
 @pytest.mark.parametrize("mode, check", [
@@ -308,6 +350,7 @@ def test_doctor_reports_cached_verdict_without_a_subprocess(monkeypatch, tmp_pat
         raise AssertionError("doctor's grok probe must not spawn a process")
 
     monkeypatch.setattr(sp, "run", no_subprocess)
+    monkeypatch.setattr(grok_audit.subproc, "run_with_timeout", no_subprocess)
     finding = _probe(monkeypatch, binary)
     assert finding.status == status
     assert text in finding.detail
@@ -379,3 +422,67 @@ def test_unwritable_decompression_target_is_unresolved_not_raised(monkeypatch, t
     platform_bin.mkdir(parents=True)
     (platform_bin / "grok.br").write_bytes(b"compressed")
     assert grok_audit.resolve_native(str(launcher)) is None
+
+
+def test_audit_child_registers_with_subproc_cleanup(tmp_path):
+    """Audit subprocesses run via subproc.run_with_timeout so engine SIGTERM
+    (subproc.cleanup_children) terminates an in-flight audit child too."""
+    import threading
+    from lib import subproc
+
+    pid_file = tmp_path / "audit.pid"
+    fake_grok = tmp_path / "grok"
+    fake_grok.write_text(
+        f"#!/bin/sh\n"
+        f"printf '%s' \"$$\" > \"{pid_file}\"\n"
+        f"sleep 30\n",
+        encoding="utf-8",
+    )
+    fake_grok.chmod(0o755)
+
+    worker = threading.Thread(
+        target=lambda: grok_audit._run_child(str(fake_grok), permissive=False, deadline=time.monotonic() + 30),
+        daemon=True,
+    )
+    worker.start()
+
+    try:
+        deadline = time.monotonic() + 5.0
+        child_pid = 0
+        while time.monotonic() < deadline:
+            if pid_file.exists():
+                raw = pid_file.read_text(encoding="utf-8").strip()
+                if raw.isdigit():
+                    child_pid = int(raw)
+                    break
+            time.sleep(0.02)
+        assert child_pid > 0, "fake grok audit child did not start"
+
+        with subproc._child_pids_lock:
+            registered = child_pid in subproc._child_pids
+        assert registered, f"grok audit pid {child_pid} was not registered with subproc"
+
+        subproc.cleanup_children(grace=0.5)
+        worker.join(timeout=5.0)
+        assert not worker.is_alive(), "grok_audit._run_child did not return after cleanup_children"
+
+        kill_deadline = time.monotonic() + 2.0
+        alive = True
+        while time.monotonic() < kill_deadline:
+            try:
+                os.kill(child_pid, 0)
+            except ProcessLookupError:
+                alive = False
+                break
+            time.sleep(0.02)
+        assert not alive, f"grok audit pid {child_pid} survived subproc.cleanup_children()"
+    finally:
+        with subproc._child_pids_lock:
+            subproc._shutting_down = False
+        if pid_file.exists():
+            raw = pid_file.read_text(encoding="utf-8").strip()
+            if raw.isdigit():
+                try:
+                    os.kill(int(raw), 9)
+                except OSError:
+                    pass

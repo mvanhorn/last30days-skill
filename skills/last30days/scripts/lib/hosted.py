@@ -36,6 +36,7 @@ import os
 import re
 import sys
 import time
+from urllib.parse import urlsplit, urlunsplit
 
 from . import env, http, providers, usage
 from .log import source_log
@@ -56,28 +57,74 @@ NARRATE_PREFIX = "[narrate] step="
 TERMINAL_STATUSES = {"complete", "error"}
 
 
+_URL_USERINFO_RE = re.compile(r"(https?://)[^\s/?#]+@", re.IGNORECASE)
+
+
 def _err(msg: str) -> None:
     source_log("hosted", msg, tty_only=False)
+
+
+def _scrub_url_userinfo(url: str) -> str:
+    """Return ``url`` with any embedded authority userinfo removed."""
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return _URL_USERINFO_RE.sub(r"\1", url)
+    if parts.username is None and parts.password is None and "@" not in parts.netloc:
+        return url
+    hostport = parts.netloc.rsplit("@", 1)[-1]
+    return urlunsplit((parts.scheme, hostport, parts.path, parts.query, parts.fragment))
+
+
+def _scrub_error_text(text: str) -> str:
+    """Remove embedded URL credentials and the configured API key from log text."""
+    scrubbed = _URL_USERINFO_RE.sub(r"\1", text)
+    raw_key = env.read_secret_env("LAST30DAYS_API_KEY") or ""
+    for candidate in {raw_key, raw_key.strip()}:
+        if candidate and candidate.strip():
+            scrubbed = scrubbed.replace(candidate, "[REDACTED]")
+    return scrubbed
 
 
 def _api_base() -> str:
     # Endpoint comes only from the environment - no built-in default. Hosted
     # mode is gated on this being set (see last30days.py), so by the time this
     # is called it is populated; an empty value means "not configured".
-    base = (os.environ.get("LAST30DAYS_API_BASE") or "").rstrip("/")
-    if not providers.allowed_base_url_override(base):
+    raw = (os.environ.get("LAST30DAYS_API_BASE") or "").strip()
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F or ch.isspace() for ch in raw):
+        raise ValueError(
+            "LAST30DAYS_API_BASE must not contain control characters or whitespace."
+        )
+    if not providers.allowed_base_url_override(raw):
         raise ValueError(
             "LAST30DAYS_API_BASE must use https:// "
             "(http:// is allowed only for loopback hosts)."
         )
-    return base
+    parts = urlsplit(raw)
+    if "\\" in parts.netloc:
+        raise ValueError(
+            "LAST30DAYS_API_BASE must not contain backslashes in the authority."
+        )
+    try:
+        _ = parts.port
+    except ValueError:
+        raise ValueError("LAST30DAYS_API_BASE contains an invalid port.") from None
+    if parts.username is not None or parts.password is not None or "@" in parts.netloc:
+        raise ValueError(
+            "LAST30DAYS_API_BASE must not include embedded credentials (userinfo)."
+        )
+    if parts.query or parts.fragment or "?" in raw or "#" in raw:
+        raise ValueError(
+            "LAST30DAYS_API_BASE must not include a query string or fragment."
+        )
+    return raw.rstrip("/")
 
 
 def _billing_url() -> str:
     """Derive a billing link from the configured base, so no URL is hardcoded.
     Convention: the base is the API-version root (e.g. ends in /api/v1); drop
     that segment and point at the account's billing page."""
-    base = _api_base()
+    base = _scrub_url_userinfo(_api_base())
     root = re.sub(r"/api/v\d+$", "", base)
     return f"{root}/dashboard/billing"
 
@@ -85,34 +132,60 @@ def _billing_url() -> str:
 def _auth_headers() -> dict[str, str]:
     # Key is read at call time and placed only in the request header;
     # it must never be interpolated into any log or output line.
-    key = env.read_secret_env("LAST30DAYS_API_KEY") or ""
+    raw = env.read_secret_env("LAST30DAYS_API_KEY") or ""
+    key = raw.strip()
+    if not key:
+        raise ValueError("LAST30DAYS_API_KEY is empty or missing.")
+    if any(ord(ch) < 0x20 or ord(ch) >= 0x7F for ch in key):
+        raise ValueError(
+            "LAST30DAYS_API_KEY contains invalid characters for an HTTP header."
+        )
     return {"Authorization": f"Bearer {key}"}
+
+
+def _same_origin_redirect_guard(base: str):
+    expected_origin = http._request_origin(base)
+    return lambda newurl: http._request_origin(newurl) == expected_origin
 
 
 def submit(query: str, depth: str, register: str = "default", clarify: dict | None = None) -> dict:
     """POST the search. retries=1: a blind POST retry could double-submit."""
+    base = _api_base()
+    headers = _auth_headers()
     payload = {"query": query, "depth": depth}
     if register != "default":
         payload["register"] = register
     if clarify:
         payload["clarify"] = clarify
     usage.begin("hosted")
-    return http.post(
-        f"{_api_base()}/search",
-        json_data=payload,
-        headers=_auth_headers(),
-        retries=1,
-    )
+    try:
+        return http.post(
+            f"{base}/search",
+            json_data=payload,
+            headers=headers,
+            retries=1,
+            bypass_proxy=providers.is_loopback_http_endpoint(base),
+            redirect_guard=_same_origin_redirect_guard(base),
+        )
+    except ValueError:
+        raise ValueError("Invalid hosted API request header or URL.") from None
 
 
 def poll(search_id: str) -> dict:
     """GET the search row once. Callers own the retry loop (GET is idempotent)."""
-    return http.get(
-        f"{_api_base()}/search",
-        headers=_auth_headers(),
-        params={"id": search_id},
-        retries=1,
-    )
+    base = _api_base()
+    headers = _auth_headers()
+    try:
+        return http.get(
+            f"{base}/search",
+            headers=headers,
+            params={"id": search_id},
+            retries=1,
+            bypass_proxy=providers.is_loopback_http_endpoint(base),
+            redirect_guard=_same_origin_redirect_guard(base),
+        )
+    except ValueError:
+        raise ValueError("Invalid hosted API request header or URL.") from None
 
 
 def _parse_error_body(exc: http.HTTPError) -> dict:
@@ -135,22 +208,24 @@ def _handle_http_error(exc: http.HTTPError) -> int:
         )
         return 1
     if exc.status_code == 402:
-        _err(f"API: {body.get('error') or 'insufficient credits.'}")
+        _err(f"API: {_scrub_error_text(str(body.get('error') or 'insufficient credits.'))}")
         if body.get("balance") is not None or body.get("needed") is not None:
             _err(
-                f"Balance: {body.get('balance')} credits. "
-                f"Needed for this search: {body.get('needed')} credits."
+                _scrub_error_text(
+                    f"Balance: {body.get('balance')} credits. "
+                    f"Needed for this search: {body.get('needed')} credits."
+                )
             )
         _err(f"Add credits at {_billing_url()}")
         return 1
     if exc.status_code == 429:
         _err(
             f"API rate limit hit: "
-            f"{body.get('error') or 'too many requests.'} "
+            f"{_scrub_error_text(str(body.get('error') or 'too many requests.'))} "
             "Wait a minute and re-run."
         )
         return 1
-    _err(f"API request failed: {exc}")
+    _err(f"API request failed: {_scrub_error_text(str(exc))}")
     return 1
 
 
@@ -251,6 +326,9 @@ def _poll_with_retry(search_id: str) -> dict | None:
     for attempt in range(POLL_NETWORK_RETRIES):
         try:
             return poll(search_id)
+        except ValueError as exc:
+            _err(_scrub_error_text(str(exc)))
+            return None
         except http.HTTPError as exc:
             if exc.status_code is not None and 400 <= exc.status_code < 500 and exc.status_code != 429:
                 _handle_http_error(exc)
@@ -261,7 +339,7 @@ def _poll_with_retry(search_id: str) -> dict | None:
                 time.sleep(POLL_INITIAL_DELAY)
     _err(
         f"API unreachable while polling search {search_id} "
-        f"after {POLL_NETWORK_RETRIES} attempts: {last_error}"
+        f"after {POLL_NETWORK_RETRIES} attempts: {_scrub_error_text(str(last_error))}"
     )
     return None
 
@@ -350,11 +428,14 @@ def run_hosted(
     try:
         base = _api_base()
     except ValueError as exc:
-        _err(str(exc))
+        _err(_scrub_error_text(str(exc)))
         return 1
-    _err(f"Running via last30days API ({base}), depth={depth}")
+    _err(f"Running via last30days API ({_scrub_url_userinfo(base)}), depth={depth}")
     try:
         resp = submit(topic, depth, register=register, clarify=clarify)
+    except ValueError as exc:
+        _err(_scrub_error_text(str(exc)))
+        return 1
     except http.HTTPError as exc:
         return _handle_http_error(exc)
 
@@ -363,7 +444,7 @@ def run_hosted(
 
     search_id = resp.get("search_id")
     if not search_id:
-        _err(f"Unexpected API response (no search_id): {json.dumps(resp)[:200]}")
+        _err(f"Unexpected API response (no search_id): {_scrub_error_text(json.dumps(resp))[:200]}")
         return 1
     _err(f"Search submitted (id: {search_id}). Polling for results...")
 
@@ -399,7 +480,7 @@ def run_hosted(
         if status in TERMINAL_STATUSES:
             _note_engine_version(row)
         if status == "error":
-            _err(f"Search failed: {_failure_reason(row)}")
+            _err(f"Search failed: {_scrub_error_text(_failure_reason(row))}")
             return 1
         if status == "complete":
             _err(f"Search complete in {int(elapsed)}s.")

@@ -7,6 +7,7 @@ fabrication as it is parsing.
 """
 
 import json
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -195,7 +196,7 @@ def test_invocation_omits_json_schema_and_tools(monkeypatch):
         seen["kwargs"] = kwargs
         return subprocess.CompletedProcess(cmd, 0, _block("2087568620465607078"), "")
 
-    monkeypatch.setattr(grok_x.subprocess, "run", fake_run)
+    monkeypatch.setattr(grok_x.subproc, "run_with_timeout", fake_run)
     monkeypatch.setattr(grok_x, "binary_path", lambda: "/usr/bin/grok")
     grok_x.search_x("steipete", *WINDOW)
     assert "--json-schema" not in seen["cmd"]
@@ -220,7 +221,7 @@ def test_subprocess_runs_in_an_isolated_empty_directory(monkeypatch):
         seen["entries"] = os.listdir(kwargs.get("cwd")) if seen["existed"] else None
         return subprocess.CompletedProcess(cmd, 0, _block("2087568620465607078"), "")
 
-    monkeypatch.setattr(grok_x.subprocess, "run", fake_run)
+    monkeypatch.setattr(grok_x.subproc, "run_with_timeout", fake_run)
     monkeypatch.setattr(grok_x, "binary_path", lambda: "/usr/bin/grok")
     grok_x.search_x("steipete", *WINDOW)
     assert seen["cwd"] and seen["cwd"] != os.getcwd()
@@ -237,7 +238,7 @@ def test_subprocess_environment_is_minimal(monkeypatch):
         seen["env"] = kwargs.get("env")
         return subprocess.CompletedProcess(cmd, 0, _block("2087568620465607078"), "")
 
-    monkeypatch.setattr(grok_x.subprocess, "run", fake_run)
+    monkeypatch.setattr(grok_x.subproc, "run_with_timeout", fake_run)
     monkeypatch.setattr(grok_x, "binary_path", lambda: "/usr/bin/grok")
     grok_x.search_x("steipete", *WINDOW)
     assert "XAI_API_KEY" not in seen["env"]
@@ -255,7 +256,7 @@ def test_resolved_binary_path_is_used_not_bare_name(monkeypatch):
         seen["cmd"] = cmd
         return subprocess.CompletedProcess(cmd, 0, _block("2087568620465607078"), "")
 
-    monkeypatch.setattr(grok_x.subprocess, "run", fake_run)
+    monkeypatch.setattr(grok_x.subproc, "run_with_timeout", fake_run)
     grok_x.search_x("steipete", *WINDOW)
     assert seen["cmd"][0] == "/opt/custom/grok"
 
@@ -268,11 +269,20 @@ def test_subprocess_decodes_stdout_as_utf8_not_locale(monkeypatch):
     seen = {}
     monkeypatch.setattr(grok_x, "binary_path", lambda: "/usr/bin/grok")
 
-    def fake_run(cmd, **kwargs):
-        seen["kwargs"] = kwargs
-        return subprocess.CompletedProcess(cmd, 0, _block("2087568620465607078"), "")
+    class FakePopen:
+        def __init__(self, cmd, **kwargs):
+            seen["kwargs"] = kwargs
+            self.pid = 999999
+            self.returncode = 0
+            self.stdin = self.stdout = self.stderr = None
 
-    monkeypatch.setattr(grok_x.subprocess, "run", fake_run)
+        def communicate(self, input=None, timeout=None):
+            return _block("2087568620465607078"), ""
+
+        def poll(self):
+            return self.returncode
+
+    monkeypatch.setattr(grok_x.subproc.subprocess, "Popen", FakePopen)
     grok_x.search_x("steipete", *WINDOW)
     assert seen["kwargs"].get("encoding") == "utf-8"
     assert seen["kwargs"].get("errors") == "replace"
@@ -288,7 +298,7 @@ def test_timeout_returns_error_not_raises(monkeypatch):
     def fake_run(cmd, **kwargs):
         raise subprocess.TimeoutExpired(cmd, 1)
 
-    monkeypatch.setattr(grok_x.subprocess, "run", fake_run)
+    monkeypatch.setattr(grok_x.subproc, "run_with_timeout", fake_run)
     monkeypatch.setattr(grok_x, "binary_path", lambda: "/usr/bin/grok")
     result = grok_x.search_x("steipete", *WINDOW)
     assert result["items"] == [] and "timed out" in result["error"]
@@ -311,7 +321,7 @@ def test_non_execution_is_retried(monkeypatch):
         )
         return subprocess.CompletedProcess(cmd, 0, body, "")
 
-    monkeypatch.setattr(grok_x.subprocess, "run", fake_run)
+    monkeypatch.setattr(grok_x.subproc, "run_with_timeout", fake_run)
     monkeypatch.setattr(grok_x, "binary_path", lambda: "/usr/bin/grok")
     items, error, auth_revoked = grok_x._run_query("steipete", *WINDOW)
     assert calls["n"] == 2, "a provenance rejection must be retried once"
@@ -327,6 +337,7 @@ def test_stored_auth_status_makes_no_subprocess_or_network(monkeypatch):
         raise AssertionError("doctor path must not spawn a process or hit the network")
 
     monkeypatch.setattr(grok_x.subprocess, "run", boom)
+    monkeypatch.setattr(grok_x.subproc, "run_with_timeout", boom)
     monkeypatch.setattr(grok_x.subprocess, "Popen", boom)
     grok_x.stored_auth_status()
 
@@ -481,7 +492,7 @@ def test_search_x_returns_auth_revoked_on_session_failure(monkeypatch):
     """search_x returns auth_revoked when the session is revoked mid-run."""
     monkeypatch.setattr(grok_x, "binary_path", lambda: "/usr/bin/grok")
     monkeypatch.setattr(
-        grok_x.subprocess, "run",
+        grok_x.subproc, "run_with_timeout",
         lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, "", "Not signed in"),
     )
     result = grok_x.search_x("test topic", *WINDOW)
@@ -503,7 +514,7 @@ def test_availability_cache_is_resettable(monkeypatch):
 def _stub_response(monkeypatch, body):
     monkeypatch.setattr(grok_x, "binary_path", lambda: "/usr/bin/grok")
     monkeypatch.setattr(
-        grok_x.subprocess, "run",
+        grok_x.subproc, "run_with_timeout",
         lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, body, ""),
     )
 
@@ -532,7 +543,7 @@ def test_from_lane_does_not_and_the_topic_into_the_query(monkeypatch):
         seen["prompt"] = cmd[2]
         return subprocess.CompletedProcess(cmd, 0, _block("2087568620465607078"), "")
 
-    monkeypatch.setattr(grok_x.subprocess, "run", fake_run)
+    monkeypatch.setattr(grok_x.subproc, "run_with_timeout", fake_run)
     grok_x.search_handles(["steipete"], "quantum widgets", *WINDOW)
     assert "quantum widgets" not in seen["prompt"]
 
@@ -560,7 +571,7 @@ def test_name_lane_quotes_multi_word_names(monkeypatch):
         seen["prompt"] = cmd[2]
         return subprocess.CompletedProcess(cmd, 0, _block("2087568620465607078"), "")
 
-    monkeypatch.setattr(grok_x.subprocess, "run", fake_run)
+    monkeypatch.setattr(grok_x.subproc, "run_with_timeout", fake_run)
     grok_x.search_name("Peter Steinberger", *WINDOW)
     assert '"Peter Steinberger"' in _prompt_query(seen["prompt"])
 
@@ -580,7 +591,7 @@ def test_name_lane_applies_an_engagement_floor(monkeypatch):
         seen["prompt"] = cmd[2]
         return subprocess.CompletedProcess(cmd, 0, _block("2087568620465607078"), "")
 
-    monkeypatch.setattr(grok_x.subprocess, "run", fake_run)
+    monkeypatch.setattr(grok_x.subproc, "run_with_timeout", fake_run)
     grok_x.search_name("Bentgo", *WINDOW)
     assert "min_faves:" in _prompt_query(seen["prompt"]), (
         "the bare-name lane is the widest of the three and needs a floor the "
@@ -597,7 +608,7 @@ def test_from_lane_returns_revoked_on_auth_failure(monkeypatch):
     def fake_run(cmd, **kwargs):
         return subprocess.CompletedProcess(cmd, 1, "", "Error: Not signed in")
 
-    monkeypatch.setattr(grok_x.subprocess, "run", fake_run)
+    monkeypatch.setattr(grok_x.subproc, "run_with_timeout", fake_run)
     items, revoked = grok_x.search_handles(["steipete"], "topic", *WINDOW)
     assert revoked is True
     assert items == []
@@ -610,7 +621,7 @@ def test_mention_lane_returns_revoked_on_auth_failure(monkeypatch):
     def fake_run(cmd, **kwargs):
         return subprocess.CompletedProcess(cmd, 1, "", "Error: Not signed in")
 
-    monkeypatch.setattr(grok_x.subprocess, "run", fake_run)
+    monkeypatch.setattr(grok_x.subproc, "run_with_timeout", fake_run)
     items, revoked = grok_x.search_mentions(["steipete"], *WINDOW)
     assert revoked is True
     assert items == []
@@ -623,7 +634,7 @@ def test_name_lane_returns_revoked_on_auth_failure(monkeypatch):
     def fake_run(cmd, **kwargs):
         return subprocess.CompletedProcess(cmd, 1, "", "Error: Not signed in")
 
-    monkeypatch.setattr(grok_x.subprocess, "run", fake_run)
+    monkeypatch.setattr(grok_x.subproc, "run_with_timeout", fake_run)
     items, revoked = grok_x.search_name("Bentgo", *WINDOW)
     assert revoked is True
     assert items == []
@@ -645,7 +656,7 @@ def test_from_lane_preserves_items_collected_before_revocation(monkeypatch):
             # Second handle hits auth revocation
             return subprocess.CompletedProcess(cmd, 1, "", "Error: Not signed in")
 
-    monkeypatch.setattr(grok_x.subprocess, "run", fake_run)
+    monkeypatch.setattr(grok_x.subproc, "run_with_timeout", fake_run)
     items, revoked = grok_x.search_handles(["steipete", "other"], "topic", *WINDOW)
     # Should return items from first successful call AND signal revocation
     assert len(items) == 1
@@ -667,7 +678,7 @@ def test_child_home_is_not_the_users_home(monkeypatch, tmp_path):
         seen["cwd"] = kwargs.get("cwd")
         return subprocess.CompletedProcess(cmd, 0, _block("2087568620465607078"), "")
 
-    monkeypatch.setattr(grok_x.subprocess, "run", fake_run)
+    monkeypatch.setattr(grok_x.subproc, "run_with_timeout", fake_run)
     monkeypatch.setattr(grok_x, "binary_path", lambda: "/usr/bin/grok")
     grok_x.search_x("steipete", *WINDOW)
     import os as _os
@@ -712,7 +723,7 @@ def test_empty_result_is_not_reported_as_an_error():
     import subprocess as sp
     import unittest.mock as m
     with m.patch.object(grok_x, "binary_path", lambda: "/usr/bin/grok"), \
-         m.patch.object(grok_x.subprocess, "run",
+         m.patch.object(grok_x.subproc, "run_with_timeout",
                         lambda cmd, **kw: sp.CompletedProcess(cmd, 0, "no posts found", "")):
         result = grok_x.search_x("nothing-matches-this", *WINDOW)
     assert result["items"] == []
@@ -774,7 +785,7 @@ def test_search_handles_and_topic_false_does_not_add_topic(monkeypatch):
         seen["prompt"] = cmd[2]
         return subprocess.CompletedProcess(cmd, 0, _block("2087568620465607078"), "")
 
-    monkeypatch.setattr(grok_x.subprocess, "run", fake_run)
+    monkeypatch.setattr(grok_x.subproc, "run_with_timeout", fake_run)
     grok_x.search_handles(["steipete"], "quantum widgets", *WINDOW, and_topic=False)
     assert "quantum widgets" not in seen["prompt"]
 
@@ -788,7 +799,7 @@ def test_search_handles_and_topic_true_adds_topic_to_query(monkeypatch):
         seen["prompt"] = cmd[2]
         return subprocess.CompletedProcess(cmd, 0, _block("2087568620465607078"), "")
 
-    monkeypatch.setattr(grok_x.subprocess, "run", fake_run)
+    monkeypatch.setattr(grok_x.subproc, "run_with_timeout", fake_run)
     grok_x.search_handles(["visegrad24"], "Rome", *WINDOW, and_topic=True)
     assert "Rome" in _prompt_query(seen["prompt"]), (
         "Extracted handles should AND the topic to ensure on-topic results"
@@ -814,7 +825,7 @@ def _capture_prompts(monkeypatch):
         calls.append((cmd, kwargs))
         return subprocess.CompletedProcess(cmd, 0, _block("2087568620465607078"), "")
 
-    monkeypatch.setattr(grok_x.subprocess, "run", fake_run)
+    monkeypatch.setattr(grok_x.subproc, "run_with_timeout", fake_run)
     monkeypatch.setattr(grok_x, "binary_path", lambda: "/usr/bin/grok")
     return calls
 
@@ -869,3 +880,74 @@ def test_invocation_has_empty_local_tool_profile(monkeypatch):
     assert not removed & grok_x._ALLOWED_TOOLS
     assert "--disable-web-search" in cmd
     assert "--sandbox" not in cmd
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX PID/killpg registration test")
+def test_grok_cli_registers_with_subproc_for_direct_sigterm_cleanup(monkeypatch, tmp_path):
+    """Running grok via subproc.run_with_timeout registers its PID so Python's
+    SIGTERM handler (subproc.cleanup_children) terminates an active grok CLI
+    even when the MCP fallback signals only the direct Python child."""
+    import threading
+    import time
+    from lib import subproc
+
+    pid_file = tmp_path / "grok.pid"
+    fake_grok = tmp_path / "grok"
+    fake_grok.write_text(
+        f"#!/bin/sh\n"
+        f"if [ \"$1\" = \"--version\" ]; then echo 'grok 1.0.70 (f50904eaee6c)'; exit 0; fi\n"
+        f"printf '%s' \"$$\" > \"{pid_file}\"\n"
+        f"sleep 30\n",
+        encoding="utf-8",
+    )
+    fake_grok.chmod(0o755)
+    monkeypatch.setattr(grok_x, "binary_path", lambda: str(fake_grok))
+    monkeypatch.setattr(grok_x, "token_store_path", lambda: tmp_path / "missing-auth.json")
+
+    result_box = {}
+    worker = threading.Thread(
+        target=lambda: result_box.update(grok_x._invoke("test topic", 30)),
+        daemon=True,
+    )
+    worker.start()
+
+    try:
+        deadline = time.monotonic() + 5.0
+        child_pid = 0
+        while time.monotonic() < deadline:
+            if pid_file.exists():
+                raw = pid_file.read_text(encoding="utf-8").strip()
+                if raw.isdigit():
+                    child_pid = int(raw)
+                    break
+            time.sleep(0.02)
+        assert child_pid > 0, "fake grok CLI did not start"
+
+        with subproc._child_pids_lock:
+            registered = child_pid in subproc._child_pids
+        assert registered, f"grok CLI pid {child_pid} was not registered with subproc"
+
+        subproc.cleanup_children(grace=0.5)
+        worker.join(timeout=5.0)
+        assert not worker.is_alive(), "grok_x._invoke did not return after cleanup_children"
+
+        kill_deadline = time.monotonic() + 2.0
+        alive = True
+        while time.monotonic() < kill_deadline:
+            try:
+                os.kill(child_pid, 0)
+            except ProcessLookupError:
+                alive = False
+                break
+            time.sleep(0.02)
+        assert not alive, f"grok CLI pid {child_pid} survived subproc.cleanup_children()"
+    finally:
+        with subproc._child_pids_lock:
+            subproc._shutting_down = False
+        if pid_file.exists():
+            raw = pid_file.read_text(encoding="utf-8").strip()
+            if raw.isdigit():
+                try:
+                    os.kill(int(raw), 9)
+                except OSError:
+                    pass

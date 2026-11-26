@@ -38,10 +38,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from . import env, log
+from . import env, log, subproc
 
 # Bump when the checks change so verdicts recorded by older checks re-audit.
-AUDIT_SCHEMA = 3
+AUDIT_SCHEMA = 5
 CACHE_FILENAME = "grok-audit.json"
 
 PASS = "pass"
@@ -110,12 +110,16 @@ def _decompress_brotli(src: Path, dest: Path, timeout: float) -> bool:
     )
     try:
         dest.parent.mkdir(parents=True, exist_ok=True)
-        subprocess.run([node, "-e", script, str(src), str(tmp)], check=True,
-                       capture_output=True, timeout=min(60.0, timeout))
+        result = subproc.run_with_timeout(
+            [node, "-e", script, str(src), str(tmp)],
+            timeout=min(60.0, timeout),
+        )
+        if result.returncode != 0:
+            return False
         os.chmod(tmp, 0o755)
         os.replace(tmp, dest)
         return True
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subproc.SubprocTimeout, subprocess.SubprocessError):
         return False
     finally:
         try:
@@ -371,17 +375,22 @@ class _Fixture:
                             "name": "session_title", "status": "completed",
                             "arguments": json.dumps({"session_title": "audit"})}
                     return self._send(200, _sse([item], "resp_title"), "text/event-stream")
+                auth_header = self.headers.get("authorization") or ""
                 with fixture._lock:
-                    fixture.requests.append({"raw": raw.decode("utf-8", "replace"), "body": body})
-                    first = len(fixture.requests) == 1
-                if first:
+                    fixture.requests.append({
+                        "raw": raw.decode("utf-8", "replace"),
+                        "body": body,
+                        "authorization": auth_header,
+                    })
+                    req_num = len(fixture.requests)
+                if req_num == 1:
                     output = [dict(call, type="function_call", status="completed", id=f"fc_{i}")
                               for i, call in enumerate(fixture.forced_calls)]
                 else:
                     output = [{"type": "message", "id": "msg_done", "role": "assistant",
                                "status": "completed",
                                "content": [{"type": "output_text", "text": "no posts", "annotations": []}]}]
-                self._send(200, _sse(output, f"resp_{len(fixture.requests)}"), "text/event-stream")
+                self._send(200, _sse(output, f"resp_{req_num}"), "text/event-stream")
 
         class Proxy(BaseHTTPRequestHandler):
             def log_message(self, *args):
@@ -427,7 +436,7 @@ def _signed_in_client_id() -> str:
     return _DEFAULT_OIDC_CLIENT_ID
 
 
-def _write_dummy_session(home: str) -> None:
+def _write_dummy_session(home: str) -> str:
     """A signed-in credential store shaped like the one _stage_child_home
     copies, holding a fake unexpired token. Production runs in this mode, so
     the audit must see the tools the build declares when signed in."""
@@ -451,9 +460,17 @@ def _write_dummy_session(home: str) -> None:
     store.mkdir(mode=0o700, parents=True, exist_ok=True)
     (store / "auth.json").write_text(json.dumps({f"https://auth.x.ai::{client_id}": entry}),
                                      encoding="utf-8")
+    return token
 
 
-def _audit_env(home: str, fixture: _Fixture) -> Dict[str, str]:
+def _bearer_token(header: str) -> str:
+    parts = (header or "").strip().split(None, 1)
+    if len(parts) == 2 and parts[0].lower() == "bearer":
+        return parts[1].strip()
+    return ""
+
+
+def _audit_env(home: str, fixture: _Fixture, signed_in: bool = False) -> Dict[str, str]:
     from . import grok_x
 
     child_env = grok_x._subprocess_env(home)
@@ -462,7 +479,6 @@ def _audit_env(home: str, fixture: _Fixture) -> Dict[str, str]:
         "GROK_CLI_CHAT_PROXY_BASE_URL": fixture.base,
         "GROK_MODELS_BASE_URL": fixture.base,
         "GROK_MODELS_LIST_URL": fixture.base + "/models",
-        "XAI_API_KEY": _DUMMY_KEY,
         "HTTPS_PROXY": fixture.proxy,
         "HTTP_PROXY": fixture.proxy,
         "https_proxy": fixture.proxy,
@@ -470,6 +486,17 @@ def _audit_env(home: str, fixture: _Fixture) -> Dict[str, str]:
         "NO_PROXY": "127.0.0.1,localhost",
         "no_proxy": "127.0.0.1,localhost",
     })
+    # Signed-in OIDC runs must omit XAI_API_KEY so CLI key precedence cannot
+    # silently turn the OIDC audit pass into a second API-key pass.
+    if signed_in:
+        child_env.pop("XAI_API_KEY", None)
+        # A custom models endpoint requires an API key and deliberately won't
+        # use a session token. Let the signed-in CLI discover the fixture's
+        # catalog through the redirected session proxy instead.
+        child_env.pop("GROK_MODELS_BASE_URL", None)
+        child_env.pop("GROK_MODELS_LIST_URL", None)
+    else:
+        child_env["XAI_API_KEY"] = _DUMMY_KEY
     return child_env
 
 
@@ -480,8 +507,7 @@ def _run_child(binary: str, permissive: bool, deadline: float, signed_in: bool =
     with tempfile.TemporaryDirectory(prefix="last30days-grok-audit-") as workdir:
         home = os.path.join(workdir, "home")
         os.makedirs(home)
-        if signed_in:
-            _write_dummy_session(home)
+        expected_auth_token = _write_dummy_session(home) if signed_in else _DUMMY_KEY
         canary = Path(workdir) / "canary"
         secret_value = "l30d-audit-" + os.urandom(8).hex()
         secret = Path(workdir) / "secret.txt"
@@ -506,21 +532,27 @@ def _run_child(binary: str, permissive: bool, deadline: float, signed_in: bool =
             if remaining <= 1:
                 return {"timeout": True}
             try:
-                subprocess.run(argv, capture_output=True, text=True, encoding="utf-8",
-                               errors="replace", timeout=remaining, cwd=workdir,
-                               env=_audit_env(home, fixture))
-            except subprocess.TimeoutExpired:
+                subproc.run_with_timeout(
+                    argv,
+                    timeout=remaining,
+                    cwd=workdir,
+                    env=_audit_env(home, fixture, signed_in=signed_in),
+                )
+            except (subproc.SubprocTimeout, subprocess.TimeoutExpired):
                 return {"timeout": True}
             except OSError as exc:
                 return {"error": f"{type(exc).__name__}: {exc}"}
-            requests = list(fixture.requests)
-            hosts = list(fixture.proxy_hosts)
+            with fixture._lock:
+                requests = list(fixture.requests)
+                hosts = list(fixture.proxy_hosts)
         return {
             "requests": requests,
             "proxy_hosts": hosts,
             "canary": canary.exists(),
             "leaked": any(secret_value in r["raw"] for r in requests[1:]),
             "answered": _answered_call_ids(requests[1:]) >= {c["call_id"] for c in forced},
+            "signed_in": signed_in,
+            "expected_auth_token": expected_auth_token,
         }
 
 
@@ -560,6 +592,19 @@ def _check_restricted(run: Dict[str, Any]) -> Optional[Verdict]:
     if not run["answered"]:
         # A crash or early exit is not evidence the boundary refused the calls.
         return Verdict(INCONCLUSIVE, "the CLI did not answer the forced calls")
+    expected_token = run.get("expected_auth_token") or ""
+    tokens = [_bearer_token(r.get("authorization", "")) for r in run["requests"]]
+    if run.get("signed_in"):
+        if not expected_token or any(tok != expected_token for tok in tokens):
+            return Verdict(
+                INCONCLUSIVE,
+                "signed-in audit run did not authenticate with the OIDC session token",
+            )
+    elif expected_token and any(tok != expected_token for tok in tokens):
+        return Verdict(
+            INCONCLUSIVE,
+            "API-key audit run did not authenticate with the dummy API key",
+        )
     return None
 
 

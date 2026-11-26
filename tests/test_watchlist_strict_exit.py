@@ -118,6 +118,48 @@ def test_late_delivery_error_does_not_reclassify_report(tmp_path, monkeypatch, w
     assert [finding["source_url"] for finding in store.get_new_findings(topic["id"])] == [item.url]
 
 
+@pytest.mark.parametrize("use_fallback", [False, True], ids=["sqlite-default", "sqlite-fallback"])
+def test_watchlist_alerts_each_topic_once_for_a_shared_url(
+    tmp_path, monkeypatch, capsys, watchlist_report, use_fallback,
+):
+    if use_fallback:
+        monkeypatch.setattr(store, "_SUPPORTS_RETURNING", False)
+    first, item, raw_report, _ = watchlist_report
+    second = store.add_topic("Later topic")
+    second_report = json.loads(raw_report)
+    second_report["topic"] = second["name"]
+    second_report["query_plan"]["raw_topic"] = second["name"]
+    _install_child(tmp_path, monkeypatch, {
+        first["name"]: (raw_report, "", 0),
+        second["name"]: (json.dumps(second_report), "", 0),
+    })
+    store.set_setting("delivery_channel", "https://webhook.example/notify")
+    notice = Mock()
+    monkeypatch.setattr(watchlist, "_send_generic_webhook", notice)
+
+    watchlist.cmd_run_all(None)
+    results = json.loads(capsys.readouterr().out)["results"]
+    names = [first["name"], second["name"]]
+    assert [(r["topic"], r["new"], r["updated"]) for r in results] == [
+        (name, 1, 0) for name in names
+    ]
+    assert notice.call_count == 2
+    for name, alert in zip(names, notice.call_args_list, strict=True):
+        assert f"update: {name}" in alert.args[1]
+
+    watchlist.cmd_run_all(None)
+    results = json.loads(capsys.readouterr().out)["results"]
+    assert [(r["topic"], r["new"], r["updated"]) for r in results] == [
+        (name, 0, 1) for name in names
+    ]
+    assert notice.call_count == 2
+    assert store.get_stats()["total_findings"] == 1
+    for topic in (first, second):
+        runs = store.get_latest_completed_runs(topic["id"])
+        assert [(run["findings_new"], run["findings_updated"]) for run in runs] == [(0, 1), (1, 0)]
+        assert [finding["source_url"] for finding in store.get_new_findings(topic["id"])] == [item.url]
+
+
 def test_degraded_comparison_survives_invalid_webhook_and_batch_continues(
     tmp_path, monkeypatch, capsys, watchlist_report,
 ):
@@ -152,13 +194,13 @@ def test_degraded_comparison_survives_invalid_webhook_and_batch_continues(
     results = json.loads(output.out)["results"]
     assert [(r["topic"], r["status"], r["new"], r["updated"]) for r in results] == [
         (topic["name"], "degraded", 2, 0),
-        (later["name"], "completed", 0, 1),
+        (later["name"], "completed", 1, 0),
     ]
     assert [(row["name"], row["last_status"]) for row in store.list_topics()] == [
         (topic["name"], "degraded"), (later["name"], "completed"),
     ]
     assert {row["source_url"] for row in store.get_new_findings(topic["id"])} == {item.url, peer.url}
     assert [row["source_url"] for row in store.get_new_findings(later["id"])] == [peer.url]
-    assert output.err == "Delivery failed: ValueError\n"
+    assert output.err.splitlines() == ["Delivery failed: ValueError"] * 2
     assert invalid_channel not in output.out
     post.assert_not_called()

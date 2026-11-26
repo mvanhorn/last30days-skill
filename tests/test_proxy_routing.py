@@ -497,7 +497,7 @@ def test_doctor_predicts_the_same_web_backend_as_the_runtime(proxy_env):
     own_parallel = _config(PARALLEL_API_KEY="user-parallel")
     resolution = backends.resolve("web", own_parallel)
     assert resolution.active_backend == grounding.configured_backend(own_parallel) == "parallel"
-    assert resolution.chain == ["brave", "exa", "parallel", "serper", "keyless"]
+    assert resolution.chain == ["brave", "exa", "parallel", "serper", "keyless", "parallel-mcp"]
 
     proxied_only = _config()
     resolution = backends.resolve("web", proxied_only)

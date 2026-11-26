@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -150,21 +151,32 @@ func checkPythonVersion(ctx context.Context, path string) error {
 	// Avoid site initialization and PYTHON* environment overrides during discovery.
 	cmd := exec.CommandContext(probeCtx, path, "-I", "-S", "-c", "import sys; print('%d.%d' % sys.version_info[:2])")
 	cmd.WaitDelay = 100 * time.Millisecond
-	output, err := cmd.Output()
+	stdout := newHeadBuffer(maxPythonProbeOutputBytes)
+	cmd.Stdout = stdout
+	cmd.Stderr = io.Discard
+	err := cmd.Run()
 	if probeCtx.Err() != nil {
 		return probeCtx.Err()
+	}
+	if stdout.Truncated() {
+		return fmt.Errorf("version probe output exceeded %d bytes", maxPythonProbeOutputBytes)
 	}
 	if err != nil {
 		return fmt.Errorf("version probe failed: %w", err)
 	}
-	parts := strings.Split(strings.TrimSpace(string(output)), ".")
+	raw := strings.TrimSpace(string(stdout.Bytes()))
+	parts := strings.Split(raw, ".")
 	if len(parts) != 2 {
 		return fmt.Errorf("invalid Python version response")
 	}
 	major, majorErr := strconv.Atoi(parts[0])
 	minor, minorErr := strconv.Atoi(parts[1])
 	if majorErr != nil || minorErr != nil || major != 3 || minor < 12 {
-		return fmt.Errorf("incompatible Python version %q", strings.TrimSpace(string(output)))
+		display := raw
+		if len(display) > 64 {
+			display = display[:64] + "..."
+		}
+		return fmt.Errorf("incompatible Python version %q", display)
 	}
 	return nil
 }
