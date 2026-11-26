@@ -25,6 +25,11 @@ def _tweet(post_id, created_at, author="analyst"):
     }
 
 
+def _query_arg(cmd):
+    assert cmd[-2] == "--"
+    return cmd[-1]
+
+
 def test_every_topic_retry_keeps_the_inclusive_end_date():
     with mock.patch.object(
         bird_x.subproc, "run_with_timeout", autospec=True, return_value=_response([])
@@ -33,7 +38,7 @@ def test_every_topic_retry_keeps_the_inclusive_end_date():
             "multi-agent autonomous systems", "2024-02-01", "2024-02-29"
         )
 
-    queries = [call.args[0][2] for call in run.call_args_list]
+    queries = [_query_arg(call.args[0]) for call in run.call_args_list]
     assert result == {"items": []}
     assert queries == [
         "multi-agent autonomous systems since:2024-02-01 until:2024-03-01",
@@ -48,7 +53,7 @@ def test_historical_search_retries_when_recent_posts_are_outside_the_window():
     recent = _tweet("2", "2026-10-04T12:00:00Z")
 
     def search(cmd, **kwargs):
-        query = cmd[2]
+        query = _query_arg(cmd)
         if "until:2024-03-01" not in query:
             return _response([recent])
         if query.startswith("("):
@@ -81,7 +86,7 @@ def test_current_day_search_retains_posts_from_the_whole_end_date():
 
     assert result["items"] == [last_second]
     assert run.call_count == 1
-    assert f"until:{(today + timedelta(days=1)).isoformat()}" in run.call_args.args[0][2]
+    assert f"until:{(today + timedelta(days=1)).isoformat()}" in _query_arg(run.call_args.args[0])
 
 
 @pytest.mark.parametrize("lane", ["topic", "from", "mentions"])
@@ -115,7 +120,7 @@ def test_cli_maximum_end_dates_reach_every_bird_lane(lane, end_date, expected_fi
             expected = "@subject"
 
     assert [item["url"] for item in items] == [tweet["url"]]
-    assert [call.args[0][2] for call in run.call_args_list] == [
+    assert [_query_arg(call.args[0]) for call in run.call_args_list] == [
         f"{expected} {expected_filters}"
     ]
 
@@ -141,7 +146,7 @@ def test_handle_lanes_bound_the_inclusive_end_date(lane):
             expected = "@subject"
 
     assert [item["url"] for item in items] == [tweet["url"]]
-    assert run.call_args.args[0][2] == (
+    assert _query_arg(run.call_args.args[0]) == (
         f"{expected} since:2024-12-01 until:2025-01-01"
     )
 
@@ -178,7 +183,7 @@ def test_pipeline_passes_the_end_date_to_both_bird_handle_lanes():
             x_handle="subject",
         )
 
-    assert sorted(call.args[0][2] for call in run.call_args_list) == [
+    assert sorted(_query_arg(call.args[0]) for call in run.call_args_list) == [
         "@subject since:2024-12-01 until:2025-01-01",
         "from:subject since:2024-12-01 until:2025-01-01",
     ]

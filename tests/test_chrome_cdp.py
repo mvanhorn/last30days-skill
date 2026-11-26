@@ -362,7 +362,7 @@ def test_read_x_cookies_rejects_node_inspector():
 
 def test_read_x_cookies_from_browser_off_opens_no_socket():
     with mock.patch("socket.create_connection", side_effect=AssertionError("no socket")):
-        with mock.patch("urllib.request.urlopen", side_effect=AssertionError("no http")):
+        with mock.patch.object(chrome_cdp._CDP_OPENER, "open", side_effect=AssertionError("no http")):
             assert chrome_cdp.read_x_cookies({"FROM_BROWSER": "off"}) is None
 
 
@@ -370,7 +370,7 @@ def test_read_x_cookies_rejects_wss_without_plaintext_connect():
     """wss:// (TLS) is refused; the plaintext client must not connect (P2)."""
     with (
         mock.patch("socket.create_connection", side_effect=AssertionError("no plaintext connect to TLS endpoint")),
-        mock.patch("urllib.request.urlopen", side_effect=AssertionError("no http probe of TLS endpoint")),
+        mock.patch.object(chrome_cdp._CDP_OPENER, "open", side_effect=AssertionError("no http probe of TLS endpoint")),
     ):
         assert chrome_cdp.read_x_cookies({"BROWSER_CDP_URL": "wss://127.0.0.1:9222/devtools/page/ABC", "BROWSER_CONSENT": "true"}) is None
 
@@ -379,7 +379,7 @@ def test_read_x_cookies_rejects_https_base_without_connect():
     """An https:// debug base (would yield wss) is refused without probing."""
     with (
         mock.patch("socket.create_connection", side_effect=AssertionError("no connect")),
-        mock.patch("urllib.request.urlopen", side_effect=AssertionError("no TLS http probe")),
+        mock.patch.object(chrome_cdp._CDP_OPENER, "open", side_effect=AssertionError("no TLS http probe")),
     ):
         assert chrome_cdp.read_x_cookies({"BROWSER_CDP_URL": "https://127.0.0.1:18800", "BROWSER_CONSENT": "true"}) is None
 
@@ -390,7 +390,9 @@ def test_wsconn_connect_refuses_wss():
 
 def test_read_x_cookies_no_reachable_endpoint_returns_none():
     config = {"BROWSER_CDP_URL": "http://127.0.0.1:18800", "BROWSER_CONSENT": "true"}
-    with mock.patch("urllib.request.urlopen", side_effect=ConnectionRefusedError) as request:
+    with mock.patch.object(
+        chrome_cdp._CDP_OPENER, "open", side_effect=ConnectionRefusedError
+    ) as request:
         assert chrome_cdp.read_x_cookies(config) is None
     request.assert_called_once()
     assert request.call_args.args[0] == "http://127.0.0.1:18800/json/version"

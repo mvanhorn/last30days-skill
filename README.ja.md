@@ -1,6 +1,6 @@
 # /last30days
 
-[English](README.md) | [Français](README.fr.md) | [Deutsch](README.de.md) | [Español](README.es.md) | [Português (Brasil)](README.pt-BR.md) | 日本語 | [简体中文](README.zh-CN.md) | [العربية](README.ar.md) | [فارسی](README.fa.md) | [Türkçe](README.tr.md)
+[English](README.md) | [Français](README.fr.md) | [Deutsch](README.de.md) | [Español](README.es.md) | [Português (Brasil)](README.pt-BR.md) | 日本語 | [简体中文](README.zh-CN.md) | [العربية](README.ar.md) | [فارسی](README.fa.md) | [Türkçe](README.tr.md) | [Tiếng Việt](README.vi.md) | [Русский](README.ru.md)
 
 <p align="center">
   <img src="media/pr-assets/last30days-ad.gif" width="720" alt="last30days - an AI agent-led search engine that searches people, not editors" />
@@ -371,17 +371,17 @@ PRの出し方は [CONTRIBUTING.md](CONTRIBUTING.md)、コミュニティの貢�
 
 デフォルトでは、ツールはすべてあなたのマシン上で動作します。利用する検索API（Reddit、ScrapeCreatorsなど）以外、データは外部に送信されません。
 
-**リランキング。** 推論プロバイダー（`OPENAI_API_KEY`、`XAI_API_KEY`、`OPENROUTER_API_KEY`、`GOOGLE_API_KEY`、`GEMINI_API_KEY`、または `GOOGLE_GENAI_API_KEY`）を設定した場合、エンジンはリリバンスのスコアリングのために研究テーマと取得したコンテンツのスニペットをそのプロバイダーに送信します。これはオプションです：推論キーを設定しない場合、エンジンはローカルスコアリングモデルを使用し、リランキングのための外部呼び出しは行われません。
+**リランキング。** デフォルトの `auto` モードでは、エンジンは利用可能な認証情報を使って推論プロバイダーを選択します。これには、別のツール用に設定されたものを含め、シェルから引き継がれたキー（`OPENAI_API_KEY`、`XAI_API_KEY`、`OPENROUTER_API_KEY`、`GOOGLE_API_KEY`、`GEMINI_API_KEY`、または `GOOGLE_GENAI_API_KEY`）が含まれます。プロバイダーが選択された場合、エンジンは関連性スコア付けのために研究テーマと絞り込んだスニペットをそのプロバイダーへ送信します。利用可能な推論プロバイダーがない場合、スコア付けはローカルに留まります。選択順とリランキングをローカルに保つ方法については、[推論プロバイダーの優先順位](CONFIGURATION.md#reasoning-provider-priority) を参照してください。
 
 **ローカルストレージ。** `LAST30DAYS_STORE=1` を設定すると、結果は使用する保存先ディレクトリ内の `research.db` というローカル SQLite データベースに保存されます（`--save-dir` は `LAST30DAYS_MEMORY_DIR` より優先されます）。保存先ディレクトリを使用しない場合、データベースは `~/.local/share/last30days/research.db` に保存されます。ストレージを有効にしても、そのデータベースがリモートサービスにアップロードされることはありません。保存期間と削除方法、および削除前にデータベースを使用するプロセスを停止する手順は [CONFIGURATION.md](CONFIGURATION.md#--store-flag) を参照してください。
 
 ## スター数の推移
 
-<a href="https://star-history.dera.page/#mvanhorn/last30days-skill&Date">
+<a href="https://github.com/mvanhorn/last30days-skill/stargazers">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://star-history.dera.page/svg?repos=mvanhorn/last30days-skill&type=Date&theme=dark" />
-    <source media="(prefers-color-scheme: light)" srcset="https://star-history.dera.page/svg?repos=mvanhorn/last30days-skill&type=Date" />
-    <img alt="Star History Chart" src="https://star-history.dera.page/svg?repos=mvanhorn/last30days-skill&type=Date" />
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/mvanhorn/last30days-skill/star-history-assets/star-history-dark.svg" />
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/mvanhorn/last30days-skill/star-history-assets/star-history-light.svg" />
+    <img alt="Star History Chart" src="https://raw.githubusercontent.com/mvanhorn/last30days-skill/star-history-assets/star-history-light.svg" />
   </picture>
 </a>
 

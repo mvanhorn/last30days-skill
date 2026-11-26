@@ -97,7 +97,8 @@ def test_backfill_preserves_legacy_date_when_same_topic_resights(tmp_path, resig
         store.init_db()
         if not resighted_before_upgrade:
             run = store.record_run(1)
-            store.store_findings(run, 1, [finding])
+            counts = store.store_findings(run, 1, [finding], count_by_topic=True)
+            assert counts == {"new": 0, "updated": 1}
         since = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%d")
 
         assert store.get_new_findings(1, since) == []
@@ -105,6 +106,31 @@ def test_backfill_preserves_legacy_date_when_same_topic_resights(tmp_path, resig
         assert len(store.get_sightings_for_run(1, run)) == 1
         assert store.get_sightings_for_run(1, 1) == []
         assert store.get_trending()[0]["new_findings"] == 0
+
+
+@pytest.mark.parametrize("count_by_topic", [False, True])
+def test_resighting_preserves_legacy_latest_run_topic(tmp_path, count_by_topic):
+    path = tmp_path / "legacy.db"
+    owner_seen = _create_legacy_findings(path)
+    legacy_seen = (datetime.fromisoformat(owner_seen) + timedelta(days=1)).isoformat(" ")
+    url = "https://example.test/legacy/1"
+    finding = {"source": "reddit", "source_url": url}
+    with sqlite3.connect(path) as conn:
+        conn.execute("INSERT INTO topics (id, name) VALUES (2, 'B')")
+        conn.execute("INSERT INTO research_runs (id, topic_id, run_date) VALUES (2, 2, ?)", (legacy_seen,))
+        conn.execute("UPDATE findings SET run_id = 2 WHERE source_url = ?", (url,))
+
+    with store.scoped_db(path):
+        third = store.add_topic("C")["id"]
+        run = store.record_run(third)
+        store.store_findings(run, third, [finding], count_by_topic=count_by_topic)
+
+        assert [(row["source_url"], row["first_seen"]) for row in store.get_new_findings(2)] == [
+            (url, legacy_seen)
+        ]
+        assert store.get_sightings_for_run(2, 2) == []
+        repeat = store.record_run(2)
+        assert store.store_findings(repeat, 2, [finding], count_by_topic=True) == {"new": 0, "updated": 1}
 
 
 def test_backfill_does_not_reattribute_old_date_after_owner_removal(tmp_path):

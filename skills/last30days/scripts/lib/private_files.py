@@ -1,22 +1,202 @@
 """Private local files."""
 
+import errno
 import os
+import secrets
 import stat
 import tempfile
 import time
 from pathlib import Path
 
 _WINDOWS_SHARING_VIOLATION = 32
+_IS_JUNCTION = getattr(os.path, "isjunction", None)
+_GETEUID = getattr(os, "geteuid", None)
+_OS_LSTAT = os.lstat
+_OS_READLINK = os.readlink
+_OS_GETCWD = os.getcwd
+_MAX_SYMLINK_HOPS = 40
+
+
+def _group_writable_by_other_user(st: os.stat_result, euid: int) -> bool:
+    """Return True if a group-writable mode grants write access to another non-root user."""
+    if not (st.st_mode & stat.S_IWGRP):
+        return False
+    try:
+        import grp
+        import pwd
+
+        pw = pwd.getpwuid(euid)
+        gr = grp.getgrgid(st.st_gid)
+    except (ImportError, KeyError):
+        return True
+    other_members = set(gr.gr_mem) - {pw.pw_name, "root"}
+    if other_members:
+        return True
+    if hasattr(pwd, "getpwall"):
+        try:
+            for entry in pwd.getpwall():
+                if entry.pw_uid not in (euid, 0) and entry.pw_gid == st.st_gid:
+                    return True
+        except OSError:
+            return True
+    if st.st_gid == 0:
+        return False
+    if st.st_gid == pw.pw_gid and gr.gr_name == pw.pw_name:
+        return False
+    return True
+
+
+def _is_writable_by_others(st: os.stat_result, euid: int) -> bool:
+    return bool(st.st_mode & stat.S_IWOTH) or _group_writable_by_other_user(st, euid)
+
+
+def _stat_directory_nofollow(directory: Path) -> os.stat_result:
+    """Stat ``directory`` without following symlinks or requiring read/list permission."""
+    st = _OS_LSTAT(directory)
+    if stat.S_ISLNK(st.st_mode):
+        raise OSError(errno.ELOOP, f"Refusing to follow symlink directory: {directory}")
+    if not stat.S_ISDIR(st.st_mode):
+        raise OSError(f"Expected a directory for private file: {directory}")
+    return st
+
+
+def _check_ancestor_dir(directory: Path, st: os.stat_result, euid: int) -> None:
+    if not stat.S_ISDIR(st.st_mode):
+        raise OSError(f"Expected a directory ancestor for private file: {directory}")
+    if st.st_uid not in (euid, 0):
+        raise OSError(f"Refusing to use directory under untrusted owner: {directory}")
+    if _is_writable_by_others(st, euid) and not (st.st_mode & stat.S_ISVTX):
+        raise OSError(
+            f"Refusing to use directory under writable non-sticky ancestor: {directory}"
+        )
+
+
+def _verify_private_directory_chain(parent: Path, *, allow_root_owner: bool = False) -> None:
+    """Verify the parent directory and its ancestors cannot be modified by other users."""
+    if _GETEUID is None:
+        return
+    euid = _GETEUID()
+    parent_st = _stat_directory_nofollow(parent)
+    allowed_parent_uids = (euid, 0) if allow_root_owner else (euid,)
+    if parent_st.st_uid not in allowed_parent_uids:
+        raise OSError(f"Refusing to use private directory owned by another user: {parent}")
+    if _is_writable_by_others(parent_st, euid):
+        raise OSError(f"Refusing to use private directory writable by other users: {parent}")
+
+    for ancestor in parent.parents:
+        anc_st = _stat_directory_nofollow(ancestor)
+        _check_ancestor_dir(ancestor, anc_st, euid)
+
+
+def _resolve_trusted_parent_dir(parent: Path, *, allow_root_owner: bool = False) -> Path:
+    """Resolve ``parent`` hop-by-hop, allowing only trusted symlinks in trusted directories."""
+    if _GETEUID is None:
+        return parent.resolve()
+    euid = _GETEUID()
+    abs_parent = parent if parent.is_absolute() else Path(_OS_GETCWD()) / parent
+    anchor = abs_parent.anchor or "/"
+    pending = list(abs_parent.parts[1:])
+    current = Path(anchor)
+    current_st = _stat_directory_nofollow(current)
+    _check_ancestor_dir(current, current_st, euid)
+    hops = 0
+
+    while pending:
+        part = pending.pop(0)
+        if not part or part == ".":
+            continue
+        if part == "..":
+            current = current.parent
+            current_st = _stat_directory_nofollow(current)
+            _check_ancestor_dir(current, current_st, euid)
+            continue
+
+        candidate = current / part
+        cand_st = _OS_LSTAT(candidate)
+        if stat.S_ISLNK(cand_st.st_mode):
+            if _is_writable_by_others(current_st, euid):
+                raise OSError(
+                    errno.ELOOP,
+                    f"Refusing to follow symlink in directory writable by other users: {candidate}",
+                )
+            if cand_st.st_uid not in (euid, 0):
+                raise OSError(
+                    errno.ELOOP,
+                    f"Refusing to follow symlink owned by another user: {candidate}",
+                )
+            if current_st.st_uid not in (euid, 0):
+                raise OSError(
+                    errno.ELOOP,
+                    f"Refusing to follow symlink in untrusted directory: {candidate}",
+                )
+
+            hops += 1
+            if hops > _MAX_SYMLINK_HOPS:
+                raise OSError(errno.ELOOP, f"Too many symbolic links in private path: {parent}")
+
+            link_target = Path(_OS_READLINK(candidate))
+            if link_target.is_absolute():
+                target_anchor = link_target.anchor or "/"
+                pending = list(link_target.parts[1:]) + pending
+                current = Path(target_anchor)
+                current_st = _stat_directory_nofollow(current)
+                _check_ancestor_dir(current, current_st, euid)
+            else:
+                pending = list(link_target.parts) + pending
+            continue
+
+        if pending:
+            _check_ancestor_dir(candidate, cand_st, euid)
+        current = candidate
+        current_st = cand_st
+
+    _verify_private_directory_chain(current, allow_root_owner=allow_root_owner)
+    return current
+
+
+def _reject_symlink_or_nonregular(path: Path) -> None:
+    """Reject symlinks, Windows junctions, and non-regular existing paths without dereferencing."""
+    if _IS_JUNCTION is not None and _IS_JUNCTION(path):
+        raise OSError(f"Refusing to follow junction: {path}")
+    try:
+        mode = path.lstat().st_mode
+    except FileNotFoundError:
+        return
+    if stat.S_ISLNK(mode):
+        raise OSError(errno.ELOOP, f"Refusing to follow symlink: {path}")
+    if not stat.S_ISREG(mode):
+        raise OSError(f"Expected a regular private file: {path}")
+
+
+def _resolve_parent_only(path: Path, *, allow_root_owner: bool = False) -> Path:
+    """Resolve and validate only the parent directory so a leaf symlink is never dereferenced."""
+    path = Path(path)
+    if path.name in ("", ".", ".."):
+        raise OSError(f"Expected a regular private file path: {path}")
+    _reject_symlink_or_nonregular(path)
+    resolved_parent = _resolve_trusted_parent_dir(
+        path.parent, allow_root_owner=allow_root_owner
+    )
+    resolved = resolved_parent / path.name
+    _reject_symlink_or_nonregular(resolved)
+    return resolved
 
 
 def replace_private_text(path: Path, content: str) -> None:
     """Publish UTF-8 text atomically from an owner-only temporary file."""
+    if os.name == "posix":
+        path = _resolve_parent_only(path)
+    else:
+        _reject_symlink_or_nonregular(path)
     staged = tempfile.NamedTemporaryFile(
         mode="w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.", delete=False,
     )
     try:
         with staged:
+            if os.name == "posix" and hasattr(os, "fchmod"):
+                os.fchmod(staged.fileno(), 0o600)
             staged.write(content)
+        _reject_symlink_or_nonregular(path)
         # On Windows, a reader without delete sharing can briefly block atomic replacement.
         for retries_left in range(3, -1, -1):
             try:
@@ -37,43 +217,108 @@ def replace_private_text(path: Path, content: str) -> None:
 def prepare_private_sqlite_files(path: Path, *, create: bool = False) -> Path:
     """Set owner-only modes before SQLite can create files from the database mode."""
     if os.name != "posix":
+        if hasattr(path, "lstat"):
+            _reject_symlink_or_nonregular(path)
+            for suffix in ("-wal", "-shm", "-journal"):
+                _reject_symlink_or_nonregular(Path(f"{path}{suffix}"))
         return path
 
-    path = path.resolve()
+    path = _resolve_parent_only(path, allow_root_owner=not create)
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    nonblock = getattr(os, "O_NONBLOCK", 0)
+    cloexec = getattr(os, "O_CLOEXEC", 0)
+
     if create:
         try:
-            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            fd = os.open(
+                path,
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY | nofollow | cloexec,
+                0o600,
+            )
         except FileExistsError:
             pass
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                raise OSError(errno.ELOOP, f"Refusing to follow symlink for SQLite file: {path}") from exc
+            raise
         else:
-            os.close(fd)
+            try:
+                st = os.fstat(fd)
+                if not stat.S_ISREG(st.st_mode):
+                    raise OSError(f"Expected a regular SQLite file: {path}")
+                if stat.S_IMODE(st.st_mode) != 0o600:
+                    os.fchmod(fd, 0o600)
+            finally:
+                os.close(fd)
 
     sidecars = (Path(f"{path}{suffix}") for suffix in ("-wal", "-shm", "-journal"))
     for candidate in (path, *sidecars):
         try:
-            mode = candidate.lstat().st_mode
-            if not stat.S_ISREG(mode):
-                raise OSError(f"Expected a regular SQLite file: {candidate}")
-            if stat.S_IMODE(mode) != 0o600:
-                candidate.chmod(0o600)
+            fd = os.open(candidate, os.O_RDONLY | nofollow | nonblock | cloexec)
         except FileNotFoundError:
             if candidate == path:
                 raise
+            continue
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                raise OSError(errno.ELOOP, f"Refusing to follow symlink for SQLite file: {candidate}") from exc
+            raise
+        try:
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode):
+                raise OSError(f"Expected a regular SQLite file: {candidate}")
+            if stat.S_IMODE(st.st_mode) != 0o600:
+                os.fchmod(fd, 0o600)
+        finally:
+            os.close(fd)
     return path
 
 
 def write_private_text(path: Path, content: str, *, encoding: str | None = None) -> int:
-    """Write text with owner-only permissions before any bytes on POSIX."""
+    """Write text atomically with owner-only permissions before any bytes on POSIX."""
     if os.name != "posix":
+        _reject_symlink_or_nonregular(path)
         return path.write_text(content, encoding=encoding)
 
-    fd = os.open(path, os.O_CREAT | os.O_WRONLY, 0o600)
+    path = _resolve_parent_only(path)
+    stage_flags = (
+        os.O_CREAT
+        | os.O_EXCL
+        | os.O_WRONLY
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    stage_path: Path | None = None
+    fd = -1
+    for _ in range(32):
+        candidate = path.parent / f".{path.name}.{secrets.token_hex(8)}.tmp"
+        try:
+            fd = os.open(candidate, stage_flags, 0o600)
+            stage_path = candidate
+            break
+        except FileExistsError:
+            continue
+    if stage_path is None:
+        raise FileExistsError(f"Could not allocate private staging file for {path}")
+
     try:
-        os.fchmod(fd, 0o600)
-        stream = os.fdopen(fd, "w", encoding=encoding)
-    except Exception:
-        os.close(fd)
-        raise
-    with stream:
-        stream.truncate(0)
-        return stream.write(content)
+        try:
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode):
+                raise OSError(f"Expected a regular private file: {stage_path}")
+            os.fchmod(fd, 0o600)
+            stream = os.fdopen(fd, "w", encoding=encoding)
+        except BaseException:
+            os.close(fd)
+            raise
+        with stream:
+            written = stream.write(content)
+            stream.flush()
+        _reject_symlink_or_nonregular(path)
+        os.replace(stage_path, path)
+        stage_path = None
+        return written
+    finally:
+        if stage_path is not None:
+            stage_path.unlink(missing_ok=True)

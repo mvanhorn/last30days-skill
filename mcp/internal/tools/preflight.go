@@ -35,7 +35,7 @@ func makePreflightHandler(cfg Config) server.ToolHandlerFunc {
 			return mcplib.NewToolResultError(err.Error()), nil
 		}
 
-		src, err := engine.EngineFS()
+		src, err := cfg.engineFS()
 		if err != nil {
 			return mcplib.NewToolResultError(fmt.Sprintf("engine source unavailable: %v", err)), nil
 		}

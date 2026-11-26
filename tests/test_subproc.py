@@ -246,6 +246,12 @@ time.sleep(15)
         import time
 
         outcome = {}
+        registered = threading.Event()
+
+        def on_pid(pid):
+            outcome["pid"] = pid
+            registered.set()
+
         with tempfile.TemporaryDirectory() as tmp:
             pidfile = real_os.path.join(tmp, "grandchild.pid")
 
@@ -254,7 +260,7 @@ time.sleep(15)
                     subproc.run_with_timeout(
                         ["sh", "-c", f"sleep 30 & echo $! > {pidfile}; wait"],
                         timeout=20,
-                        on_pid=lambda pid: outcome.update(pid=pid),
+                        on_pid=on_pid,
                     )
                     outcome["error"] = None
                 except Exception as exc:
@@ -269,6 +275,7 @@ time.sleep(15)
             ):
                 time.sleep(0.01)
             self.assertTrue(real_os.path.getsize(pidfile))
+            self.assertTrue(registered.wait(max(0, deadline - time.monotonic())))
             self.assertIn(outcome["pid"], subproc._child_pids)
 
             subproc.cleanup_children()
@@ -291,6 +298,7 @@ time.sleep(15)
         import time
 
         outcome = {}
+        registered = threading.Event()
         with tempfile.TemporaryDirectory() as tmp:
             pidfile = real_os.path.join(tmp, "grandchild.pid")
 
@@ -299,6 +307,7 @@ time.sleep(15)
                     outcome["result"] = subproc.run_with_timeout(
                         ["sh", "-c", f"trap '' TERM; sleep 30 & echo $! > {pidfile}; wait"],
                         timeout=20,
+                        on_pid=lambda _: registered.set(),
                     )
                 except Exception as exc:
                     outcome["error"] = exc
@@ -311,6 +320,7 @@ time.sleep(15)
             ):
                 time.sleep(0.01)
             self.assertTrue(real_os.path.getsize(pidfile))
+            self.assertTrue(registered.wait(max(0, deadline - time.monotonic())))
 
             start = time.monotonic()
             subproc.cleanup_children(grace=0.3)
@@ -843,6 +853,31 @@ time.sleep(15)
                 subproc.run_with_timeout(["x"], timeout=1)
         # Both the primary and escalation paths must have fallen back to kill().
         self.assertGreaterEqual(fake.kill_count, 2)
+
+
+class TestWindowsBatchProbe(unittest.TestCase):
+    @unittest.skipUnless(IS_WINDOWS, "Windows .cmd batch execution test")
+    def test_probe_dependency_runs_windows_cmd_in_dir_with_spaces(self):
+        import tempfile
+        from pathlib import Path
+        from lib import health
+
+        health.clear_dependency_probe_cache()
+        self.addCleanup(health.clear_dependency_probe_cache)
+        with tempfile.TemporaryDirectory() as tmp:
+            spaced_dir = Path(tmp) / "dir with spaces"
+            spaced_dir.mkdir()
+            shim = spaced_dir / "fakecli.cmd"
+            shim.write_text("@echo off\r\necho fakecli 1.2.3\r\n", encoding="ascii")
+            existing_path = real_os.environ.get("PATH", "")
+            with patch.dict(
+                real_os.environ,
+                {"PATH": f"{spaced_dir}{real_os.pathsep}{existing_path}"},
+            ):
+                probe = health.probe_dependency("fakecli")
+        self.assertEqual(probe.status, health.OK)
+        self.assertTrue(probe.ok)
+        self.assertIn("1.2.3", probe.detail)
 
 
 if __name__ == "__main__":

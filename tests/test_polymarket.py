@@ -417,7 +417,7 @@ class _Response:
         self._body = json.dumps(body).encode()
         self.headers = {}
 
-    def read(self):
+    def read(self, size=-1):
         return self._body
 
     def __enter__(self):

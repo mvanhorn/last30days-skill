@@ -1,6 +1,6 @@
 # /last30days
 
-[English](README.md) | [Français](README.fr.md) | [Deutsch](README.de.md) | [Español](README.es.md) | [Português (Brasil)](README.pt-BR.md) | [日本語](README.ja.md) | [简体中文](README.zh-CN.md) | العربية | [فارسی](README.fa.md) | [Türkçe](README.tr.md)
+[English](README.md) | [Français](README.fr.md) | [Deutsch](README.de.md) | [Español](README.es.md) | [Português (Brasil)](README.pt-BR.md) | [日本語](README.ja.md) | [简体中文](README.zh-CN.md) | العربية | [فارسی](README.fa.md) | [Türkçe](README.tr.md) | [Tiếng Việt](README.vi.md) | [Русский](README.ru.md)
 
 <p align="center">
   <img src="media/pr-assets/last30days-ad.gif" width="720" alt="last30days: البحث في أحاديث الناس وتفاعلهم باستخدام وكيل ذكاء اصطناعي" />
@@ -384,17 +384,17 @@ skills/last30days/scripts/setup-keychain.sh --delete XAI_API_KEY
 
 تعمل المهارة محليا بشكل افتراضي، ولا ترسل بيانات إلى الخارج إلا عبر واجهات البحث التي تستدعيها، مثل Reddit أو ScrapeCreators
 
-**إعادة ترتيب النتائج:** إذا أعددت مزود استدلال باستخدام `OPENAI_API_KEY` أو `XAI_API_KEY` أو `OPENROUTER_API_KEY` أو `GOOGLE_API_KEY` أو `GEMINI_API_KEY` أو `GOOGLE_GENAI_API_KEY`، يرسل المحرك موضوع البحث ومقتطفات المحتوى المسترجعة إلى المزود لتقييم الصلة، وهذا إجراء اختياري، وعند غياب مفاتيح الاستدلال يستخدم التقييم المحلي دون طلب خارجي لإعادة الترتيب، وتجد أولوية المزودين في [CONFIGURATION.md](CONFIGURATION.md)
+**إعادة ترتيب النتائج:** في الوضع الافتراضي `auto`، يستخدم المحرك بيانات الاعتماد المتاحة لاختيار مزود استدلال، بما في ذلك المفاتيح الموروثة من الصدفة (`OPENAI_API_KEY` أو `XAI_API_KEY` أو `OPENROUTER_API_KEY` أو `GOOGLE_API_KEY` أو `GEMINI_API_KEY` أو `GOOGLE_GENAI_API_KEY`) حتى لو كانت مضبوطة لأداة أخرى. عند اختيار مزود، يرسل المحرك موضوع البحث والمقتطفات المختارة إليه لتقييم الصلة، وعند عدم توفر أي مزود استدلال يبقى التقييم محليًا. راجع [أولوية مزودي الاستدلال](CONFIGURATION.md#reasoning-provider-priority) لمعرفة ترتيب الاختيار وكيفية إبقاء إعادة الترتيب محلية.
 
 **التخزين المحلي:** إذا ضبطت `LAST30DAYS_STORE=1`، تحفظ النتائج في قاعدة SQLite باسم `research.db` داخل مجلد الحفظ الفعلي، مع أولوية `--save-dir` على `LAST30DAYS_MEMORY_DIR`، وإن لم يحدد مجلد للحفظ فالموقع هو `~/.local/share/last30days/research.db`، وتفعيل التخزين لا يرفع قاعدة البيانات إلى خدمة بعيدة، وتشرح [CONFIGURATION.md](CONFIGURATION.md#--store-flag) كيفية الاحتفاظ بالبيانات وحذفها بعد إيقاف العمليات التي تستخدم القاعدة
 
 ## سجل النجوم على GitHub
 
-<a href="https://star-history.dera.page/#mvanhorn/last30days-skill&Date">
+<a href="https://github.com/mvanhorn/last30days-skill/stargazers">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://star-history.dera.page/svg?repos=mvanhorn/last30days-skill&type=Date&theme=dark" />
-    <source media="(prefers-color-scheme: light)" srcset="https://star-history.dera.page/svg?repos=mvanhorn/last30days-skill&type=Date" />
-    <img alt="Star History Chart" src="https://star-history.dera.page/svg?repos=mvanhorn/last30days-skill&type=Date" />
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/mvanhorn/last30days-skill/star-history-assets/star-history-dark.svg" />
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/mvanhorn/last30days-skill/star-history-assets/star-history-light.svg" />
+    <img alt="Star History Chart" src="https://raw.githubusercontent.com/mvanhorn/last30days-skill/star-history-assets/star-history-light.svg" />
   </picture>
 </a>
 

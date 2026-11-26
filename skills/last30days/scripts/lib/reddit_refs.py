@@ -37,8 +37,9 @@ _HOSTS = frozenset({
     "np.reddit.com", "m.reddit.com", "sh.reddit.com",
 })
 _SHORT_HOSTS = frozenset({"redd.it", "www.redd.it"})
-_ID = re.compile(r"^[0-9a-z]{1,13}$")
-_SUBREDDIT = re.compile(r"^[A-Za-z0-9_]{2,21}$")
+_ID = re.compile(r"^[0-9a-z]{1,13}\Z")
+_SUBREDDIT = re.compile(r"^[A-Za-z0-9_]{2,21}\Z")
+_SUBREDDIT_PREFIX = re.compile(r"^/?r/", re.IGNORECASE)
 
 
 @dataclass
@@ -66,6 +67,7 @@ class ThreadRef:
     matched_comment: MatchedComment | None = None
     title: str = ""
     date: str | None = None
+    matched_comment_verified: bool = False
 
 
 def _canonical_url(post_id: str, subreddit: str) -> str:
@@ -79,9 +81,30 @@ def _bare_id(text: str) -> str | None:
     return candidate if _ID.match(candidate) else None
 
 
+def normalize_subreddit(value: Any, *, allow_all: bool = False) -> str | None:
+    """Normalize and validate a subreddit name (stripping optional ``/?r/``), else ``None``."""
+    if not isinstance(value, str):
+        return None
+    sub = _SUBREDDIT_PREFIX.sub("", value.strip()).strip("/")
+    if not _SUBREDDIT.match(sub):
+        return None
+    if not allow_all and sub.lower() == "all":
+        return None
+    return sub
+
+
+def normalize_post_id(value: Any) -> str | None:
+    """Normalize and validate a base36 Reddit post id (stripping optional ``t3_``), else ``None``."""
+    if not isinstance(value, str):
+        return None
+    return _bare_id(value)
+
+
 def canonical_thread(url_or_id: str) -> ThreadRef | None:
     """The canonical ref for a Reddit thread URL or base36 id, else ``None``."""
-    text = str(url_or_id or "").strip()
+    if not isinstance(url_or_id, str):
+        return None
+    text = url_or_id.strip()
     if not text:
         return None
     if "/" not in text and "." not in text:
@@ -91,12 +114,20 @@ def canonical_thread(url_or_id: str) -> ThreadRef | None:
         text = "https://" + text
     try:
         parts = urlsplit(text)
+        port = parts.port
     except ValueError:
         return None
     if parts.scheme not in ("http", "https"):
         return None
+    if parts.username is not None or parts.password is not None or "@" in parts.netloc:
+        return None
+    default_port = 443 if parts.scheme == "https" else 80
+    if port is not None and port != default_port:
+        return None
     host = (parts.hostname or "").lower()
     segments = [s for s in parts.path.split("/") if s]
+    if any(seg in (".", "..") for seg in segments):
+        return None
     if host in _SHORT_HOSTS:
         post_id = _bare_id(segments[0]) if len(segments) == 1 else None
         return ThreadRef(post_id=post_id, url=_canonical_url(post_id, "")) if post_id else None
@@ -114,6 +145,16 @@ def canonical_thread(url_or_id: str) -> ThreadRef | None:
     if not post_id:
         return None
     return ThreadRef(post_id=post_id, url=_canonical_url(post_id, subreddit), subreddit=subreddit)
+
+
+def canonical_thread_url(url: Any) -> ThreadRef | None:
+    """The canonical ref for a full ``http(s)`` Reddit thread URL, else ``None``."""
+    if not isinstance(url, str):
+        return None
+    text = url.strip()
+    if not text or "://" not in text:
+        return None
+    return canonical_thread(text)
 
 
 def thread_key(url: str) -> str | None:

@@ -390,7 +390,7 @@ class TestRunFullDeviceAuth:
     @patch("webbrowser.open")
     def test_happy_path(self, mock_browser, mock_start, mock_poll, mock_fetch):
         """Full flow succeeds: start -> poll -> fetch -> return api_key."""
-        mock_start.return_value = ("dev123", "ABCD-1234", "https://example.com/device", 5)
+        mock_start.return_value = ("dev123", "ABCD-1234", "https://github.com/login/device", 5)
         mock_poll.return_value = "access_tok"
         mock_fetch.return_value = {"ok": True, "api_key": "sc_live_abc123"}
 
@@ -399,7 +399,7 @@ class TestRunFullDeviceAuth:
         assert result["status"] == "success"
         assert result["api_key"] == "sc_live_abc123"
         assert result["user_code"] == "ABCD-1234"
-        mock_browser.assert_called_once_with("https://example.com/device")
+        mock_browser.assert_called_once_with("https://github.com/login/device")
 
     @patch("lib.setup_wizard.run_device_auth")
     def test_start_fails(self, mock_start):
@@ -416,7 +416,7 @@ class TestRunFullDeviceAuth:
     @patch("webbrowser.open")
     def test_poll_timeout(self, mock_browser, mock_start, mock_poll):
         """Poll times out -> timeout status with user_code."""
-        mock_start.return_value = ("dev123", "WXYZ-5678", "https://example.com/device", 5)
+        mock_start.return_value = ("dev123", "WXYZ-5678", "https://github.com/login/device", 5)
         mock_poll.return_value = None
 
         result = setup_wizard.run_full_device_auth(timeout=10)
@@ -430,7 +430,7 @@ class TestRunFullDeviceAuth:
     @patch("webbrowser.open")
     def test_fetch_fails_after_auth(self, mock_browser, mock_start, mock_poll, mock_fetch):
         """Auth succeeds but profile has no api_key -> already-linked error message."""
-        mock_start.return_value = ("dev123", "CODE-1111", "https://example.com/device", 5)
+        mock_start.return_value = ("dev123", "CODE-1111", "https://github.com/login/device", 5)
         mock_poll.return_value = "access_tok"
         mock_fetch.return_value = {"ok": False, "reason": "no_api_key"}
 
@@ -446,7 +446,7 @@ class TestRunFullDeviceAuth:
     @patch("webbrowser.open")
     def test_fetch_upstream_500_after_auth(self, mock_browser, mock_start, mock_poll, mock_fetch):
         """Auth succeeds but /profile 5xx -> distinct upstream message (#882)."""
-        mock_start.return_value = ("dev123", "CODE-1111", "https://example.com/device", 5)
+        mock_start.return_value = ("dev123", "CODE-1111", "https://github.com/login/device", 5)
         mock_poll.return_value = "access_tok"
         mock_fetch.return_value = {
             "ok": False,
@@ -467,7 +467,7 @@ class TestRunFullDeviceAuth:
     @patch("webbrowser.open")
     def test_browser_open_fails_gracefully(self, mock_browser, mock_start):
         """webbrowser.open raises -> flow continues without crashing."""
-        mock_start.return_value = ("dev123", "CODE-2222", "https://example.com/device", 5)
+        mock_start.return_value = ("dev123", "CODE-2222", "https://github.com/login/device", 5)
         mock_browser.side_effect = Exception("no display")
 
         with patch("lib.setup_wizard.poll_device_auth", return_value=None):

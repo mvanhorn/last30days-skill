@@ -24,9 +24,10 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 from lib import http
+from . import reddit_refs
 
 
 USER_AGENT = (
@@ -203,19 +204,33 @@ def search(
         List of normalized post dicts. Empty list on any failure.
     """
     limit = DEPTH_LIMITS.get(depth, DEPTH_LIMITS["default"])
-    encoded_query = _url_encode(query)
 
     if subreddit:
-        sub = subreddit.removeprefix("r/").strip()
+        sub = reddit_refs.normalize_subreddit(subreddit, allow_all=True)
+        if not sub:
+            _log(f"Invalid subreddit rejected: {subreddit!r}")
+            return []
+        params = [
+            ("q", str(query or "")),
+            ("restrict_sr", "on"),
+            ("sort", "relevance"),
+            ("t", "month"),
+            ("limit", str(limit)),
+            ("raw_json", "1"),
+        ]
         url = (
-            f"https://www.reddit.com/r/{sub}/search.json"
-            f"?q={encoded_query}&restrict_sr=on&sort=relevance&t=month&limit={limit}&raw_json=1"
+            f"https://www.reddit.com/r/{urllib.parse.quote(sub, safe='')}/search.json"
+            f"?{urllib.parse.urlencode(params)}"
         )
     else:
-        url = (
-            f"https://www.reddit.com/search.json"
-            f"?q={encoded_query}&sort=relevance&t=month&limit={limit}&raw_json=1"
-        )
+        params = [
+            ("q", str(query or "")),
+            ("sort", "relevance"),
+            ("t", "month"),
+            ("limit", str(limit)),
+            ("raw_json", "1"),
+        ]
+        url = f"https://www.reddit.com/search.json?{urllib.parse.urlencode(params)}"
 
     data = _fetch_json(url, timeout=timeout)
     posts = _parse_posts(data)
@@ -241,6 +256,7 @@ def search_reddit_public(
     depth: str = "default",
     subreddits: Optional[List[str]] = None,
     dedicated_subreddits: Optional[List[str]] = None,
+    config: Optional[Mapping[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """High-level free Reddit search + enrichment (keyless).
 
@@ -264,13 +280,21 @@ def search_reddit_public(
         to_date: End date (YYYY-MM-DD)
         depth: 'quick', 'default', or 'deep'
         subreddits: Optional list of subreddit names (without r/) for targeted search
+        dedicated_subreddits: Optional list of entity-home subreddits (without r/)
+        config: Optional pre-loaded per-run config mapping.
 
     Returns:
         List of normalized item dicts matching ScrapeCreators output format.
         Empty list on total failure (so SC backup can engage).
     """
     from . import reddit_keyless
+    kwargs: Dict[str, Any] = {
+        "depth": depth,
+        "subreddits": subreddits,
+        "dedicated_subreddits": dedicated_subreddits,
+    }
+    if config is not None:
+        kwargs["config"] = config
     return reddit_keyless.search_and_enrich(
-        topic, from_date, to_date, depth=depth, subreddits=subreddits,
-        dedicated_subreddits=dedicated_subreddits,
+        topic, from_date, to_date, **kwargs,
     )

@@ -34,6 +34,7 @@ result set, not a decode failure. Publication-name header rows (very short
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 from typing import Any, Dict, List
@@ -67,6 +68,32 @@ SEARCH_PAGE_TIMEOUT = 10
 _NO_RESULTS_PREFIX = "No results"
 
 _ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_UNKNOWN_PAGES_FLAG_RE = re.compile(r"unknown flag:\s*--pages(?:\s|$)")
+_URL_USERINFO_RE = re.compile(r"([A-Za-z][A-Za-z0-9+.-]{0,15}://)[^\s/?#]+@")
+
+
+def _scrub_url_userinfo(text: str) -> str:
+    return _URL_USERINFO_RE.sub(r"\1", text) if text else text
+
+# Keep only OS, cache/config-dir, locale, TLS, and proxy settings.
+# Never inherit unrelated provider secrets or runtime-injection vars like NODE_OPTIONS.
+_CHILD_ENV_ALLOWLIST = frozenset({
+    "PATH", "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "APPDATA",
+    "LOCALAPPDATA", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME",
+    "XDG_STATE_HOME", "SYSTEMROOT", "WINDIR", "SYSTEMDRIVE", "COMSPEC",
+    "PATHEXT", "TMPDIR", "TEMP", "TMP", "LANG", "LC_ALL", "LC_CTYPE",
+    "TZ", "NO_COLOR", "TERM", "SSL_CERT_FILE", "SSL_CERT_DIR",
+    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+})
+
+
+def _child_env() -> Dict[str, str]:
+    """Allowlisted child environment for techmeme-pp-cli."""
+    return {
+        name: value
+        for name, value in os.environ.items()
+        if name.upper() in _CHILD_ENV_ALLOWLIST or name.upper().startswith("LC_")
+    }
 
 
 def _log(msg: str) -> None:
@@ -106,7 +133,7 @@ def _pages_for(limit: int) -> int:
 def _rejects_pages_flag(response: Dict[str, Any]) -> bool:
     """The helper predates ``search --pages`` (cobra: ``unknown flag: --pages``)."""
     error = str(response.get("error") or "")
-    return "unknown flag" in error and "--pages" in error
+    return bool(_UNKNOWN_PAGES_FLAG_RE.search(error))
 
 
 def _build_search_args(
@@ -127,9 +154,10 @@ def _build_search_args(
     clause = _date_clause(from_date, to_date)
     if clause and "date:" not in topic:
         query = f"{topic} {clause}"
-    args = [CLI_BIN, "search", query, "--json"]
+    args = [CLI_BIN, "search", "--json"]
     if pages > 1:
         args += ["--pages", str(pages)]
+    args += ["--", query]
     return args
 
 
@@ -163,19 +191,23 @@ def _run_cli(cmd: List[str], timeout: int) -> Dict[str, Any]:
     if not _is_available():
         return {"results": [], "error": f"{CLI_BIN} not on PATH"}
     try:
-        result = subproc.run_with_timeout(cmd, timeout=timeout)
+        result = subproc.run_with_timeout(cmd, timeout=timeout, env=_child_env())
     except subproc.SubprocTimeout as exc:
-        _log(f"Timeout: {exc}")
-        return {"results": [], "error": str(exc)}
+        msg = _scrub_url_userinfo(str(exc))
+        _log(f"Timeout: {msg}")
+        return {"results": [], "error": msg}
     except FileNotFoundError as exc:
-        _log(f"Binary missing: {exc}")
-        return {"results": [], "error": str(exc)}
+        msg = _scrub_url_userinfo(str(exc))
+        _log(f"Binary missing: {msg}")
+        return {"results": [], "error": msg}
     except OSError as exc:
-        _log(f"Spawn failed: {exc}")
-        return {"results": [], "error": str(exc)}
+        msg = _scrub_url_userinfo(str(exc))
+        _log(f"Spawn failed: {msg}")
+        return {"results": [], "error": msg}
 
     if result.returncode != 0:
-        snippet = (result.stderr or "").strip().splitlines()[:1]
+        stderr = _scrub_url_userinfo(result.stderr or "")
+        snippet = stderr.strip().splitlines()[:1]
         first = snippet[0] if snippet else f"exit {result.returncode}"
         _log(f"CLI exit {result.returncode}: {first}")
         return {"results": [], "error": first}
@@ -190,8 +222,9 @@ def _run_cli(cmd: List[str], timeout: int) -> Dict[str, Any]:
     try:
         data = json.loads(stdout)
     except json.JSONDecodeError as exc:
-        _log(f"JSON decode failed: {exc}")
-        return {"results": [], "error": f"json decode: {exc}"}
+        msg = _scrub_url_userinfo(str(exc))
+        _log(f"JSON decode failed: {msg}")
+        return {"results": [], "error": f"json decode: {msg}"}
 
     return {"results": _coerce_list(data)}
 

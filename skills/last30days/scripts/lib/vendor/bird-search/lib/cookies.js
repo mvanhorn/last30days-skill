@@ -6,6 +6,71 @@ const TWITTER_COOKIE_NAMES = ['auth_token', 'ct0'];
 const TWITTER_URL = 'https://x.com/';
 const TWITTER_ORIGINS = ['https://x.com/', 'https://twitter.com/'];
 const DEFAULT_COOKIE_TIMEOUT_MS = 30_000;
+export const COOKIE_VALUE_REGEX = /^[!#$%&'()*+\-./0-9:<=>?@A-Z[\]^_`a-z{|}~]+$/;
+const HEADER_VALUE_REGEX = /^[\x20-\x7e]+$/;
+const INVALID_COOKIE_ERROR = 'Invalid auth_token/ct0 format';
+const SECRET_ENV_KEYS = ['AUTH_TOKEN', 'CT0', 'TWITTER_AUTH_TOKEN', 'TWITTER_CT0'];
+export function isValidCookieValue(value) {
+    return typeof value === 'string' && COOKIE_VALUE_REGEX.test(value);
+}
+export function isValidHeaderValue(value) {
+    return typeof value === 'string' && HEADER_VALUE_REGEX.test(value);
+}
+function normalizeCookieValue(value) {
+    if (typeof value !== 'string') {
+        return null;
+    }
+    if (/[\r\n\0]/.test(value)) {
+        throw new Error(INVALID_COOKIE_ERROR);
+    }
+    const trimmed = value.replace(/^[ \t]+|[ \t]+$/g, '');
+    if (trimmed.length === 0) {
+        return null;
+    }
+    if (!COOKIE_VALUE_REGEX.test(trimmed)) {
+        throw new Error(INVALID_COOKIE_ERROR);
+    }
+    return trimmed;
+}
+export function redactSecrets(text, extraSecrets = []) {
+    if (text === null || text === undefined) {
+        return '';
+    }
+    let out = String(text);
+    const candidates = new Set();
+    const addCandidate = (raw) => {
+        if (typeof raw !== 'string') {
+            return;
+        }
+        for (const variant of [raw, raw.trim()]) {
+            if (variant.length >= 6) {
+                candidates.add(variant);
+                const escaped = JSON.stringify(variant).slice(1, -1);
+                if (escaped.length >= 6) {
+                    candidates.add(escaped);
+                }
+            }
+        }
+    };
+    for (const secret of extraSecrets) {
+        addCandidate(secret);
+    }
+    for (const key of SECRET_ENV_KEYS) {
+        addCandidate(process.env[key]);
+    }
+    // Mask longest known secrets (e.g. a full custom cookieHeader with extra
+    // cookies) before individual auth_token=/ct0= substitutions alter the text.
+    const ordered = [...candidates].sort((a, b) => b.length - a.length);
+    for (const secret of ordered) {
+        out = out.split(secret).join('<redacted>');
+    }
+    out = out.replace(
+        /(Headers\.\w+:\s*)(["'])[\s\S]*?\2(\s+is an invalid header value)/gi,
+        '$1"<redacted>"$3',
+    );
+    out = out.replace(/\b(auth_token|ct0)=[^;\s"']*/gi, '$1=<redacted>');
+    return out;
+}
 async function loadSweetCookie() {
     return import('@steipete/sweet-cookie');
 }
@@ -16,14 +81,36 @@ function normalizeValue(value) {
     const trimmed = value.trim();
     return trimmed.length > 0 ? trimmed : null;
 }
+const TRUTHY_ENV_VALUES = new Set(['1', 'true', 'yes', 'on']);
 function envFlagEnabled(name) {
     const value = normalizeValue(process.env[name]);
     if (!value) {
         return false;
     }
-    return ['1', 'true', 'yes', 'on'].includes(value.toLowerCase());
+    return TRUTHY_ENV_VALUES.has(value.toLowerCase());
+}
+function browserCookiesDeniedByEnv() {
+    if (envFlagEnabled('BIRD_DISABLE_BROWSER_COOKIES') ||
+        envFlagEnabled('LAST30DAYS_DISABLE_BROWSER_COOKIES')) {
+        return true;
+    }
+    const fromBrowser = process.env.FROM_BROWSER;
+    if (typeof fromBrowser === 'string' && fromBrowser.trim().toLowerCase() === 'off') {
+        return true;
+    }
+    const browserConsent = process.env.BROWSER_CONSENT;
+    if (browserConsent !== undefined) {
+        const normalized = String(browserConsent).trim().toLowerCase();
+        if (!TRUTHY_ENV_VALUES.has(normalized)) {
+            return true;
+        }
+    }
+    return false;
 }
 function cookieHeader(authToken, ct0) {
+    if (!isValidCookieValue(authToken) || !isValidCookieValue(ct0)) {
+        throw new Error(INVALID_COOKIE_ERROR);
+    }
     return `auth_token=${authToken}; ct0=${ct0}`;
 }
 function buildEmpty() {
@@ -34,7 +121,7 @@ function readEnvCookie(cookies, keys, field) {
         return;
     }
     for (const key of keys) {
-        const value = normalizeValue(process.env[key]);
+        const value = normalizeCookieValue(process.env[key]);
         if (!value) {
             continue;
         }
@@ -93,8 +180,16 @@ async function readTwitterCookiesFromBrowser(options) {
         timeoutMs: options.cookieTimeoutMs,
     });
     warnings.push(...providerWarnings);
-    const authToken = pickCookieValue(cookies, 'auth_token');
-    const ct0 = pickCookieValue(cookies, 'ct0');
+    let authToken = null;
+    let ct0 = null;
+    try {
+        authToken = normalizeCookieValue(pickCookieValue(cookies, 'auth_token'));
+        ct0 = normalizeCookieValue(pickCookieValue(cookies, 'ct0'));
+    }
+    catch {
+        warnings.push(INVALID_COOKIE_ERROR);
+        return { cookies: out, warnings };
+    }
     if (authToken) {
         out.authToken = authToken;
     }
@@ -140,8 +235,7 @@ export async function extractCookiesFromFirefox(profile) {
 export async function resolveCredentials(options) {
     const warnings = [];
     const cookies = buildEmpty();
-    const disableBrowserCookies = envFlagEnabled('BIRD_DISABLE_BROWSER_COOKIES') ||
-        envFlagEnabled('LAST30DAYS_DISABLE_BROWSER_COOKIES');
+    const disableBrowserCookies = browserCookiesDeniedByEnv();
     const cookieTimeoutMs = typeof options.cookieTimeoutMs === 'number' &&
         Number.isFinite(options.cookieTimeoutMs) &&
         options.cookieTimeoutMs > 0
@@ -149,14 +243,20 @@ export async function resolveCredentials(options) {
         : process.platform === 'darwin'
             ? DEFAULT_COOKIE_TIMEOUT_MS
             : undefined;
-    if (options.authToken) {
-        cookies.authToken = options.authToken;
-        cookies.source = 'CLI argument';
-    }
-    if (options.ct0) {
-        cookies.ct0 = options.ct0;
-        if (!cookies.source) {
+    if (options.authToken !== undefined && options.authToken !== null) {
+        const normalizedAuthToken = normalizeCookieValue(options.authToken);
+        if (normalizedAuthToken) {
+            cookies.authToken = normalizedAuthToken;
             cookies.source = 'CLI argument';
+        }
+    }
+    if (options.ct0 !== undefined && options.ct0 !== null) {
+        const normalizedCt0 = normalizeCookieValue(options.ct0);
+        if (normalizedCt0) {
+            cookies.ct0 = normalizedCt0;
+            if (!cookies.source) {
+                cookies.source = 'CLI argument';
+            }
         }
     }
     readEnvCookie(cookies, ['AUTH_TOKEN', 'TWITTER_AUTH_TOKEN'], 'authToken');

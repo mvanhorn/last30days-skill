@@ -34,6 +34,9 @@ STOPWORDS = frozenset({
 # the soft floor before it is applied wholesale.
 RELEVANCE_FLOOR = 0.1
 MIN_ON_TOPIC = 5
+# Generic-only matches (only LOW_SIGNAL_QUERY_TOKENS overlapped) must sit
+# strictly below RELEVANCE_FLOOR so off-topic hits cannot clear any relevance gate.
+GENERIC_ONLY_CAP = round(RELEVANCE_FLOOR - 0.01, 2)
 
 
 # Synonym groups for relevance scoring (bidirectional expansion)
@@ -209,9 +212,9 @@ def token_overlap_relevance(
         0.20 * precision
     )
 
-    # If we only matched generic query words, keep the score below the
-    # normal relevance filter threshold so these do not survive by default.
+    # If we only matched generic query words, keep the score strictly below
+    # RELEVANCE_FLOOR so these do not survive any relevance filter by default.
     if informative_q_tokens and not (informative_q_tokens & t_tokens):
-        return round(min(0.24, base), 2)
+        return round(min(GENERIC_ONLY_CAP, base), 2)
 
     return round(min(1.0, base + phrase_bonus), 2)

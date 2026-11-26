@@ -5,12 +5,26 @@ from __future__ import annotations
 import math
 import os
 import sqlite3
+import sys
+import threading
+import time
 import uuid
 from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from . import log
+
 JOURNAL_ENV = "LAST30DAYS_USAGE_JOURNAL"
+NONCE_ENV = "LAST30DAYS_USAGE_NONCE"
+UNKNOWN_COST_MARKER = "[last30days:usage-cost-unknown]"
+_JOURNAL_TIMEOUT_SECONDS = 5.0
+_BUSY_TIMEOUT_MS = 5_000
+_WRITE_LOCK = threading.Lock()
+_STATE_LOCK = threading.Lock()
+_BEGIN_FAILED_JOURNALS: set[str] = set()
+_ACTIVE_DEADLINE: ContextVar[float | None] = ContextVar("last30days_usage_deadline", default=None)
 
 _PAID_HOSTS = {
     "openrouter.ai": "openrouter",
@@ -32,38 +46,191 @@ _PAID_HOSTS = {
 }
 
 
+def _log_journal_error(operation: str, exc: sqlite3.Error) -> None:
+    log.source_log(
+        "Usage",
+        f"journal {operation} failed: {type(exc).__name__}: {exc}",
+        tty_only=False,
+    )
+
+
+def _journal_key(path: Path | str) -> str:
+    return os.path.abspath(os.fspath(path))
+
+
+def _unknown_sentinel_path(path: Path | str) -> Path:
+    return Path(f"{os.fspath(path)}.unknown")
+
+
 @contextmanager
-def _connection(path):
-    conn = sqlite3.connect(path)
+def with_deadline(deadline_monotonic: float | None):
+    """Bind a wall-clock deadline to usage journal waits in the current scope."""
+    token = _ACTIVE_DEADLINE.set(deadline_monotonic)
     try:
-        with conn:
-            yield conn
+        yield
     finally:
-        conn.close()
+        _ACTIVE_DEADLINE.reset(token)
+
+
+def _effective_deadline(deadline_monotonic: float | None) -> float | None:
+    return deadline_monotonic if deadline_monotonic is not None else _ACTIVE_DEADLINE.get()
+
+
+def _remaining_budget(deadline_monotonic: float | None) -> float:
+    if deadline_monotonic is None:
+        return _JOURNAL_TIMEOUT_SECONDS
+    return min(_JOURNAL_TIMEOUT_SECONDS, max(0.0, deadline_monotonic - time.monotonic()))
+
+
+def unknown_cost_marker(nonce: str | None = None) -> str:
+    token = os.environ.get(NONCE_ENV) if nonce is None else nonce
+    return f"{UNKNOWN_COST_MARKER}:{token}" if token else UNKNOWN_COST_MARKER
+
+
+def _mark_begin_failed(path: Path | str) -> None:
+    """Record a fail-closed unknown-cost marker in-process, on disk, and on stderr."""
+    key = _journal_key(path)
+    sentinel = _unknown_sentinel_path(path)
+    flags = os.O_CREAT | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0)
+    with _STATE_LOCK:
+        _BEGIN_FAILED_JOURNALS.add(key)
+    try:
+        fd = os.open(sentinel, flags, 0o600)
+        os.close(fd)
+    except OSError:
+        pass
+    try:
+        sys.stderr.write(f"{unknown_cost_marker()}\n")
+        sys.stderr.flush()
+    except OSError:
+        pass
+
+
+def _has_begin_failed(path: Path | str) -> bool:
+    key = _journal_key(path)
+    with _STATE_LOCK:
+        if key in _BEGIN_FAILED_JOURNALS:
+            return True
+    try:
+        return os.path.lexists(_unknown_sentinel_path(path))
+    except OSError:
+        return False
+
+
+@contextmanager
+def _connection(path, *, write: bool = False, deadline_monotonic: float | None = None):
+    deadline = _effective_deadline(deadline_monotonic)
+    if deadline is not None and deadline - time.monotonic() <= 0:
+        raise sqlite3.OperationalError("usage journal deadline exceeded")
+    acquired = False
+    if write:
+        lock_timeout = _remaining_budget(deadline)
+        acquired = _WRITE_LOCK.acquire(timeout=lock_timeout)
+        if not acquired:
+            raise sqlite3.OperationalError("usage journal lock wait timed out")
+    try:
+        sql_timeout = _remaining_budget(deadline)
+        if deadline is not None and sql_timeout <= 0:
+            raise sqlite3.OperationalError("usage journal deadline exceeded")
+        busy_ms = max(0, int(sql_timeout * 1000))
+        conn = sqlite3.connect(
+            path,
+            timeout=sql_timeout,
+            isolation_level=None,
+        )
+        try:
+            conn.execute(f"PRAGMA busy_timeout={busy_ms}")
+            if write:
+                conn.execute("BEGIN IMMEDIATE")
+            try:
+                yield conn
+            except BaseException:
+                if write and conn.in_transaction:
+                    try:
+                        conn.execute("ROLLBACK")
+                    except sqlite3.Error:
+                        pass
+                raise
+            else:
+                if write and conn.in_transaction:
+                    conn.execute("COMMIT")
+        finally:
+            conn.close()
+    finally:
+        if acquired:
+            _WRITE_LOCK.release()
 
 
 def create_journal(path: Path) -> None:
     fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     os.close(fd)
-    with _connection(path) as conn:
-        conn.execute(
-            "CREATE TABLE attempts (id TEXT PRIMARY KEY, provider TEXT NOT NULL, "
-            "cost REAL, unknown INTEGER NOT NULL DEFAULT 1, "
-            "prompt_tokens INTEGER DEFAULT 0, completion_tokens INTEGER DEFAULT 0)"
+    acquired = _WRITE_LOCK.acquire(timeout=_JOURNAL_TIMEOUT_SECONDS)
+    if not acquired:
+        raise sqlite3.OperationalError("usage journal lock wait timed out")
+    try:
+        with _STATE_LOCK:
+            _BEGIN_FAILED_JOURNALS.discard(_journal_key(path))
+        try:
+            _unknown_sentinel_path(path).unlink(missing_ok=True)
+        except OSError:
+            pass
+        conn = sqlite3.connect(
+            path,
+            timeout=_JOURNAL_TIMEOUT_SECONDS,
+            isolation_level=None,
         )
+        try:
+            conn.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
+            try:
+                conn.execute("PRAGMA journal_mode=WAL")
+            except sqlite3.Error:
+                pass
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                conn.execute(
+                    "CREATE TABLE attempts (id TEXT PRIMARY KEY, provider TEXT NOT NULL, "
+                    "cost REAL, unknown INTEGER NOT NULL DEFAULT 1, "
+                    "prompt_tokens INTEGER DEFAULT 0, completion_tokens INTEGER DEFAULT 0)"
+                )
+                conn.execute("COMMIT")
+            except BaseException:
+                if conn.in_transaction:
+                    try:
+                        conn.execute("ROLLBACK")
+                    except sqlite3.Error:
+                        pass
+                raise
+        finally:
+            conn.close()
+    finally:
+        _WRITE_LOCK.release()
 
 
-def begin(provider: str) -> tuple[str, str, str] | None:
+def begin(
+    provider: str,
+    *,
+    deadline_monotonic: float | None = None,
+) -> tuple[str, str, str] | None:
     path = os.environ.get(JOURNAL_ENV)
     if not path:
         return None
     attempt_id = uuid.uuid4().hex
-    with _connection(path) as conn:
-        conn.execute("INSERT INTO attempts (id, provider) VALUES (?, ?)", (attempt_id, provider))
+    try:
+        with _connection(path, write=True, deadline_monotonic=deadline_monotonic) as conn:
+            conn.execute("INSERT INTO attempts (id, provider) VALUES (?, ?)", (attempt_id, provider))
+    except sqlite3.Error as exc:
+        _log_journal_error("begin", exc)
+        _mark_begin_failed(path)
+        return None
     return path, attempt_id, provider
 
 
-def begin_http(url: str, method: str) -> tuple[str, str, str] | None:
+def begin_http(
+    url: str,
+    method: str,
+    *,
+    deadline_monotonic: float | None = None,
+) -> tuple[str, str, str] | None:
     if not os.environ.get(JOURNAL_ENV):
         return None
     parts = urlsplit(url)
@@ -76,18 +243,34 @@ def begin_http(url: str, method: str) -> tuple[str, str, str] | None:
             if override and urlsplit(override).netloc == parts.netloc:
                 provider = name.lower()
                 break
-    return begin(provider) if provider else None
+    if not provider:
+        return None
+    if deadline_monotonic is None:
+        return begin(provider)
+    return begin(provider, deadline_monotonic=deadline_monotonic)
 
 
-def cancel(attempt: tuple[str, str, str] | None) -> None:
+def cancel(
+    attempt: tuple[str, str, str] | None,
+    *,
+    deadline_monotonic: float | None = None,
+) -> None:
     """Remove an attempt when the transport provably never started."""
     if attempt is not None:
         path, attempt_id, _ = attempt
-        with _connection(path) as conn:
-            conn.execute("DELETE FROM attempts WHERE id = ?", (attempt_id,))
+        try:
+            with _connection(path, write=True, deadline_monotonic=deadline_monotonic) as conn:
+                conn.execute("DELETE FROM attempts WHERE id = ?", (attempt_id,))
+        except sqlite3.Error as exc:
+            _log_journal_error("cancel", exc)
 
 
-def finish(attempt: tuple[str, str, str] | None, payload: object) -> None:
+def finish(
+    attempt: tuple[str, str, str] | None,
+    payload: object,
+    *,
+    deadline_monotonic: float | None = None,
+) -> None:
     if attempt is None or not isinstance(payload, dict):
         return
     path, attempt_id, provider = attempt
@@ -109,16 +292,20 @@ def finish(attempt: tuple[str, str, str] | None, payload: object) -> None:
     completion = usage.get("completion_tokens", usage.get("output_tokens", 0))
     prompt = prompt if type(prompt) is int and prompt >= 0 else 0
     completion = completion if type(completion) is int and completion >= 0 else 0
-    with _connection(path) as conn:
-        conn.execute(
-            "UPDATE attempts SET cost = ?, unknown = ?, prompt_tokens = ?, completion_tokens = ? WHERE id = ?",
-            (cost, unknown, prompt, completion, attempt_id),
-        )
+    try:
+        with _connection(path, write=True, deadline_monotonic=deadline_monotonic) as conn:
+            conn.execute(
+                "UPDATE attempts SET cost = ?, unknown = ?, prompt_tokens = ?, completion_tokens = ? WHERE id = ?",
+                (cost, unknown, prompt, completion, attempt_id),
+            )
+    except sqlite3.Error as exc:
+        _log_journal_error("finish", exc)
 
 
 def read_journal(path: Path) -> dict:
+    unknown_from_begin = _has_begin_failed(path)
     try:
-        with _connection(path) as conn:
+        with _connection(path, write=False) as conn:
             row = conn.execute(
                 "SELECT COALESCE(SUM(cost), 0), COALESCE(SUM(unknown), 0), "
                 "COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0) FROM attempts"
@@ -127,7 +314,7 @@ def read_journal(path: Path) -> dict:
         return {"token_cost": 0.0, "cost_unknown": 1, "prompt_tokens": 0, "completion_tokens": 0}
     return {
         "token_cost": row[0],
-        "cost_unknown": int(row[1] > 0),
+        "cost_unknown": int(row[1] > 0 or unknown_from_begin),
         "prompt_tokens": row[2],
         "completion_tokens": row[3],
     }

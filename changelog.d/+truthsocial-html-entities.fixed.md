@@ -1,0 +1,1 @@
+Truth Social post text now decodes HTML entities (`&amp;`, `&#39;`, `&quot;`) and keeps a line break between paragraphs, so titles and quotes no longer show raw entities or run two paragraphs together.

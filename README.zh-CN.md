@@ -1,6 +1,6 @@
 # /last30days
 
-[English](README.md) | [Français](README.fr.md) | [Deutsch](README.de.md) | [Español](README.es.md) | [Português (Brasil)](README.pt-BR.md) | [日本語](README.ja.md) | 简体中文 | [العربية](README.ar.md) | [فارسی](README.fa.md) | [Türkçe](README.tr.md)
+[English](README.md) | [Français](README.fr.md) | [Deutsch](README.de.md) | [Español](README.es.md) | [Português (Brasil)](README.pt-BR.md) | [日本語](README.ja.md) | 简体中文 | [العربية](README.ar.md) | [فارسی](README.fa.md) | [Türkçe](README.tr.md) | [Tiếng Việt](README.vi.md) | [Русский](README.ru.md)
 
 <p align="center">
   <img src="media/pr-assets/last30days-ad.gif" width="720" alt="last30days——由 AI 智能体驱动、搜索真实用户而非编辑内容的搜索引擎" />
@@ -370,17 +370,17 @@ skills/last30days/scripts/setup-keychain.sh --delete XAI_API_KEY
 
 默认情况下，工具完全在本机运行——除了你调用的搜索 API（Reddit、ScrapeCreators 等），不会向外部发送任何数据。
 
-**重排序（Reranking）。** 如果配置了推理提供商（`OPENAI_API_KEY`、`XAI_API_KEY`、`OPENROUTER_API_KEY`、`GOOGLE_API_KEY`、`GEMINI_API_KEY` 或 `GOOGLE_GENAI_API_KEY`），引擎会将研究主题和检索到的内容片段发送给该提供商进行相关性评分。这是可选的：若不设置推理密钥，引擎将使用本地评分模型，不会为重排序发起外部调用。
+**重排序（Reranking）。** 在默认的 `auto` 模式下，引擎会使用可用的凭据选择推理提供商。这包括从 shell 继承的密钥（`OPENAI_API_KEY`、`XAI_API_KEY`、`OPENROUTER_API_KEY`、`GOOGLE_API_KEY`、`GEMINI_API_KEY` 或 `GOOGLE_GENAI_API_KEY`），即使这些密钥是为其他工具设置的。如果选中了某个提供商，引擎会将您的研究主题和初筛后的内容片段发送给该提供商进行相关性评分。当没有可用的推理提供商时，评分会保留在本地。有关选择顺序以及如何保持本地重排序的方法，请参阅 [推理提供商优先级](CONFIGURATION.md#reasoning-provider-priority)。
 
 **本地存储。** 设置 `LAST30DAYS_STORE=1` 后，研究结果会保存到实际使用的保存目录内名为 `research.db` 的本地 SQLite 数据库中（`--save-dir` 优先于 `LAST30DAYS_MEMORY_DIR`）。如果没有使用保存目录，数据库位于 `~/.local/share/last30days/research.db`。启用存储不会将该数据库上传到远程服务。保留期限与清理方法详见 [CONFIGURATION.md](CONFIGURATION.md#--store-flag)，其中包括删除前停止所有使用该数据库的进程。
 
 ## Star 历史
 
-<a href="https://star-history.dera.page/#mvanhorn/last30days-skill&Date">
+<a href="https://github.com/mvanhorn/last30days-skill/stargazers">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://star-history.dera.page/svg?repos=mvanhorn/last30days-skill&type=Date&theme=dark" />
-    <source media="(prefers-color-scheme: light)" srcset="https://star-history.dera.page/svg?repos=mvanhorn/last30days-skill&type=Date" />
-    <img alt="Star 历史图" src="https://star-history.dera.page/svg?repos=mvanhorn/last30days-skill&type=Date" />
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/mvanhorn/last30days-skill/star-history-assets/star-history-dark.svg" />
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/mvanhorn/last30days-skill/star-history-assets/star-history-light.svg" />
+    <img alt="Star 历史图" src="https://raw.githubusercontent.com/mvanhorn/last30days-skill/star-history-assets/star-history-light.svg" />
   </picture>
 </a>
 

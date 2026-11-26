@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -272,7 +273,64 @@ func TestFormatRunErrorHandlesNilResult(t *testing.T) {
 	}
 }
 
+func TestFormatRunErrorCapsOversizedStderr(t *testing.T) {
+	// Place multi-byte UTF-8 runes across the 16 KiB boundary and end with a
+	// recognizable marker to verify both cap enforcement and UTF-8 safety.
+	prefix := strings.Repeat("é", maxErrorStderrBytes) // 2 bytes/rune => 32 KiB
+	tailMarker := "\nTraceback: final error line\n"
+	res := &engine.RunResult{
+		Stderr: []byte(prefix + tailMarker),
+	}
+	msg := formatRunError(errors.New("boom"), res)
+	if !strings.Contains(msg, "boom") {
+		t.Fatalf("error missing base message: %q", msg[:min(len(msg), 120)])
+	}
+	if !strings.Contains(msg, "truncated, showing last") {
+		t.Fatalf("error missing truncation notice: %q", msg[:min(len(msg), 120)])
+	}
+	if !strings.HasSuffix(msg, tailMarker) {
+		t.Fatalf("error lost trailing traceback: %q", msg[max(0, len(msg)-80):])
+	}
+	if len(msg) > maxErrorStderrBytes+256 {
+		t.Fatalf("formatted error length = %d, exceeds bounded ceiling", len(msg))
+	}
+	if !utf8.ValidString(msg) {
+		t.Fatal("formatted error split a UTF-8 rune at truncation boundary")
+	}
+}
+
+func TestFormatRunErrorNotesPreTruncatedStderr(t *testing.T) {
+	res := &engine.RunResult{
+		Stderr:          []byte("\x80\xa9final diagnostic\n"),
+		StderrTruncated: true,
+	}
+	msg := formatRunError(errors.New("boom"), res)
+	if !strings.Contains(msg, "truncated, showing last 17 bytes") || !strings.Contains(msg, "final diagnostic") {
+		t.Fatalf("unexpected pre-truncated message: %q", msg)
+	}
+	if !utf8.ValidString(msg) {
+		t.Fatalf("pre-truncated message left orphaned UTF-8 continuation bytes: %q", msg)
+	}
+}
+
+func TestIsDegradedReportRejectsTruncatedStdout(t *testing.T) {
+	res := &engine.RunResult{
+		Stdout:          []byte("Evidence\n\n---\n" + canonicalOutputEnd + "\n"),
+		Stderr:          []byte(strictExitPrefix + "x\n"),
+		StdoutTruncated: true,
+		ExitCode:        strictExitCode,
+	}
+	if isDegradedReport(res, engine.ErrStdoutLimitExceeded, "compact") {
+		t.Fatal("isDegradedReport accepted truncated stdout")
+	}
+}
+
 func TestResearchExtraEnvAllowsEnginePlanning(t *testing.T) {
+	t.Setenv("X_BEARER_TOKEN", "")
+	t.Setenv("LAST30DAYS_X_API_OPT_IN", "")
+	t.Setenv("LAST30DAYS_X_BACKEND", "")
+	t.Setenv("XAI_API_KEY", "")
+	t.Setenv("XQUIK_API_KEY", "")
 	got := researchExtraEnv()
 	want := []string{
 		"LAST30DAYS_ALLOW_ENGINE_PLAN=1", "LAST30DAYS_NO_JOBS_DIGEST=1",
@@ -280,6 +338,94 @@ func TestResearchExtraEnvAllowsEnginePlanning(t *testing.T) {
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("researchExtraEnv() = %#v, want %#v", got, want)
+	}
+}
+
+func TestResearchExtraEnvXAPIAutoOptIn(t *testing.T) {
+	cases := []struct {
+		name     string
+		env      map[string]string
+		wantXAPI bool
+	}{
+		{
+			name:     "bearer set opts into xapi fallback",
+			env:      map[string]string{"X_BEARER_TOKEN": "dummy-bearer"},
+			wantXAPI: true,
+		},
+		{
+			name: "LAST30DAYS_X_BACKEND=auto still passes xapi opt-in",
+			env: map[string]string{
+				"X_BEARER_TOKEN":       "dummy-bearer",
+				"LAST30DAYS_X_BACKEND": "auto",
+			},
+			wantXAPI: true,
+		},
+		{
+			name: "unsubstituted backend and xai placeholders still opt into xapi",
+			env: map[string]string{
+				"X_BEARER_TOKEN":       "dummy-bearer",
+				"LAST30DAYS_X_BACKEND": "${user_config.last30days_x_backend}",
+				"XAI_API_KEY":          "${user_config.xai_api_key}",
+			},
+			wantXAPI: true,
+		},
+		{
+			name:     "unsubstituted bearer placeholder does not opt into xapi",
+			env:      map[string]string{"X_BEARER_TOKEN": "${user_config.x_bearer_token}"},
+			wantXAPI: false,
+		},
+		{
+			name: "explicit LAST30DAYS_X_API_OPT_IN=0 disables auto opt-in",
+			env: map[string]string{
+				"X_BEARER_TOKEN":          "dummy-bearer",
+				"LAST30DAYS_X_API_OPT_IN": "0",
+			},
+			wantXAPI: false,
+		},
+		{
+			name: "cookies present still pass xapi opt-in so Python falls back if node is absent",
+			env: map[string]string{
+				"X_BEARER_TOKEN": "dummy-bearer",
+				"AUTH_TOKEN":     "dummy-auth",
+				"CT0":            "dummy-ct0",
+			},
+			wantXAPI: true,
+		},
+		{
+			name: "explicit backend pin still delegates pin enforcement to Python",
+			env: map[string]string{
+				"X_BEARER_TOKEN":       "dummy-bearer",
+				"LAST30DAYS_X_BACKEND": "bird",
+			},
+			wantXAPI: true,
+		},
+		{
+			name: "higher-priority xai key still delegates precedence to Python",
+			env: map[string]string{
+				"X_BEARER_TOKEN": "dummy-bearer",
+				"XAI_API_KEY":    "dummy-xai",
+			},
+			wantXAPI: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, key := range []string{
+				"X_BEARER_TOKEN", "LAST30DAYS_X_API_OPT_IN", "LAST30DAYS_X_BACKEND",
+				"XAI_API_KEY", "XQUIK_API_KEY", "AUTH_TOKEN", "CT0",
+			} {
+				t.Setenv(key, "")
+			}
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			got := researchExtraEnv()
+			hasXAPI := slices.Contains(got, xAPIOptInEnv)
+			if hasXAPI != tc.wantXAPI {
+				t.Fatalf("researchExtraEnv() = %#v (has %s=%t), want %t", got, xAPIOptInEnv, hasXAPI, tc.wantXAPI)
+			}
+		})
 	}
 }
 

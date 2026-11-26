@@ -1,6 +1,6 @@
 # /last30days
 
-[English](README.md) | [Français](README.fr.md) | [Deutsch](README.de.md) | [Español](README.es.md) | [Português (Brasil)](README.pt-BR.md) | [日本語](README.ja.md) | [简体中文](README.zh-CN.md) | [العربية](README.ar.md) | فارسی | [Türkçe](README.tr.md)
+[English](README.md) | [Français](README.fr.md) | [Deutsch](README.de.md) | [Español](README.es.md) | [Português (Brasil)](README.pt-BR.md) | [日本語](README.ja.md) | [简体中文](README.zh-CN.md) | [العربية](README.ar.md) | فارسی | [Türkçe](README.tr.md) | [Tiếng Việt](README.vi.md) | [Русский](README.ru.md)
 
 <p align="center">
   <img src="media/pr-assets/last30days-ad.gif" width="720" alt="last30days - یک موتور جستجو با هدایت ایجنت هوش مصنوعی که بر اساس مردم جستجو می‌کند، نه ویراستاران" />
@@ -367,17 +367,17 @@ skills/last30days/scripts/setup-keychain.sh --delete XAI_API_KEY
 
 به طور پیش‌فرض، این اسکیل کاملاً روی دستگاه شما اجرا می‌شود — هیچ داده‌ای به خارج ارسال نمی‌شود مگر به APIهای جستجویی که فراخوانی می‌کنید (Reddit، ScrapeCreators و غیره).
 
-**رتبه‌بندی مجدد (Reranking).** زمانی که یک سرویس‌دهنده استدلال (`OPENAI_API_KEY`، `XAI_API_KEY`، `OPENROUTER_API_KEY`، `GOOGLE_API_KEY`، `GEMINI_API_KEY` یا `GOOGLE_GENAI_API_KEY`) را پیکربندی می‌کنید، موتور موضوع پژوهش شما و تکه‌های محتوای بازیابی‌شده را برای امتیازدهی میزان ارتباط به آن سرویس‌دهنده ارسال می‌کند. این مورد اختیاری است: اگر هیچ کلید استدلالی تنظیم نکنید، موتور به مدل امتیازدهی محلی برمی‌گردد و هیچ فراخوانی خارجی برای رتبه‌بندی مجدد انجام نمی‌شود. برای اولویت سرویس‌دهندگان به [CONFIGURATION.md](CONFIGURATION.md) مراجعه کنید.
+**رتبه‌بندی مجدد (Reranking).** در حالت پیش‌فرض `auto`، موتور از اعتبارنامه‌های موجود برای انتخاب یک سرویس‌دهنده استدلال استفاده می‌کند. این شامل کلیدهایی است که از شل شما به ارث رسیده‌اند (`OPENAI_API_KEY`، `XAI_API_KEY`، `OPENROUTER_API_KEY`، `GOOGLE_API_KEY`، `GEMINI_API_KEY` یا `GOOGLE_GENAI_API_KEY`)، حتی کلیدهایی که برای ابزار دیگری تنظیم کرده‌اید. اگر سرویس‌دهنده‌ای انتخاب شود، موتور موضوع پژوهش شما و تکه‌های گلچین‌شده را برای امتیازدهی ارتباط به آن ارسال می‌کند. وقتی هیچ سرویس‌دهنده استدلالی در دسترس نباشد، امتیازدهی محلی می‌ماند. برای ترتیب انتخاب و روش محلی نگه داشتن رتبه‌بندی مجدد به [اولویت سرویس‌دهندگان استدلال](CONFIGURATION.md#reasoning-provider-priority) مراجعه کنید.
 
 **ذخیره‌سازی محلی.** زمانی که `LAST30DAYS_STORE=1` تنظیم شده باشد، یافته‌ها در یک پایگاه داده محلی SQLite به نام `research.db` در داخل دایرکتوری ذخیره‌سازی مؤثر پایدار می‌شوند (پرچم `--save-dir` بر `LAST30DAYS_MEMORY_DIR` اولویت دارد). اگر هیچ دایرکتوری ذخیره‌ای فعال نباشد، پایگاه داده در مسیر `~/.local/share/last30days/research.db` خواهد بود. فعال کردن ذخیره‌سازی پایگاه داده را در یک سرویس راه دور آپلود نمی‌کند. برای جزئیات نگهداری و دستورالعمل‌های پاک‌سازی، از جمله توقف کاربران پایگاه داده قبل از حذف، به [CONFIGURATION.md](CONFIGURATION.md#--store-flag) مراجعه کنید.
 
 ## تاریخچه ستاره‌های گیت‌هاب
 
-<a href="https://star-history.dera.page/#mvanhorn/last30days-skill&Date">
+<a href="https://github.com/mvanhorn/last30days-skill/stargazers">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://star-history.dera.page/svg?repos=mvanhorn/last30days-skill&type=Date&theme=dark" />
-    <source media="(prefers-color-scheme: light)" srcset="https://star-history.dera.page/svg?repos=mvanhorn/last30days-skill&type=Date" />
-    <img alt="Star History Chart" src="https://star-history.dera.page/svg?repos=mvanhorn/last30days-skill&type=Date" />
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/mvanhorn/last30days-skill/star-history-assets/star-history-dark.svg" />
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/mvanhorn/last30days-skill/star-history-assets/star-history-light.svg" />
+    <img alt="Star History Chart" src="https://raw.githubusercontent.com/mvanhorn/last30days-skill/star-history-assets/star-history-light.svg" />
   </picture>
 </a>
 

@@ -32,8 +32,9 @@ DOC_ONLY_KEYS = {
     "LAST30DAYS_MCP_ALLOW_BROWSER_COOKIES",
     "LAST30DAYS_MCP_TIMEOUT",
     "LAST30DAYS_PYTHON",
-    # Watchlist owns this private temporary subprocess path; it is not user configuration.
+    # Watchlist owns these private per-run subprocess variables; they are not user configuration.
     "LAST30DAYS_USAGE_JOURNAL",
+    "LAST30DAYS_USAGE_NONCE",
     # Read from the process environment before or outside get_config
     # (config-dir override, Keychain/pass source switches), so they are
     # documented in CONFIGURATION.md without being config keys.
@@ -53,6 +54,8 @@ DOC_ONLY_KEYS = {
     "LAST30DAYS_NO_PATENT_DIGEST",
     # Same wrapper, same reason: a .env line cannot drop the report checklist.
     "LAST30DAYS_NO_REPORT_CHECKLIST",
+    # Same wrapper, same reason: a .env line cannot opt ambient tokens into xapi.
+    "LAST30DAYS_X_API_OPT_IN",
 }
 
 

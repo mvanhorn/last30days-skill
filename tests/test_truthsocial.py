@@ -25,8 +25,32 @@ class TestStripHtml(unittest.TestCase):
     def test_no_tags(self):
         self.assertEqual(truthsocial._strip_html("plain text"), "plain text")
 
-    def test_entities_preserved(self):
-        self.assertEqual(truthsocial._strip_html("<p>&amp; test</p>"), "&amp; test")
+    def test_entities_unescaped(self):
+        self.assertEqual(truthsocial._strip_html("<p>&amp; test</p>"), "& test")
+        self.assertEqual(
+            truthsocial._strip_html(
+                "<p>We&#39;re &quot;winning&quot; on tariffs &amp; trade &gt; anyone thought</p>"
+            ),
+            'We\'re "winning" on tariffs & trade > anyone thought',
+        )
+
+    def test_escaped_markup_is_kept_as_text(self):
+        # Entities are decoded after tags are stripped, so an escaped tag in
+        # the post text survives as text instead of being removed.
+        self.assertEqual(
+            truthsocial._strip_html("<p>use &lt;b&gt; for bold</p>"),
+            "use <b> for bold",
+        )
+
+    def test_paragraphs_are_separated(self):
+        self.assertEqual(
+            truthsocial._strip_html("<p>First paragraph.</p><p>Second paragraph.</p>"),
+            "First paragraph.\nSecond paragraph.",
+        )
+        self.assertEqual(
+            truthsocial._strip_html('<p>One</p>\n<p class="x">Two</p>'),
+            "One\nTwo",
+        )
 
 
 class TestExtractCoreSubject(unittest.TestCase):
@@ -243,6 +267,18 @@ class TestParseTruthSocialResponse(unittest.TestCase):
         items = truthsocial.parse_truthsocial_response(response)
         self.assertNotIn("<", items[0]["text"])
         self.assertNotIn(">", items[0]["text"])
+
+    def test_parse_decodes_entities_and_paragraphs(self):
+        response = {
+            "statuses": [
+                {
+                    "content": "<p>Tariffs &amp; trade</p><p>It&#39;s &quot;huge&quot;</p>",
+                    "account": {"acct": "poster"},
+                }
+            ]
+        }
+        items = truthsocial.parse_truthsocial_response(response)
+        self.assertEqual(items[0]["text"], 'Tariffs & trade\nIt\'s "huge"')
 
 if __name__ == "__main__":
     unittest.main()

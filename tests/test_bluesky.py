@@ -109,8 +109,10 @@ class TestCreateSession(unittest.TestCase):
     @patch("lib.bluesky.http.request")
     def test_returns_token(self, mock_request):
         mock_request.return_value = {"accessJwt": "tok123", "refreshJwt": "ref456"}
-        token = bluesky._create_session("user.bsky.social", "app-pw")
+        token, error_msg, error_status = bluesky._create_session("user.bsky.social", "app-pw")
         self.assertEqual(token, "tok123")
+        self.assertIsNone(error_msg)
+        self.assertIsNone(error_status)
         mock_request.assert_called_once()
 
     @patch("lib.bluesky.http.request")
@@ -123,15 +125,18 @@ class TestCreateSession(unittest.TestCase):
     @patch("lib.bluesky.http.request")
     def test_returns_none_on_failure(self, mock_request):
         mock_request.side_effect = Exception("connection refused")
-        token = bluesky._create_session("user.bsky.social", "app-pw")
+        token, error_msg, error_status = bluesky._create_session("user.bsky.social", "app-pw")
         self.assertIsNone(token)
-        self.assertIn("connection refused", bluesky._session_error)
+        self.assertIn("connection refused", error_msg)
+        self.assertIsNone(error_status)
 
     @patch("lib.bluesky.http.request")
     def test_returns_none_on_missing_jwt(self, mock_request):
         mock_request.return_value = {"did": "did:plc:abc"}
-        token = bluesky._create_session("user.bsky.social", "app-pw")
+        token, error_msg, error_status = bluesky._create_session("user.bsky.social", "app-pw")
         self.assertIsNone(token)
+        self.assertIn("No accessJwt", error_msg)
+        self.assertIsNone(error_status)
 
 
 class TestSearchBlueskyAuth(unittest.TestCase):
@@ -229,7 +234,8 @@ class TestSearchBlueskyAuth(unittest.TestCase):
         self.assertEqual(refresh_call.kwargs["headers"], {"Authorization": "Bearer ref-old"})
         self.assertNotIn("json_data", refresh_call.kwargs)
         self.assertEqual(refresh_call.kwargs["retries"], 0)
-        self.assertEqual(bluesky._cached_refresh_token, "ref-new")
+        cred_key = bluesky._credential_key("user.bsky.social", "pw")
+        self.assertEqual(bluesky._session_cache[cred_key].refresh_token, "ref-new")
         search_call = mock_request.call_args_list[3]
         self.assertEqual(search_call.kwargs["headers"], {"Authorization": "Bearer tok-new"})
 

@@ -59,10 +59,51 @@ while [[ $# -gt 0 ]]; do
     --delete) ACTION="delete"; shift ;;
     --replace) REPLACE=1; shift ;;
     --help|-h) sed -n '2,/^$/p' "$0" | sed 's/^# //; s/^#//'; exit 0 ;;
+    --) shift; if [[ $# -gt 0 ]]; then TARGETS+=("$@"); fi; break ;;
     -*) echo "unknown flag: $1" >&2; exit 2 ;;
     *) TARGETS+=("$1"); shift ;;
   esac
 done
+
+matches_regex() {
+  local LC_ALL=C
+  local value="$1"
+  local pattern="$2"
+  [[ "$value" =~ $pattern ]]
+}
+
+# Validate PREFIX: relative segments only (no leading '/', '-', or '.'; no '..'
+# or hidden segments; no control chars or whitespace), used verbatim to match lib/env.py.
+# Regexes live in variables because macOS Bash 3.2 rejects inline (...) in `=~`.
+prefix_re='^[A-Za-z0-9_][A-Za-z0-9._-]*(/[A-Za-z0-9_][A-Za-z0-9._-]*)*/?$'
+if [[ "$PREFIX" == *$'\n'* || "$PREFIX" == *$'\r'* ]] || ! matches_regex "$PREFIX" "$prefix_re"; then
+  echo "invalid LAST30DAYS_PASS_PREFIX: must be a relative path prefix like 'last30days/'" >&2
+  exit 2
+fi
+
+key_re='^[A-Z0-9_]+$'
+is_valid_key() {
+  local candidate="$1"
+  local allowed
+  if ! matches_regex "$candidate" "$key_re"; then
+    return 1
+  fi
+  for allowed in "${ALL_KEYS[@]}"; do
+    if [[ "$candidate" == "$allowed" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+if [[ ${#TARGETS[@]} -gt 0 ]]; then
+  for key in "${TARGETS[@]}"; do
+    if ! is_valid_key "$key"; then
+      echo "unknown or invalid key: $key" >&2
+      exit 2
+    fi
+  done
+fi
 
 # Checked after flag parsing so `--help` works on a box without pass installed.
 if ! command -v pass >/dev/null 2>&1; then
@@ -74,7 +115,7 @@ case "$ACTION" in
   list)
     echo "Stored ${PREFIX}* pass entries:"
     for key in "${ALL_KEYS[@]}"; do
-      if pass show "${PREFIX}${key}" >/dev/null 2>&1; then
+      if pass show -- "${PREFIX}${key}" >/dev/null 2>&1; then
         echo "  $key"
       fi
     done
@@ -85,7 +126,7 @@ case "$ACTION" in
       echo "--delete needs at least one KEY name" >&2; exit 2
     fi
     for key in "${TARGETS[@]}"; do
-      if pass rm -f "${PREFIX}${key}" >/dev/null 2>&1; then
+      if pass rm -f -- "${PREFIX}${key}" >/dev/null 2>&1; then
         echo "deleted: $key"
       else
         echo "not found: $key"
@@ -114,7 +155,12 @@ for key in "${TARGETS[@]}"; do
     continue
   fi
   printf "  %-28s " "$key"
-  IFS= read -rs value
+  value=""
+  if ! IFS= read -rs value && [[ -z "$value" ]]; then
+    echo
+    skipped=$((skipped + 1))
+    continue
+  fi
   echo
   if [[ -z "$value" ]]; then
     skipped=$((skipped + 1))
@@ -132,7 +178,7 @@ for key in "${TARGETS[@]}"; do
   if [[ "${REPLACE}" -eq 1 ]]; then
     insert_args+=(-f)
   fi
-  if ! printf '%s\n' "$value" | pass insert "${insert_args[@]}" "${PREFIX}${key}" >/dev/null; then
+  if ! printf '%s\n' "$value" | pass insert "${insert_args[@]}" -- "${PREFIX}${key}" >/dev/null; then
     echo "  failed: $key (pass insert error)" >&2
     skipped=$((skipped + 1))
     continue

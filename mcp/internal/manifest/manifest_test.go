@@ -131,6 +131,12 @@ func TestEnvAndUserConfigCrossReference(t *testing.T) {
 	}
 }
 
+func isCredentialTitle(title string) bool {
+	return strings.HasSuffix(title, "_KEY") ||
+		strings.HasSuffix(title, "_TOKEN") ||
+		strings.HasSuffix(title, "_PASSWORD")
+}
+
 func TestUserConfigShape(t *testing.T) {
 	m := loadManifest(t)
 	for key, slot := range m.UserConfig {
@@ -143,15 +149,53 @@ func TestUserConfigShape(t *testing.T) {
 		if slot.Description == "" {
 			t.Errorf("user_config[%q].description is empty", key)
 		}
-		if !slot.Sensitive {
-			// API keys must be flagged sensitive so Claude Desktop masks
-			// the input and prefers OS-keychain storage.
-			t.Errorf("user_config[%q].sensitive = false; want true for API credentials", key)
+		wantSensitive := isCredentialTitle(slot.Title)
+		if slot.Sensitive != wantSensitive {
+			if wantSensitive {
+				// API keys, tokens, and passwords must be flagged sensitive so
+				// Claude Desktop masks the input and prefers OS-keychain storage.
+				t.Errorf("user_config[%q].sensitive = false; want true for API credentials", key)
+			} else {
+				t.Errorf("user_config[%q].sensitive = true; want false for non-secret config", key)
+			}
 		}
 		if slot.Required {
 			// The engine degrades to web-only mode without keys, so no
 			// key is install-blocking.
 			t.Errorf("user_config[%q].required = true; engine degrades without keys, so all keys are optional", key)
+		}
+	}
+}
+
+func TestBlueskyHandleAndXBackendDeclared(t *testing.T) {
+	m := loadManifest(t)
+	cases := []struct {
+		key      string
+		envName  string
+		wantRef  string
+	}{
+		{"bsky_handle", "BSKY_HANDLE", "${user_config.bsky_handle}"},
+		{"last30days_x_backend", "LAST30DAYS_X_BACKEND", "${user_config.last30days_x_backend}"},
+	}
+	for _, tc := range cases {
+		slot, ok := m.UserConfig[tc.key]
+		if !ok {
+			t.Fatalf("user_config missing %q", tc.key)
+		}
+		if slot.Title != tc.envName {
+			t.Errorf("user_config[%q].title = %q, want %q", tc.key, slot.Title, tc.envName)
+		}
+		if slot.Type != "string" {
+			t.Errorf("user_config[%q].type = %q, want string", tc.key, slot.Type)
+		}
+		if slot.Sensitive {
+			t.Errorf("user_config[%q].sensitive = true, want false", tc.key)
+		}
+		if slot.Required {
+			t.Errorf("user_config[%q].required = true, want false", tc.key)
+		}
+		if got := m.Server.MCPConfig.Env[tc.envName]; got != tc.wantRef {
+			t.Errorf("env[%s] = %q, want %q", tc.envName, got, tc.wantRef)
 		}
 	}
 }

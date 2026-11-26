@@ -464,8 +464,9 @@ class TestXFromAndAboutLanes(unittest.TestCase):
         from lib import bird_x
         captured = []
 
-        def fake_run(cmd, timeout=None, env=None):
-            captured.append(cmd[2])  # the query string arg
+        def fake_run(cmd, timeout=None, env=None, **_kwargs):
+            self.assertEqual("--", cmd[-2])
+            captured.append(cmd[-1])  # the query string arg after `--`
             return self._result([])
 
         with mock.patch.object(bird_x.subproc, "run_with_timeout", side_effect=fake_run):
@@ -478,8 +479,9 @@ class TestXFromAndAboutLanes(unittest.TestCase):
         from lib import bird_x
         captured = []
 
-        def fake_run(cmd, timeout=None, env=None):
-            captured.append(cmd[2])
+        def fake_run(cmd, timeout=None, env=None, **_kwargs):
+            self.assertEqual("--", cmd[-2])
+            captured.append(cmd[-1])
             return self._result([])
 
         with mock.patch.object(bird_x.subproc, "run_with_timeout", side_effect=fake_run):
@@ -633,7 +635,7 @@ class TestTopicSearchReadsTopTab(unittest.TestCase):
     def test_top_flag_reaches_the_bird_command_line(self):
         cmds = []
 
-        def fake_run(cmd, timeout=None, env=None):
+        def fake_run(cmd, timeout=None, env=None, **_kwargs):
             cmds.append(cmd)
             return self._result()
 
@@ -641,11 +643,12 @@ class TestTopicSearchReadsTopTab(unittest.TestCase):
             bird_x.search_x("taylor swift", "2026-10-16", "2026-11-15")
             bird_x.search_handles(["taylorswift13"], "taylor swift", "2026-10-16", count_per=1)
             bird_x.search_mentions(["taylorswift13"], "2026-10-16", count_per=1)
-        topic = [c for c in cmds if c[2].startswith("taylor swift")]
-        lanes = [c for c in cmds if c[2].startswith(("from:", "@"))]
+        topic = [c for c in cmds if c[-1].startswith("taylor swift")]
+        lanes = [c for c in cmds if c[-1].startswith(("from:", "@"))]
         self.assertTrue(topic and lanes)
-        self.assertTrue(all("--top" in c for c in topic), topic)
-        self.assertFalse(any("--top" in c for c in lanes), lanes)
+        self.assertTrue(all(c[-2] == "--" for c in cmds), cmds)
+        self.assertTrue(all("--top" in c[:c.index("--")] for c in topic), topic)
+        self.assertFalse(any("--top" in c[:c.index("--")] for c in lanes), lanes)
 
 
 class TestStrongestTokenRetryAnchored(unittest.TestCase):

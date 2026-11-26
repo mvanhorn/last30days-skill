@@ -55,27 +55,61 @@ def _log(msg: str) -> None:
     log.source_log("agentcookie", msg, tty_only=False)
 
 
+def _has_pinned_browser_selection(from_browser: Any) -> bool:
+    """True when FROM_BROWSER pins specific browser(s) rather than unset/'auto'/'off'."""
+    value = str(from_browser or "").strip().lower()
+    return bool(value) and value not in {"auto", "off"}
+
+
 def is_disabled(config: Optional[Dict[str, Any]] = None) -> bool:
-    """True when sidecar consent is absent or explicitly refused."""
+    """True when sidecar consent is absent, explicitly refused, or bypassed by a browser pin."""
     from . import env
 
-    consent_config = config if config is not None else {
+    env_consent = {
         name: env.read_secret_env(name)
         for name in ("BROWSER_CONSENT", "FROM_BROWSER")
     }
-    if env.cookie_access_denied(consent_config):
+    # Explicit refusal in either config or process environment always vetoes the sidecar.
+    if env.cookie_access_denied(env_consent):
         return True
-    raw = ""
+    if config is not None and env.cookie_access_denied(config):
+        return True
+
+    env_setting = str(env.read_secret_env("AGENTCOOKIE") or "").strip().lower()
+    cfg_setting = (
+        str(config.get("AGENTCOOKIE") or "").strip().lower()
+        if config is not None
+        else ""
+    )
+    if env_setting == "off" or cfg_setting == "off":
+        return True
+
     if config is not None:
-        raw = config.get("AGENTCOOKIE") or ""
-    if not raw:
-        raw = env.read_secret_env("AGENTCOOKIE") or ""
-    setting = str(raw).strip().lower()
+        setting = cfg_setting or env_setting
+        consent = (
+            config["BROWSER_CONSENT"]
+            if config.get("BROWSER_CONSENT") is not None
+            else env_consent["BROWSER_CONSENT"]
+        )
+        from_browser = (
+            config.get("FROM_BROWSER")
+            if (config.get("FROM_BROWSER") or "").strip()
+            else env_consent["FROM_BROWSER"]
+        )
+    else:
+        setting = env_setting
+        consent = env_consent["BROWSER_CONSENT"]
+        from_browser = env_consent["FROM_BROWSER"]
+
+    if setting == "on":
+        return False
+    # Do not auto-enable the sidecar ahead of an explicit browser pin unless
+    # the user explicitly opted into AGENTCOOKIE=on.
+    if _has_pinned_browser_selection(from_browser):
+        return True
     # Host eligibility and binary presence are not permission to read cookies.
     # Keep prediction and acquisition behind this same positive admission gate.
-    return setting == "off" or not (
-        setting == "on" or env._truthy(consent_config.get("BROWSER_CONSENT"))
-    )
+    return not env._truthy(consent)
 
 
 def is_available(config: Optional[Dict[str, Any]] = None) -> bool:

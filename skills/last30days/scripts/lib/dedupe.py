@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from . import cjk, schema
+from . import cjk, fusion, reddit_refs, schema
 
 STOPWORDS = frozenset(
     {
@@ -109,30 +109,94 @@ def item_text(item: schema.SourceItem) -> str:
     return " ".join(part for part in parts if part).strip()
 
 
+def _url_dedupe_key(
+    item: schema.SourceItem,
+    *,
+    polymarket_eids_by_url: dict[str, set[str]] | None = None,
+) -> tuple[str, str] | None:
+    """Normalized ``(source, identity_url)`` for exact-URL deduplication, or None."""
+    if item.source == "hackernews":
+        hn_url = (item.metadata or {}).get("hn_url")
+        if hn_url and str(hn_url).strip():
+            return (item.source, fusion._normalize_url(str(hn_url)))
+    if item.source == "polymarket":
+        poly_key = fusion.polymarket_url_key(item, polymarket_eids_by_url)
+        return (item.source, poly_key) if poly_key is not None else None
+    url = (item.url or "").strip()
+    if not url:
+        return None
+    if item.source == "reddit":
+        thread = reddit_refs.thread_key(url)
+        if thread:
+            return (item.source, thread)
+    return (item.source, fusion._normalize_url(url))
+
+
+def _is_url_only_dedupe(
+    item: schema.SourceItem,
+    conflicted_poly_urls: set[str] | None = None,
+) -> bool:
+    if item.source == "jobs":
+        return True
+    if item.source == "polymarket":
+        if (item.metadata or {}).get("matched_market"):
+            return True
+        if conflicted_poly_urls and item.url:
+            return fusion._normalize_url(item.url) in conflicted_poly_urls
+    return False
+
+
 def dedupe_items(items: list[schema.SourceItem], threshold: float = 0.7) -> list[schema.SourceItem]:
-    """Remove near-duplicates while keeping earlier, better-scored items.
+    """Remove exact-URL and near-duplicate items while keeping earlier, better-scored items.
 
-    Jobs are deduped by exact URL only: distinct postings on the same careers
-    board share heavy boilerplate (company intro, "TL;DR", benefits) that trips
-    fuzzy text similarity and collapses unrelated roles (a 26-role board fell to
-    7). A unique posting URL is an unambiguous identity, so use it instead.
+    Every source first collapses normalized ``(source, url)`` duplicates (using
+    ``hn_url`` for Hacker News and canonical ``thread_key`` for Reddit), merging
+    enrichment, engagement, and metadata from later copies into the first
+    occurrence before text similarity runs so a bare copy never discards a
+    saved copy's transcripts, comments, or ``matched_market``.
 
-    Polymarket events that carry a matched market are deduped by event URL for
-    the same reason: "Pro Football: 2027 Champion" and "Pro Football: 2027
-    NFC Champion" share most of their text but are different questions.
+    Jobs are deduped by normalized URL only: distinct postings on the same
+    careers board share heavy boilerplate (company intro, "TL;DR", benefits)
+    that trips fuzzy text similarity and collapses unrelated roles (a 26-role
+    board fell to 7). A unique posting URL is an unambiguous identity, so use
+    it instead.
+
+    Polymarket events that carry a matched market are deduped by normalized
+    event URL only for the same reason: "Pro Football: 2027 Champion" and
+    "Pro Football: 2027 NFC Champion" share most of their text but are
+    different questions. Unmatched Polymarket items share the same URL pass so
+    mixed matched/unmatched copies of one event merge and never survive together.
     """
+    # Pass 1: collapse exact normalized-URL duplicates in-order, merging
+    # enrichment/counts/metadata from later copies without mutating caller inputs.
+    # Reused Polymarket slug URLs carrying distinct known event_ids (and ID-less
+    # copies at those URLs) get disjoint keys so conflicting events never merge
+    # or bridge through an ID-less copy.
+    poly_eids = fusion.polymarket_event_ids_by_url(items)
+    conflicted_poly_urls = {url for url, eids in poly_eids.items() if len(eids) > 1}
+    url_index: dict[tuple[str, str], int] = {}
+    cloned_indices: set[int] = set()
+    collapsed: list[schema.SourceItem] = []
+    for item in items:
+        url_key = _url_dedupe_key(item, polymarket_eids_by_url=poly_eids)
+        if url_key is None:
+            collapsed.append(item)
+            continue
+        existing_idx = url_index.get(url_key)
+        if existing_idx is None:
+            url_index[url_key] = len(collapsed)
+            collapsed.append(item)
+            continue
+        if existing_idx not in cloned_indices:
+            collapsed[existing_idx] = fusion._clone_source_item(collapsed[existing_idx])
+            cloned_indices.add(existing_idx)
+        fusion.merge_source_items(collapsed[existing_idx], item)
+
+    # Pass 2: fuzzy near-duplicate removal on remaining distinct-URL items.
     kept: list[schema.SourceItem] = []
     kept_prepared: list[_PreparedText] = []
-    seen_urls: set[tuple[str, str]] = set()
-    for item in items:
-        if item.source == "jobs" or (
-            item.source == "polymarket" and (item.metadata or {}).get("matched_market")
-        ):
-            url = (item.url or "").strip()
-            if url and (item.source, url) in seen_urls:
-                continue
-            if url:
-                seen_urls.add((item.source, url))
+    for item in collapsed:
+        if _is_url_only_dedupe(item, conflicted_poly_urls):
             kept.append(item)
             continue
         text = item_text(item)

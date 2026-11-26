@@ -44,7 +44,7 @@ def test_search_invokes_only_search_no_sync(monkeypatch):
     and never a `sync` (search hits Techmeme's live archive, not the cache)."""
     calls = []
 
-    def fake_run(cmd, timeout):
+    def fake_run(cmd, timeout, **_kwargs):
         calls.append(list(cmd))
         return _FakeProc(stdout=json.dumps([
             {"num": 1, "source": "a.com",
@@ -57,8 +57,8 @@ def test_search_invokes_only_search_no_sync(monkeypatch):
     out = techmeme.search_techmeme("topic", "2026-06-01", "2026-06-27")
     assert len(out["results"]) == 1
     assert calls == [
-        [techmeme.CLI_BIN, "search", "topic date:[6/1/26 TO 6/27/26]", "--json",
-         "--pages", "2"],
+        [techmeme.CLI_BIN, "search", "--json", "--pages", "2", "--",
+         "topic date:[6/1/26 TO 6/27/26]"],
     ]
     assert not any("sync" in c for c in calls)
 
@@ -69,29 +69,29 @@ def test_search_args_carry_the_run_window_as_a_date_clause():
     args = techmeme._build_search_args("Microsoft", "2026-10-16", "2026-11-15")
     # No space after the colon and no zero padding: the live-verified form.
     assert args == [
-        techmeme.CLI_BIN, "search", "Microsoft date:[10/16/26 TO 11/15/26]", "--json",
+        techmeme.CLI_BIN, "search", "--json", "--", "Microsoft date:[10/16/26 TO 11/15/26]",
     ]
 
 
 def test_date_clause_handles_single_digit_dates_and_year_rollover():
     args = techmeme._build_search_args("AI", "2026-12-05", "2027-01-04")
-    assert args[2] == "AI date:[12/5/26 TO 1/4/27]"
+    assert args[-2:] == ["--", "AI date:[12/5/26 TO 1/4/27]"]
 
 
 def test_no_date_clause_without_a_valid_window():
-    assert techmeme._build_search_args("AI")[2] == "AI"
-    assert techmeme._build_search_args("AI", "2026-06-01", None)[2] == "AI"
-    assert techmeme._build_search_args("AI", "June 1", "2026-06-27")[2] == "AI"
+    assert techmeme._build_search_args("AI")[-2:] == ["--", "AI"]
+    assert techmeme._build_search_args("AI", "2026-06-01", None)[-2:] == ["--", "AI"]
+    assert techmeme._build_search_args("AI", "June 1", "2026-06-27")[-2:] == ["--", "AI"]
 
 
 def test_topic_with_its_own_date_operator_is_left_alone():
     args = techmeme._build_search_args("AI date:[1/1/26 TO 2/1/26]", "2026-06-01", "2026-06-27")
-    assert args[2] == "AI date:[1/1/26 TO 2/1/26]"
+    assert args[-2:] == ["--", "AI date:[1/1/26 TO 2/1/26]"]
 
 
 def test_topic_with_another_operator_keeps_it_and_gains_the_window():
     args = techmeme._build_search_args("sourcename:verge AI", "2026-06-01", "2026-06-27")
-    assert args[2] == "sourcename:verge AI date:[6/1/26 TO 6/27/26]"
+    assert args[-2:] == ["--", "sourcename:verge AI date:[6/1/26 TO 6/27/26]"]
 
 
 def test_client_side_window_still_drops_rows_the_server_did_not_scope(monkeypatch):
@@ -111,7 +111,7 @@ def _search_with_records(monkeypatch, records, from_date="2026-06-01", to_date="
     monkeypatch.setattr(techmeme, "_is_available", lambda: True)
     monkeypatch.setattr(
         techmeme.subproc, "run_with_timeout",
-        lambda cmd, timeout: _FakeProc(stdout=json.dumps(records)),
+        lambda cmd, timeout, **_kwargs: _FakeProc(stdout=json.dumps(records)),
     )
     return techmeme.search_techmeme("topic", from_date, to_date)
 
@@ -197,7 +197,7 @@ def test_dropped_records_logged(monkeypatch):
     monkeypatch.setattr(techmeme, "_log", lambda msg: logs.append(msg))
     monkeypatch.setattr(
         techmeme.subproc, "run_with_timeout",
-        lambda cmd, timeout: _FakeProc(stdout=json.dumps([
+        lambda cmd, timeout, **_kwargs: _FakeProc(stdout=json.dumps([
             {"num": 1, "source": "a.com",
              "headline": "Stale story from the deep archive years back",
              "link": "https://t.co/old", "date": "2022-12-02"},
@@ -241,9 +241,9 @@ def test_no_results_prose_parses_as_empty_without_error(monkeypatch):
     monkeypatch.setattr(techmeme, "_log", lambda msg: logs.append(msg))
     monkeypatch.setattr(
         techmeme.subproc, "run_with_timeout",
-        lambda cmd, timeout: _FakeProc(stdout='No results for "whatever query"\n'),
+        lambda cmd, timeout, **_kwargs: _FakeProc(stdout='No results for "whatever query"\n'),
     )
-    resp = techmeme._run_cli([techmeme.CLI_BIN, "search", "whatever query", "--json"],
+    resp = techmeme._run_cli([techmeme.CLI_BIN, "search", "--json", "--", "whatever query"],
                              timeout=techmeme.SEARCH_TIMEOUT)
     assert resp == {"results": []}
     assert "error" not in resp
@@ -258,9 +258,9 @@ def test_malformed_stdout_still_yields_decode_error(monkeypatch):
     monkeypatch.setattr(techmeme, "_log", lambda msg: logs.append(msg))
     monkeypatch.setattr(
         techmeme.subproc, "run_with_timeout",
-        lambda cmd, timeout: _FakeProc(stdout="garbage <<<"),
+        lambda cmd, timeout, **_kwargs: _FakeProc(stdout="garbage <<<"),
     )
-    resp = techmeme._run_cli([techmeme.CLI_BIN, "search", "topic", "--json"],
+    resp = techmeme._run_cli([techmeme.CLI_BIN, "search", "--json", "--", "topic"],
                              timeout=techmeme.SEARCH_TIMEOUT)
     assert resp["results"] == []
     assert "json decode" in resp.get("error", "")
@@ -458,7 +458,7 @@ def test_parse_handles_non_list_results():
 def test_pages_fill_the_depth_cap(monkeypatch, depth, pages):
     calls = []
 
-    def fake_run(cmd, timeout):
+    def fake_run(cmd, timeout, **_kwargs):
         calls.append((list(cmd), timeout))
         return _FakeProc(stdout="[]")
 
@@ -470,7 +470,9 @@ def test_pages_fill_the_depth_cap(monkeypatch, depth, pages):
     if pages == 1:
         assert "--pages" not in cmd
     else:
-        assert cmd[-2:] == ["--pages", str(pages)]
+        idx = cmd.index("--pages")
+        assert cmd[idx:idx + 2] == ["--pages", str(pages)]
+        assert idx < cmd.index("--")
     assert timeout == techmeme.SEARCH_TIMEOUT + techmeme.SEARCH_PAGE_TIMEOUT * (pages - 1)
 
 
@@ -480,7 +482,7 @@ def test_old_helper_without_pages_falls_back_to_one_page(monkeypatch):
               "headline": "A real in-window headline about the topic",
               "link": "https://t.co/a", "date": "2026-06-15"}
 
-    def fake_run(cmd, timeout):
+    def fake_run(cmd, timeout, **_kwargs):
         calls.append(list(cmd))
         if "--pages" in cmd:
             return _FakeProc(stdout="", returncode=1,
@@ -491,8 +493,10 @@ def test_old_helper_without_pages_falls_back_to_one_page(monkeypatch):
     monkeypatch.setattr(techmeme.subproc, "run_with_timeout", fake_run)
     out = techmeme.search_techmeme("topic", "2026-06-01", "2026-06-27")
 
-    base = [techmeme.CLI_BIN, "search", "topic date:[6/1/26 TO 6/27/26]", "--json"]
-    assert calls == [base + ["--pages", "2"], base]
+    assert calls == [
+        [techmeme.CLI_BIN, "search", "--json", "--pages", "2", "--", "topic date:[6/1/26 TO 6/27/26]"],
+        [techmeme.CLI_BIN, "search", "--json", "--", "topic date:[6/1/26 TO 6/27/26]"],
+    ]
     assert out.get("error") is None
     assert [r["link"] for r in out["results"]] == ["https://t.co/a"]
 
@@ -500,7 +504,7 @@ def test_old_helper_without_pages_falls_back_to_one_page(monkeypatch):
 def test_other_helper_errors_are_not_retried(monkeypatch):
     calls = []
 
-    def fake_run(cmd, timeout):
+    def fake_run(cmd, timeout, **_kwargs):
         calls.append(list(cmd))
         return _FakeProc(stdout="", returncode=1, stderr="Error: rate limited\n")
 

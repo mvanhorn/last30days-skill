@@ -41,8 +41,10 @@ import os
 import re
 import socket
 import struct
+import urllib.error
+import urllib.parse
 import urllib.request
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from . import log
 
@@ -55,6 +57,95 @@ _BOX_CHROME_PORT = 18800
 
 _HTTP_TIMEOUT = 1.5      # /json and /json/version fetches
 _WS_TIMEOUT = 3.0        # websocket exchange
+_MAX_HTTP_JSON_BYTES = 4 * 1024 * 1024
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+_WS_TARGET_RE = re.compile(r"/[A-Za-z0-9._~:/?\[\]@!$&'()*+,;=%-]+")
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Refuse HTTP 3xx redirects on loopback CDP requests."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if fp is not None:
+            try:
+                fp.close()
+            except OSError:
+                pass
+        raise urllib.error.HTTPError(
+            req.full_url, code, f"CDP redirects are refused: {msg}", headers, None
+        )
+
+
+def _build_cdp_opener() -> urllib.request.OpenerDirector:
+    """Build an explicit HTTP-only, no-proxy, no-redirect opener for CDP."""
+    opener = urllib.request.OpenerDirector()
+    opener.add_handler(urllib.request.ProxyHandler({}))
+    opener.add_handler(urllib.request.HTTPHandler())
+    opener.add_handler(_NoRedirectHandler())
+    opener.add_handler(urllib.request.HTTPDefaultErrorHandler())
+    opener.add_handler(urllib.request.HTTPErrorProcessor())
+    return opener
+
+
+_CDP_OPENER = _build_cdp_opener()
+
+
+def _format_netloc(host: str, port: int) -> str:
+    return f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+
+
+def _parse_cdp_url(
+    raw: str,
+    *,
+    allowed_schemes: Tuple[str, ...],
+    allow_implicit_http: bool = False,
+    require_base_path: bool = False,
+) -> Optional[Tuple[str, str, int, str]]:
+    """Strictly validate a loopback CDP URL and return ``(scheme, host, port, target)``."""
+    if not isinstance(raw, str):
+        return None
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in raw) or not raw.isascii():
+        return None
+    candidate = raw.strip(" ") if allow_implicit_http else raw
+    if not candidate or any(ch.isspace() for ch in candidate):
+        return None
+    if allow_implicit_http and "://" not in candidate:
+        candidate = f"http://{candidate}"
+    try:
+        parts = urllib.parse.urlsplit(candidate)
+    except ValueError:
+        return None
+    scheme = parts.scheme.lower()
+    if scheme not in allowed_schemes:
+        return None
+    if parts.username is not None or parts.password is not None or "@" in parts.netloc:
+        return None
+    if parts.fragment or "#" in candidate:
+        return None
+    host = (parts.hostname or "").lower()
+    if host not in _LOOPBACK_HOSTS:
+        return None
+    try:
+        port = parts.port
+    except ValueError:
+        return None
+    if port is None or not (1 <= port <= 65535):
+        return None
+
+    target = parts.path + (f"?{parts.query}" if parts.query else "")
+    if scheme == "ws":
+        if not _WS_TARGET_RE.fullmatch(target):
+            return None
+        return (scheme, host, port, target)
+
+    if require_base_path:
+        if parts.query or parts.path not in ("", "/"):
+            return None
+        return (scheme, host, port, "")
+
+    if target and target != "/" and not _WS_TARGET_RE.fullmatch(target):
+        return None
+    return (scheme, host, port, target or "/")
 
 
 def _log(msg: str) -> None:
@@ -73,12 +164,21 @@ def _display_number() -> Optional[int]:
         return None
 
 
-def _normalize_base(url: str) -> str:
-    """Return an ``http://host:port`` base for a user-supplied endpoint."""
-    url = url.strip().rstrip("/")
-    if url.startswith(("http://", "https://", "ws://", "wss://")):
-        return url
-    return f"http://{url}"
+def _normalize_base(url: str) -> Optional[str]:
+    """Return a validated canonical loopback ``http://host:port`` or ``ws://...`` endpoint."""
+    parsed = _parse_cdp_url(
+        url,
+        allowed_schemes=("http", "ws"),
+        allow_implicit_http=True,
+        require_base_path=True,
+    )
+    if parsed is None:
+        return None
+    scheme, host, port, target = parsed
+    netloc = _format_netloc(host, port)
+    if scheme == "ws":
+        return f"ws://{netloc}{target}"
+    return f"http://{netloc}"
 
 
 def candidate_endpoints(config: Optional[Dict[str, Any]] = None) -> List[str]:
@@ -93,27 +193,38 @@ def candidate_endpoints(config: Optional[Dict[str, Any]] = None) -> List[str]:
     """
     explicit = ""
     if config is not None:
-        explicit = (config.get("BROWSER_CDP_URL") or "").strip()
-    explicit = explicit or (os.environ.get("BROWSER_CDP_URL") or "").strip()
+        raw_cfg = config.get("BROWSER_CDP_URL")
+        if raw_cfg is not None:
+            explicit = str(raw_cfg).strip(" ")
+    if not explicit:
+        explicit = (os.environ.get("BROWSER_CDP_URL") or "").strip(" ")
     if explicit:
-        return [_normalize_base(explicit)]
+        normalized = _normalize_base(explicit)
+        return [normalized] if normalized is not None else []
 
     endpoints = [f"http://127.0.0.1:{_BOX_CHROME_PORT}"]
     display = _display_number()
-    endpoints.append(f"http://127.0.0.1:{_BASE_DEBUG_PORT + (display or 0)}")
+    display_port = _BASE_DEBUG_PORT + (display or 0)
+    if 1 <= display_port <= 65535:
+        endpoints.append(f"http://127.0.0.1:{display_port}")
     return endpoints
 
 
 def _http_get_json(url: str) -> Optional[Any]:
-    """GET ``url`` and parse JSON, or None (unreachable/non-JSON)."""
+    """GET loopback CDP ``url`` (no proxy, no redirects) and parse JSON, or None."""
+    parsed = _parse_cdp_url(url, allowed_schemes=("http",), allow_implicit_http=False)
+    if parsed is None:
+        return None
+    scheme, host, port, target = parsed
+    safe_url = f"{scheme}://{_format_netloc(host, port)}{target}"
     try:
-        with urllib.request.urlopen(url, timeout=_HTTP_TIMEOUT) as resp:
-            body = resp.read()
-    except (OSError, ValueError):
+        with _CDP_OPENER.open(safe_url, timeout=_HTTP_TIMEOUT) as resp:
+            body = resp.read(_MAX_HTTP_JSON_BYTES)
+    except (OSError, ValueError, OverflowError, UnicodeEncodeError):
         return None
     try:
         return json.loads(body)
-    except (json.JSONDecodeError, TypeError):
+    except (json.JSONDecodeError, TypeError, UnicodeDecodeError):
         return None
 
 
@@ -132,6 +243,12 @@ def _is_chrome_endpoint(base: str) -> bool:
 
 def _page_ws_url(base: str) -> Optional[str]:
     """Find a Chrome PAGE target's webSocketDebuggerUrl on ``base``."""
+    base_parsed = _parse_cdp_url(
+        base, allowed_schemes=("http",), allow_implicit_http=False, require_base_path=True
+    )
+    if base_parsed is None:
+        return None
+    _, base_host, base_port, _ = base_parsed
     targets = _http_get_json(f"{base}/json")
     if not isinstance(targets, list):
         return None
@@ -141,8 +258,19 @@ def _page_ws_url(base: str) -> Optional[str]:
         if target.get("type") != "page":
             continue
         ws_url = target.get("webSocketDebuggerUrl")
-        if isinstance(ws_url, str) and ws_url.startswith("ws://"):
-            return ws_url
+        if not isinstance(ws_url, str):
+            continue
+        ws_parsed = _parse_cdp_url(ws_url, allowed_schemes=("ws",), allow_implicit_http=False)
+        if ws_parsed is None:
+            continue
+        _, ws_host, ws_port, ws_target = ws_parsed
+        if ws_host != base_host or ws_port != base_port:
+            _log(
+                f"refusing cross-endpoint webSocketDebuggerUrl host/port "
+                f"({ws_host}:{ws_port} != {base_host}:{base_port})"
+            )
+            continue
+        return f"ws://{_format_netloc(ws_host, ws_port)}{ws_target}"
     return None
 
 
@@ -167,39 +295,41 @@ class _WSConn:
 
     @classmethod
     def connect(cls, ws_url: str, timeout: float) -> Optional["_WSConn"]:
-        # Plaintext ws:// only. A wss:// URL would need real TLS
-        # (ssl.wrap_socket); this client does not, so refuse it rather than
-        # open a plaintext socket to a TLS endpoint. Defense in depth alongside
-        # the scheme gate in read_x_cookies.
-        match = re.match(r"ws://([^:/]+):(\d+)(/.*)$", ws_url)
-        if not match:
+        # Plaintext loopback ws:// only. A wss:// URL would need real TLS;
+        # refuse non-ws, non-loopback, malformed, or control-char URLs before
+        # opening any socket.
+        parsed = _parse_cdp_url(ws_url, allowed_schemes=("ws",), allow_implicit_http=False)
+        if parsed is None:
             return None
-        host, port, path = match.group(1), int(match.group(2)), match.group(3)
+        _, host, port, path = parsed
+        host_header = _format_netloc(host, port)
+        sock: Optional[socket.socket] = None
         try:
             sock = socket.create_connection((host, port), timeout=timeout)
-        except OSError:
-            return None
-        sock.settimeout(timeout)
-        key = base64.b64encode(os.urandom(16)).decode("ascii")
-        handshake = (
-            f"GET {path} HTTP/1.1\r\n"
-            f"Host: {host}:{port}\r\n"
-            "Upgrade: websocket\r\n"
-            "Connection: Upgrade\r\n"
-            f"Sec-WebSocket-Key: {key}\r\n"
-            "Sec-WebSocket-Version: 13\r\n\r\n"
-        )
-        try:
+            sock.settimeout(timeout)
+            key = base64.b64encode(os.urandom(16)).decode("ascii")
+            handshake = (
+                f"GET {path} HTTP/1.1\r\n"
+                f"Host: {host_header}\r\n"
+                "Upgrade: websocket\r\n"
+                "Connection: Upgrade\r\n"
+                f"Sec-WebSocket-Key: {key}\r\n"
+                "Sec-WebSocket-Version: 13\r\n\r\n"
+            )
             sock.sendall(handshake.encode("ascii"))
-        except OSError:
-            sock.close()
+            conn = cls(sock)
+            header = conn._read_http_headers()
+            if header is None or b" 101 " not in header.split(b"\r\n", 1)[0]:
+                sock.close()
+                return None
+            return conn
+        except (OSError, ValueError, OverflowError, UnicodeEncodeError):
+            if sock is not None:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
             return None
-        conn = cls(sock)
-        header = conn._read_http_headers()
-        if header is None or b" 101 " not in header.split(b"\r\n", 1)[0]:
-            sock.close()
-            return None
-        return conn
 
     def _read_http_headers(self) -> Optional[bytes]:
         while b"\r\n\r\n" not in self._buf:
@@ -395,6 +525,12 @@ def _pair_from_cookies(cookies: List[Dict[str, Any]]) -> Dict[str, str]:
 def cookie_access_allowed(config: Optional[Dict[str, Any]] = None) -> bool:
     from . import env
 
+    env_consent = {
+        name: env.read_secret_env(name)
+        for name in ("BROWSER_CONSENT", "FROM_BROWSER")
+    }
+    if env.cookie_access_denied(env_consent):
+        return False
     config = config or {}
     if env.cookie_access_denied(config):
         return False
@@ -424,22 +560,29 @@ def read_x_cookies(config: Optional[Dict[str, Any]] = None) -> Optional[Dict[str
         return None
 
     for base in candidate_endpoints(config):
-        # TLS CDP is NOT supported: the websocket client speaks plaintext only,
-        # so a wss:// endpoint (or an https:// base, which would yield a wss://
-        # page URL) must fail closed rather than be downgraded to a plaintext
-        # connect. Local Chrome CDP is ws://http://.
-        scheme = base.split("://", 1)[0].lower() if "://" in base else "http"
-        if scheme in ("wss", "https"):
-            _log(f"refusing TLS CDP endpoint {base!r}: only ws://http:// is supported (no TLS)")
+        # Plaintext loopback http:// and ws:// only. Defense in depth even if
+        # candidate_endpoints is overridden: refuse TLS, remote hosts, userinfo,
+        # fragments, invalid ports, or control characters before any network I/O.
+        parsed = _parse_cdp_url(
+            base,
+            allowed_schemes=("http", "ws"),
+            allow_implicit_http=False,
+            require_base_path=True,
+        )
+        if parsed is None:
+            _log(f"refusing unsupported or non-loopback CDP endpoint {base!r}")
             continue
+        scheme, host, port, target = parsed
+        netloc = _format_netloc(host, port)
         # ws:// endpoints (rare, explicit) connect directly; http bases are
         # validated as Chrome and asked for a page target.
-        if base.startswith("ws://"):
-            ws_url = base
+        if scheme == "ws":
+            ws_url = f"ws://{netloc}{target}"
         else:
-            if not _is_chrome_endpoint(base):
+            http_base = f"http://{netloc}"
+            if not _is_chrome_endpoint(http_base):
                 continue
-            ws_url = _page_ws_url(base)
+            ws_url = _page_ws_url(http_base)
             if not ws_url:
                 continue
         cookies = _get_all_cookies(ws_url)

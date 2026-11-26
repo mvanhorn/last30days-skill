@@ -47,6 +47,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import sys
 import time
 import urllib.error
@@ -54,7 +55,21 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from . import backends, brightdata, deepline, digg, env, health, http, prescriptions, proxy, reddit_health, trustpilot, x_api
+from . import (
+    backends,
+    brightdata,
+    deepline,
+    digg,
+    env,
+    health,
+    http,
+    prescriptions,
+    private_files,
+    proxy,
+    reddit_health,
+    trustpilot,
+    x_api,
+)
 from .backends import TIER_ERROR, TIER_OK, TIER_WARN
 
 # Rollup tiers (R1). ok/warn/error are U2's; only "off" is doctor's own.
@@ -67,6 +82,7 @@ TIER_BY_STATUS: Dict[str, str] = {
     health.DEGRADED: TIER_WARN,
     "opt-in": TIER_OFF,
     "unconfigured": TIER_OFF,
+    "excluded": TIER_OFF,
     health.MISSING: TIER_ERROR,
     health.BROKEN: TIER_ERROR,
     health.TIMEOUT: TIER_ERROR,
@@ -167,6 +183,7 @@ SOURCE_ORDER = (
     "polymarket",
     "github",
     "devto",
+    "v2ex",
     "digg",
     "techmeme",
     "arxiv",
@@ -216,6 +233,7 @@ KEY_PRESENCE_VARS = (
     "XQUIK_API_KEY",
     "X_BEARER_TOKEN",
     "DEEPLINE_API_KEY",
+    "BRIGHTDATA_API_KEY",
     "BRAVE_API_KEY",
     "EXA_API_KEY",
     "SERPER_API_KEY",
@@ -224,6 +242,7 @@ KEY_PRESENCE_VARS = (
     "OPENAI_API_KEY",
     "GOOGLE_API_KEY",
     "GEMINI_API_KEY",
+    "GOOGLE_GENAI_API_KEY",
     "OPENROUTER_API_KEY",
     "PERPLEXITY_API_KEY",
     "GITHUB_TOKEN",
@@ -363,7 +382,24 @@ def _chained_record(source: str, config: Dict[str, Any]) -> Dict[str, Any]:
                        fix=res.prescription,
                        requires=active.requires if active else "", **common)
 
-    # res.tier == error: separate "nothing configured" (tier off) from
+    # res.tier == error: when explicitly pinned, attribute status/detail/requires/fix
+    # strictly to the pinned backend rather than unrelated chain entries.
+    if res.pinned and res.pin in by_name:
+        pinned_finding = by_name[res.pin]
+        pin_status = (
+            pinned_finding.status
+            if pinned_finding.status in TIER_BY_STATUS
+            else health.ERROR
+        )
+        return _record(
+            status=pin_status,
+            fix=pinned_finding.prescription or res.prescription,
+            detail=pinned_finding.detail,
+            requires=pinned_finding.requires,
+            **common,
+        )
+
+    # Unpinned error: separate "nothing configured" (tier off) from
     # "configured but broken" (tier error).
     if res.findings and all(f.status == health.MISSING for f in res.findings):
         return _record(
@@ -539,10 +575,24 @@ def _x_record(config):
     # HOWEVER: pending bird must NOT replace a record that has a configured
     # auto-chain backend in ERROR/DEGRADED/BROKEN/TIMEOUT. Same rule as the
     # grok normalizer: only upgrade when no auto backend is configured-but-broken.
+    pin = env.x_backend_pin(config)
     auto_chain_names = set(env.x_auto_chain(config))
     all_auto_missing = all(
         b.get("status") == health.MISSING
         for b in record.get("backends", []) if b.get("name") in auto_chain_names
+    )
+    bird_finding = next(
+        (b for b in record.get("backends", []) if b.get("name") == "bird"),
+        None,
+    )
+    pinned_bird_missing = bool(
+        record.get("pinned")
+        and pin == "bird"
+        and bird_finding is not None
+        and bird_finding.get("status") == health.MISSING
+    )
+    can_apply_browser_auth = (
+        (not record.get("pinned") and all_auto_missing) or pinned_bird_missing
     )
     pending_bird = policy.cookie_discovery and env.x_pending_browser_auth(
         config, local_only=True
@@ -557,17 +607,20 @@ def _x_record(config):
         denied_browsers = sorted(reported_denials & known_browsers)
     else:
         denied_browsers = []
-    if denied_browsers and record.get("pinned") and env.x_backend_pin(config) != "bird":
+    if denied_browsers and record.get("pinned") and pin != "bird":
         observation = (
             "Last setup: permission denied reading X cookies from "
             f"{', '.join(denied_browsers)}; current access not checked"
         )
         record["note"] = f"{record['note']}; {observation}" if record["note"] else observation
         return record
-    if (pending_bird or denied_browsers) and record["status"] in ("unconfigured", health.ERROR):
-        # Only apply pending-bird upgrade if ALL auto-chain backends are MISSING.
-        # If any auto backend is configured but broken, keep that error.
-        if all_auto_missing:
+    if (pending_bird or denied_browsers) and record["status"] in (
+        "unconfigured", health.ERROR, health.MISSING,
+    ):
+        # Apply pending-bird / browser-cookie denial only when unpinned with all
+        # auto-chain backends missing, or when pinned specifically to bird and
+        # bird's only gap is missing static cookies.
+        if can_apply_browser_auth:
             if denied_browsers:
                 record["status"] = health.ERROR
                 record["tier"] = TIER_BY_STATUS[health.ERROR]
@@ -577,10 +630,36 @@ def _x_record(config):
                 )
                 record["fix"] = env.X_COOKIE_ACCESS_FIX
                 return record
+            node = health.probe_dependency("node")
+            if node.status != health.OK:
+                node_status = (
+                    node.status if node.status in TIER_BY_STATUS else health.ERROR
+                )
+                record["status"] = node_status
+                record["tier"] = TIER_BY_STATUS[node_status]
+                record["detail"] = node.detail
+                record["fix"] = node.prescription
+                record["requires"] = (
+                    bird_finding.get("requires")
+                    if bird_finding is not None and bird_finding.get("requires")
+                    else "X browser cookies (AUTH_TOKEN/CT0) + node"
+                )
+                record["note"] = ""
+                if bird_finding is not None:
+                    bird_finding["status"] = node_status
+                    bird_finding["detail"] = node.detail
+                    bird_finding["fix"] = node.prescription
+                return record
             record["status"] = health.OK
             record["tier"] = TIER_BY_STATUS[health.OK]
+            record["detail"] = ""
             if policy.official_only:
                 record["note"] = "will use: bird (pinned)"
+            elif record.get("pinned"):
+                record["note"] = (
+                    f"will use: bird (pinned via {env.X_BACKEND_PIN_VAR}; "
+                    "browser cookies; session not verified until a run)"
+                )
             else:
                 record["note"] = (
                     "will use: bird (browser cookies; session not verified until a run "
@@ -700,6 +779,13 @@ def _x_record(config):
             )
             record["fix"] = ""
             return record
+    if policy.official_only and record.get("pinned") and not record.get("active_backend"):
+        if pin in ("bird", "grok") and not record.get("note"):
+            state_label = (
+                "is not configured" if record["status"] == health.MISSING else "is unavailable"
+            )
+            record["note"] = f"pinned backend {pin} {state_label}"
+            record["detail"] = ""
     return record
 
 
@@ -750,6 +836,17 @@ def _devto_record(config):
         status="opt-in", requires=requires,
         fix="add devto to INCLUDE_SOURCES (or request it via --search devto)",
         note="off by default; --devto-tags activates it for a run",
+    )
+
+
+def _v2ex_record(config):
+    requires = "none (public SOV2EX search and V2EX API)"
+    if "v2ex" in env.include_sources(config):
+        return _record(status=health.OK, requires=requires)
+    return _record(
+        status="opt-in", requires=requires,
+        fix="add v2ex to INCLUDE_SOURCES (or request it via --search v2ex)",
+        note="off by default",
     )
 
 
@@ -844,11 +941,33 @@ def _yahoo_finance_record(config):
 
 
 def _trustpilot_record(config):
-    """Installed is not the same as able to run: the lane needs a browser
-    session that lasts four minutes, or a cached company record."""
+    """Installed is not the same as able to run: the lane needs opt-in
+    (INCLUDE_SOURCES=trustpilot) AND a browser session that lasts four
+    minutes, or a cached company record."""
+    requires = "trustpilot-pp-cli on the agent-subprocess PATH + INCLUDE_SOURCES=trustpilot"
     record = _cli_gated_record(config, "trustpilot-pp-cli", "trustpilot")
+    record["requires"] = requires
     if record["status"] != health.OK:
         return record
+    if "trustpilot" not in env.include_sources(config):
+        return _record(
+            status="opt-in",
+            requires=requires,
+            detail=record["detail"],
+            fix="add trustpilot to INCLUDE_SOURCES (or request it via --search trustpilot)",
+            note="CLI installed; opt-in, never auto-activates",
+        )
+    if not trustpilot._harvest_allowed(config):
+        return _record(
+            status="excluded",
+            requires=requires,
+            detail=record["detail"],
+            fix=f"unset {trustpilot.NO_BROWSER_ENV} (or set it to 0) to allow Trustpilot",
+            note=(
+                f"disabled by {trustpilot.NO_BROWSER_ENV}; research runs skip "
+                "Trustpilot even with a fresh browser session"
+            ),
+        )
     state = trustpilot.can_run_now(config)
     if state["session_fresh"]:
         record["note"] = "browser session is fresh; can run now"
@@ -859,6 +978,11 @@ def _trustpilot_record(config):
             f"record{'s' if count != 1 else ''} can be read"
         )
     else:
+        record["status"] = health.DEGRADED
+        record["tier"] = TIER_BY_STATUS[health.DEGRADED]
+        record["fix"] = (
+            "run `trustpilot-pp-cli auth login` for a fresh browser session (~3 minutes)"
+        )
         record["note"] = (
             "cannot run now: no fresh browser session and no cached company record "
             "(a research run never opens a browser; `trustpilot-pp-cli auth login` "
@@ -868,24 +992,30 @@ def _trustpilot_record(config):
 
 
 def _amazon_record(config):
-    """Amazon buyer signals: CLI-gated *and* auth-gated.
+    """Amazon buyer signals: CLI-gated, auth-gated, AND opt-in-gated.
 
     Unlike the other CLI-gated sources, a present binary is not enough --
-    the Bright Data CLI owns its own login, so a user can have `brightdata`
-    on PATH and still get nothing. Report those states separately: an
-    unauthenticated install is configured-but-broken (a real fix exists and
-    the user wants to hear it), while a missing binary is just an optional
-    source nobody opted into.
+    the Bright Data CLI owns its own login, AND pipeline.available_sources()
+    requires INCLUDE_SOURCES=amazon (or --search amazon). Report those states
+    separately so doctor and the pipeline agree.
     """
     probe = health.probe_dependency(brightdata.CLI_BIN)
-    requires = f"{brightdata.CLI_BIN} on the agent-subprocess PATH, logged in"
+    requires = f"{brightdata.CLI_BIN} on the agent-subprocess PATH, logged in + INCLUDE_SOURCES=amazon"
     if probe.ok:
-        if brightdata.has_credentials(config):
+        if not brightdata.has_credentials(config):
+            return _record(
+                status="unconfigured",
+                fix="run `brightdata login` to activate the amazon source",
+                detail="brightdata is installed but has no credentials",
+                requires=requires,
+            )
+        if "amazon" in env.include_sources(config):
             return _record(status=health.OK, detail=probe.detail, requires=requires)
         return _record(
-            status="unconfigured",
-            fix="run `brightdata login` to activate the amazon source",
-            detail="brightdata is installed but has no credentials",
+            status="opt-in",
+            fix="add amazon to INCLUDE_SOURCES (or request it via --search amazon)",
+            note="brightdata CLI installed and logged in; opt-in, never auto-activates",
+            detail=probe.detail,
             requires=requires,
         )
     entry = prescriptions.for_dependency_probe(probe)
@@ -1033,29 +1163,29 @@ def _deepline_record(config):
 
 
 def _pinterest_record(config):
-    requires = "SCRAPECREATORS_API_KEY; requested-only (--search pinterest)"
-    if not config.get("SCRAPECREATORS_API_KEY"):
-        return _record(status="unconfigured", requires=requires, fix=_sc_fix())
-    return _record(
-        status="opt-in", requires=requires,
-        fix="request it explicitly via --search pinterest (or INCLUDE_SOURCES)",
-        note="key present; runs only when requested",
-    )
+    return _sc_optin_record(config, "pinterest", "pinterest")
 
 
 def _xiaohongshu_record(config):
     requires = (
-        "logged-in Xiaohongshu browser-session service; requested-only "
-        "(--search xhs)"
+        "logged-in Xiaohongshu browser-session service + "
+        "INCLUDE_SOURCES=xiaohongshu (or --search xhs)"
     )
     entry = prescriptions.get("xiaohongshu", "service_unreachable")
+    opted_in = "xiaohongshu" in env.include_sources(config)
     if config.get("XIAOHONGSHU_API_BASE"):
+        if opted_in:
+            return _record(
+                status=health.OK, requires=requires,
+                note=(
+                    "XIAOHONGSHU_API_BASE configured; service reachability is not "
+                    "probed (doctor makes no network calls)"
+                ),
+            )
         return _record(
-            status=health.OK, requires=requires,
-            note=(
-                "XIAOHONGSHU_API_BASE configured; service reachability is not "
-                "probed (doctor makes no network calls)"
-            ),
+            status="opt-in", requires=requires,
+            fix="add xiaohongshu to INCLUDE_SOURCES (or request it via --search xhs)",
+            note="XIAOHONGSHU_API_BASE configured; opt-in, runs only when opted in or requested",
         )
     return _record(
         status="opt-in",
@@ -1152,6 +1282,7 @@ _SOURCE_BUILDERS: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
     "polymarket": _polymarket_record,
     "github": _github_record,
     "devto": _devto_record,
+    "v2ex": _v2ex_record,
     "digg": _digg_record,
     "techmeme": _techmeme_record,
     "arxiv": _arxiv_record,
@@ -1284,7 +1415,10 @@ def _x_auth_path(config: Dict[str, Any]) -> Dict[str, Any]:
     policy = env.x_policy(config)
     if not policy.official_only:
         has_key = bool(config.get("XAI_API_KEY") or config.get("XQUIK_API_KEY"))
-        cookie = bool(env.x_pending_browser_auth(config, local_only=True))
+        cookie = bool(
+            env.x_pending_browser_auth(config, local_only=True)
+            and health.probe_dependency("node").status == health.OK
+        )
         if has_key and proxy.is_sentinel(config.get("XAI_API_KEY")) and not config.get("XQUIK_API_KEY"):
             note = "xAI via API key (verified, cookie-free; paid per call)"
         elif has_key:
@@ -1307,7 +1441,7 @@ def _x_auth_path(config: Dict[str, Any]) -> Dict[str, Any]:
     elif source == "xai":
         note = "XAI_API_KEY licensed path (console.x.ai)"
     elif source == "xurl":
-        note = "X API through the xurl CLI (stored OAuth2 login)"
+        note = "X API through the xurl CLI (stored app-only bearer)"
     elif source:
         note = "explicit backend pin"
     else:
@@ -1560,13 +1694,49 @@ def _permissions_block(config: Dict[str, Any]) -> Dict[str, Any]:
     return diag["permission_preflight"]
 
 
+def _is_excluded(source: str, excluded: set[str]) -> bool:
+    return source in excluded
+
+
+def _excluded_record(source: str, config: Dict[str, Any]) -> Dict[str, Any]:
+    tokens = env.excluded_source_tokens(source, config) or [source]
+    token_list = ", ".join(tokens)
+    if len(tokens) == 1:
+        fix_tokens = tokens[0]
+    elif len(tokens) == 2:
+        fix_tokens = f"{tokens[0]} and {tokens[1]}"
+    else:
+        fix_tokens = f"{', '.join(tokens[:-1])}, and {tokens[-1]}"
+    descriptor = backends.DESCRIPTORS.get(source)
+    extra: Dict[str, Any] = {}
+    if descriptor is not None:
+        extra.update(
+            mode=descriptor.mode,
+            backends_list=[],
+            active_backend=None,
+            pin_var=descriptor.pin_var,
+            pin_flag=descriptor.pin_flag,
+            pinned=False,
+        )
+    return _record(
+        status="excluded",
+        note=f"excluded via EXCLUDE_SOURCES ({token_list})",
+        fix=f"remove {fix_tokens} from EXCLUDE_SOURCES to re-enable",
+        **extra,
+    )
+
+
 def build_report(config: Dict[str, Any]) -> Dict[str, Any]:
     """Aggregate every health provider into one report dict.
 
     Per-source exceptions are isolated: a failing builder yields an
     ``error`` record for that source and the rest of the report survives.
     """
+    excluded = env.exclude_sources(config)
+
     def _build_one(name: str) -> Dict[str, Any]:
+        if _is_excluded(name, excluded):
+            return _excluded_record(name, config)
         try:
             return _SOURCE_BUILDERS[name](config)
         except Exception as exc:  # one bad probe must not blank the report
@@ -1592,12 +1762,18 @@ def build_report(config: Dict[str, Any]) -> Dict[str, Any]:
     # live probe runs, is layered on in run() before render).
     evidence = load_run_evidence(config)
     for source, record in sources.items():
+        if _is_excluded(source, excluded):
+            record["run_outcome"] = None
+            record["audit_state"] = audit_state(source, record, None)
+            continue
         record["run_outcome"] = evidence["outcomes"].get(source) if evidence["fresh"] else None
         record["audit_state"] = audit_state(source, record, record["run_outcome"])
 
     # U3: annotate each CLI-dependent source with its binary's health so the
     # per-source marker and the dedicated CLI-health block can render (R2).
     for source, cli_name in CLI_DEPENDENCIES.items():
+        if _is_excluded(source, excluded):
+            continue
         record = sources.get(source)
         if record is None:
             continue
@@ -1615,6 +1791,8 @@ def build_report(config: Dict[str, Any]) -> Dict[str, Any]:
 
     # U7: attach backup + comment sub-lanes to their parent source.
     for source, record in sources.items():
+        if _is_excluded(source, excluded):
+            continue
         backups, comments = _sub_lanes_for(source, config)
         if backups:
             record["backups"] = backups
@@ -1624,7 +1802,7 @@ def build_report(config: Dict[str, Any]) -> Dict[str, Any]:
     # Reddit: one row per path, from the health cache and the saved run (any
     # age: the row says what the last run saw, the skip says what is in force).
     reddit_record = sources.get("reddit")
-    if reddit_record is not None:
+    if reddit_record is not None and not _is_excluded("reddit", excluded):
         reddit_outcome = evidence["outcomes"].get("reddit")
         try:
             reddit_record["paths"] = _reddit_path_rows(reddit_outcome, config)
@@ -2064,7 +2242,12 @@ DEFAULT_CACHE_TTL_SECONDS = 900
 # carries no secrets by design (key presence is booleans only); this belt-and-
 # suspenders check refuses to persist the cache if a seeded value ever leaks.
 _SECRET_CONFIG_VARS = KEY_PRESENCE_VARS + (
-    "AUTH_TOKEN", "CT0", "APIFY_API_TOKEN", "GOOGLE_GENAI_API_KEY", env.REDDIT_SESSION_COOKIE_VAR,
+    "AUTH_TOKEN",
+    "CT0",
+    "APIFY_API_TOKEN",
+    "LAST30DAYS_PUBLISH_PASSWORD",
+    "LAST30DAYS_API_KEY",
+    env.REDDIT_SESSION_COOKIE_VAR,
 )
 
 # Backend pin vars folded into the config fingerprint. Pin values are
@@ -2116,27 +2299,60 @@ def _config_fingerprint(config: Dict[str, Any]) -> str:
 
     Inputs are key-presence BOOLEANS (never credential values — the same
     ``keys_present`` set the setup block renders), backend pin values
-    (backend names, not secrets), and INCLUDE_SOURCES (not a secret).
-    Adding or removing a credential, changing a pin, or toggling an opt-in
-    source yields a new fingerprint, so ``read_cached_report`` treats the
-    old cache as stale instead of serving pre-change conclusions.
+    (backend names, not secrets), and non-secret switches affecting doctor's
+    conclusions. Adding or removing a credential, changing a pin, or toggling
+    any tracked source/host/storage knob yields a new fingerprint, so
+    ``read_cached_report`` treats the old cache as stale.
     """
     config = config or {}
+
+    def _cfg_or_env(key: str) -> str:
+        raw = config.get(key)
+        if raw is None:
+            raw = os.environ.get(key)
+        return str(raw or "")
+
+    from . import permission_preflight
+
+    raw_hosted_key = config.get("LAST30DAYS_API_KEY")
+    if raw_hosted_key is None:
+        raw_hosted_key = env.read_secret_env("LAST30DAYS_API_KEY")
+    hosted_key_present = (
+        bool(str(raw_hosted_key or "").strip()) and not proxy.is_sentinel(raw_hosted_key)
+    )
+    hosted_api_base = _cfg_or_env("LAST30DAYS_API_BASE").strip()
+    if not hosted_api_base:
+        hosted_endpoint_state = "unset"
+    elif permission_preflight._valid_hosted_api_base(hosted_api_base):
+        hosted_endpoint_state = "valid"
+    else:
+        hosted_endpoint_state = "invalid"
+
     signals = {
         "keys_present": _setup_block(config)["keys_present"],
         "via_api_key": proxy.via_api_key(config),
+        "hosted_key_present": hosted_key_present,
+        "hosted_api_mode": _cfg_or_env("LAST30DAYS_API_MODE").strip().lower(),
+        "hosted_endpoint_state": hosted_endpoint_state,
+        "corpus_dirs": permission_preflight._configured_corpus_dirs(config),
         "pins": {var: str(config.get(var) or "") for var in _FINGERPRINT_PIN_VARS},
         "include_sources": str(config.get("INCLUDE_SOURCES") or ""),
+        "exclude_sources": str(config.get("EXCLUDE_SOURCES") or ""),
+        "trustpilot_no_browser": _cfg_or_env(trustpilot.NO_BROWSER_ENV),
+        "telegram_sources": _cfg_or_env("TELEGRAM_SOURCES"),
+        "xiaohongshu_api_base": str(config.get("XIAOHONGSHU_API_BASE") or ""),
+        "native_search": _cfg_or_env("LAST30DAYS_NATIVE_SEARCH"),
+        "claudecode": _cfg_or_env("CLAUDECODE"),
+        "setup_complete": str(config.get("SETUP_COMPLETE") or ""),
+        "reddit_sc_min_items": str(config.get("LAST30DAYS_REDDIT_SC_MIN_ITEMS") or ""),
+        "memory_dir": str(config.get("LAST30DAYS_MEMORY_DIR") or ""),
+        "library_context": str(config.get("LAST30DAYS_LIBRARY_CONTEXT") or ""),
         "x_cookie_access_denied": str(config.get("LAST30DAYS_X_COOKIE_ACCESS_DENIED") or ""),
         "browser_consent": str(config.get("BROWSER_CONSENT") or ""),
         "from_browser": str(config.get("FROM_BROWSER") or ""),
         "agentcookie": str(config.get("AGENTCOOKIE") or env.read_secret_env("AGENTCOOKIE") or ""),
+        "x_api_opt_in": env.x_api_opt_in(),
     }
-    # Proxy mode moves lanes on and off without a key changing; only present
-    # when used, so every other fingerprint stays what it was.
-    via_key = proxy.via_api_key(config)
-    if via_key:
-        signals["via_api_key"] = via_key
     canonical = json.dumps(signals, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
@@ -2171,6 +2387,43 @@ def _report_shape_ok(report: Any) -> bool:
     return True
 
 
+_MAX_DOCTOR_CACHE_BYTES = 4 * 1024 * 1024
+
+
+def _read_cache_text(path: Path) -> str:
+    """Read the doctor cache file without following symlinks/FIFOs and with a size cap."""
+    target = Path(path)
+    if os.name == "posix":
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+        )
+        fd = os.open(target, flags)
+        try:
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode):
+                raise OSError(f"Expected a regular cache file: {target}")
+            if st.st_size > _MAX_DOCTOR_CACHE_BYTES:
+                raise ValueError("Doctor cache exceeds size limit")
+            with os.fdopen(fd, "rb") as stream:
+                fd = -1
+                data = stream.read(_MAX_DOCTOR_CACHE_BYTES + 1)
+        finally:
+            if fd != -1:
+                os.close(fd)
+        if len(data) > _MAX_DOCTOR_CACHE_BYTES:
+            raise ValueError("Doctor cache exceeds size limit")
+        return data.decode("utf-8")
+    private_files._reject_symlink_or_nonregular(target)
+    with target.open("rb") as stream:
+        data = stream.read(_MAX_DOCTOR_CACHE_BYTES + 1)
+    if len(data) > _MAX_DOCTOR_CACHE_BYTES:
+        raise ValueError("Doctor cache exceeds size limit")
+    return data.decode("utf-8")
+
+
 def read_cached_report(config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Return the cached report when present, well-formed, and within TTL.
 
@@ -2185,7 +2438,7 @@ def read_cached_report(config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if path is None:
         return None
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(_read_cache_text(path))
     except Exception:
         return None
     if not isinstance(payload, dict):
@@ -2202,6 +2455,22 @@ def read_cached_report(config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     report["generated_at"] = payload.get("timestamp")
     report["from_cache"] = True
     return report
+
+
+def _cache_secret_values(config: Dict[str, Any]) -> set[str]:
+    secrets: set[str] = set()
+    cfg = config or {}
+    for var in _SECRET_CONFIG_VARS:
+        value = cfg.get(var)
+        if isinstance(value, str) and len(value) >= 4 and not proxy.is_sentinel(value):
+            secrets.add(value)
+    env_api_key = env.read_secret_env("LAST30DAYS_API_KEY")
+    if isinstance(env_api_key, str) and len(env_api_key) >= 4 and not proxy.is_sentinel(env_api_key):
+        secrets.add(env_api_key)
+    for value in http.config_secret_values(cfg):
+        if len(value) >= 4 and not proxy.is_sentinel(value):
+            secrets.add(value)
+    return secrets
 
 
 def _write_cache(report: Dict[str, Any], config: Dict[str, Any]) -> bool:
@@ -2222,12 +2491,11 @@ def _write_cache(report: Dict[str, Any], config: Dict[str, Any]) -> bool:
             "report": report,
         }
         raw = json.dumps(payload, indent=2, sort_keys=True)
-        for var in _SECRET_CONFIG_VARS:
-            value = (config or {}).get(var)
-            if isinstance(value, str) and value and value in raw:
+        for value in _cache_secret_values(config):
+            if value in raw:
                 return False  # never write a cache containing a secret
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(raw, encoding="utf-8")
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        private_files.replace_private_text(path, raw)
         return True
     except Exception as exc:
         sys.stderr.write(
@@ -2467,6 +2735,8 @@ def _record_probe_health(path: str, res: Dict[str, Any]) -> None:
 
 
 def _probe_source(name: str, config: Dict[str, Any], timeout: float) -> Optional[Dict[str, Any]]:
+    if _is_excluded(name, env.exclude_sources(config)):
+        return None
     deadline = time.monotonic() + timeout
     expired = {"ok": False, "detail": "probe exceeded deadline", "probed": True}
     if timeout <= 0:
@@ -2531,7 +2801,11 @@ def _probe_sources(config: Dict[str, Any], timeout: int) -> Dict[str, Dict[str, 
     A source that blows its deadline resolves to a probe-failure for that
     source only (never a hung command); other probes are unaffected.
     """
-    names = _probeable_sources()
+    excluded = env.exclude_sources(config)
+    names = tuple(
+        name for name in _probeable_sources()
+        if not _is_excluded(name, excluded)
+    )
     results: Dict[str, Dict[str, Any]] = {}
     with concurrent.futures.ThreadPoolExecutor(
         max_workers=min(8, len(names) or 1)
@@ -2645,7 +2919,11 @@ def run(
     fresh_run = bool((report.get("run_evidence") or {}).get("fresh"))
     if probe or not fresh_run:
         timeout = probe_timeout_seconds(config)
-        probeable = _probeable_sources()
+        excluded = env.exclude_sources(config)
+        probeable = tuple(
+            name for name in _probeable_sources()
+            if not _is_excluded(name, excluded)
+        )
         sys.stderr.write(
             f"[last30days] doctor live probe: checking {len(probeable)} free/CLI "
             f"sources ({timeout}s each; no credit-gated sources - x/tiktok/"

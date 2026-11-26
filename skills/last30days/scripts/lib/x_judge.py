@@ -6,6 +6,7 @@ The judge detects off-topic floods and determines which extracted handles should
 be promoted to the FROM lane based on on-topic post ratio, not frequency.
 """
 
+import re
 from collections import Counter
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -37,10 +38,13 @@ def _compute_relevance(query: str, text: str) -> float:
     as equally relevant (the shared relevance module returns 0.5 for empty
     queries as a neutral fallback, but x_judge needs strict filtering).
 
+    Excludes ``relevance.LOW_SIGNAL_QUERY_TOKENS`` when informative tokens
+    exist (matching ``relevance.PreparedQuery``) so planner ranking-query
+    scaffolding words never promote off-topic posts above ``RELEVANCE_FLOOR``.
+
     Uses case-sensitive matching for ambiguous short tokens like 'us' to
     distinguish country acronym 'US' from pronoun 'us'.
     """
-    import re
     if not query or not text:
         return 0.0
 
@@ -48,11 +52,14 @@ def _compute_relevance(query: str, text: str) -> float:
     if not q_tokens:
         return 0.0  # All query tokens were stopwords
 
+    informative = {t for t in q_tokens if t not in relevance.LOW_SIGNAL_QUERY_TOKENS}
+    effective_q_tokens = informative or set(q_tokens)
+
     # Check for ambiguous acronyms that need case-sensitive handling
     t_tokens = relevance.tokenize(text)
-    filtered_q_tokens = set(q_tokens)
+    filtered_q_tokens = set(effective_q_tokens)
     for acronym in _CASE_SENSITIVE_ACRONYMS:
-        if acronym in q_tokens and acronym in t_tokens:
+        if acronym in effective_q_tokens and acronym in t_tokens:
             # Text has the token, but we need to check if it's the acronym (US)
             # or the common word (us). If text only has lowercase, don't count it.
             has_uppercase = bool(re.search(rf'\b{acronym.upper()}\b', text))

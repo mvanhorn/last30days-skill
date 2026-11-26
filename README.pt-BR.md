@@ -1,6 +1,6 @@
 # /last30days
 
-[English](README.md) | [Français](README.fr.md) | [Deutsch](README.de.md) | [Español](README.es.md) | Português (Brasil) | [日本語](README.ja.md) | [简体中文](README.zh-CN.md) | [العربية](README.ar.md) | [فارسی](README.fa.md) | [Türkçe](README.tr.md)
+[English](README.md) | [Français](README.fr.md) | [Deutsch](README.de.md) | [Español](README.es.md) | Português (Brasil) | [日本語](README.ja.md) | [简体中文](README.zh-CN.md) | [العربية](README.ar.md) | [فارسی](README.fa.md) | [Türkçe](README.tr.md) | [Tiếng Việt](README.vi.md) | [Русский](README.ru.md)
 
 <p align="center">
   <img src="media/pr-assets/last30days-ad.gif" width="720" alt="last30days - an AI agent-led search engine that searches people, not editors" />
@@ -372,17 +372,17 @@ Veja [CONTRIBUTING.md](CONTRIBUTING.md) para abrir um PR, [CONTRIBUTORS.md](CONT
 
 Por padrão, a ferramenta roda inteiramente na sua máquina — nenhum dado sai do seu dispositivo, exceto para as APIs de busca que você utiliza (Reddit, ScrapeCreators, etc.).
 
-**Reranking.** Se você configurar um provedor de raciocínio (`OPENAI_API_KEY`, `XAI_API_KEY`, `OPENROUTER_API_KEY`, `GOOGLE_API_KEY`, `GEMINI_API_KEY` ou `GOOGLE_GENAI_API_KEY`), o motor envia seu tema de pesquisa e trechos de conteúdo recuperado para esse provedor pontuar a relevância. É opcional: sem chave de raciocínio, o motor usa um modelo de pontuação local sem chamadas externas para o reranking.
+**Reranking.** No modo `auto` padrão, o motor usa as credenciais disponíveis para selecionar um provedor de raciocínio. Isso inclui chaves herdadas do seu shell (`OPENAI_API_KEY`, `XAI_API_KEY`, `OPENROUTER_API_KEY`, `GOOGLE_API_KEY`, `GEMINI_API_KEY` ou `GOOGLE_GENAI_API_KEY`), inclusive chaves configuradas para outra ferramenta. Se um provedor for selecionado, o motor envia seu tema de pesquisa e os trechos pré-selecionados para pontuação de relevância. Quando nenhum provedor de raciocínio está disponível, a pontuação permanece local. Veja [prioridade dos provedores de raciocínio](CONFIGURATION.md#reasoning-provider-priority) para a ordem de seleção e como manter o reranking local.
 
 **Armazenamento local.** Com `LAST30DAYS_STORE=1`, os resultados são salvos em um banco de dados SQLite local chamado `research.db`, dentro do diretório de salvamento usado (`--save-dir` tem prioridade sobre `LAST30DAYS_MEMORY_DIR`). Se nenhum diretório de salvamento estiver em uso, o banco fica em `~/.local/share/last30days/research.db`. Ativar o armazenamento não envia seu banco de dados a um serviço remoto. Consulte [CONFIGURATION.md](CONFIGURATION.md#--store-flag) para detalhes de retenção e instruções de limpeza, incluindo parar os processos que usam o banco antes de excluí-lo.
 
 ## Histórico de estrelas
 
-<a href="https://star-history.dera.page/#mvanhorn/last30days-skill&Date">
+<a href="https://github.com/mvanhorn/last30days-skill/stargazers">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://star-history.dera.page/svg?repos=mvanhorn/last30days-skill&type=Date&theme=dark" />
-    <source media="(prefers-color-scheme: light)" srcset="https://star-history.dera.page/svg?repos=mvanhorn/last30days-skill&type=Date" />
-    <img alt="Star History Chart" src="https://star-history.dera.page/svg?repos=mvanhorn/last30days-skill&type=Date" />
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/mvanhorn/last30days-skill/star-history-assets/star-history-dark.svg" />
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/mvanhorn/last30days-skill/star-history-assets/star-history-light.svg" />
+    <img alt="Star History Chart" src="https://raw.githubusercontent.com/mvanhorn/last30days-skill/star-history-assets/star-history-light.svg" />
   </picture>
 </a>
 

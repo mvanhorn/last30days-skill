@@ -366,7 +366,7 @@ def test_http_cancellation_bounds_inflight_body_wait(monkeypatch):
     response.__enter__.return_value = response
     response.status = 200
 
-    def read():
+    def read(size=-1):
         calls.append("body")
         cancel.set()
         try:

@@ -28,7 +28,7 @@ def _stub_grok(monkeypatch, stdout="", returncode=0, raises=None):
         import subprocess
         return subprocess.CompletedProcess(cmd, returncode, stdout, "")
 
-    monkeypatch.setattr(grok_x.subprocess, "run", fake_run)
+    monkeypatch.setattr(grok_x.subproc, "run_with_timeout", fake_run)
 
 
 def test_grok_cli_missing_yields_an_error_for_failover(monkeypatch):
@@ -88,7 +88,7 @@ def test_lane_budget_stops_issuing_queries(monkeypatch):
         calls["n"] += 1
         return subprocess.CompletedProcess(cmd, 0, "no posts", "")
 
-    monkeypatch.setattr(grok_x.subprocess, "run", fake_run)
+    monkeypatch.setattr(grok_x.subproc, "run_with_timeout", fake_run)
     past = _time.monotonic() - 1
     items, revoked = grok_x.search_handles(
         ["a", "b", "c"], "topic", "2026-07-14", "2026-08-13", deadline=past
@@ -113,7 +113,7 @@ def test_clean_empty_is_not_retried(monkeypatch):
         calls["n"] += 1
         return subprocess.CompletedProcess(cmd, 0, "The search returned no posts.", "")
 
-    monkeypatch.setattr(grok_x.subprocess, "run", fake_run)
+    monkeypatch.setattr(grok_x.subproc, "run_with_timeout", fake_run)
     items, error, auth_revoked = grok_x._run_query("topic", "2026-07-14", "2026-08-13")
     assert items == [] and error == ""
     assert calls["n"] == 1, "a clean empty result must not be retried"
@@ -134,7 +134,7 @@ def test_fabricated_response_is_still_retried(monkeypatch):
         calls["n"] += 1
         return subprocess.CompletedProcess(cmd, 0, fabricated, "")
 
-    monkeypatch.setattr(grok_x.subprocess, "run", fake_run)
+    monkeypatch.setattr(grok_x.subproc, "run_with_timeout", fake_run)
     grok_x._run_query("steipete", "2026-07-14", "2026-08-13")
     assert calls["n"] == 2, "a provenance rejection is exactly what retrying can fix"
 
@@ -170,12 +170,12 @@ def test_every_empty_path_leaves_the_chain_free_to_continue(monkeypatch):
         monkeypatch.setattr(grok_x, "binary_path", binary)
         if stdout is not None:
             monkeypatch.setattr(
-                grok_x.subprocess, "run",
+                grok_x.subproc, "run_with_timeout",
                 lambda cmd, **kw: sp.CompletedProcess(cmd, 0, stdout, ""),
             )
         elif binary() is not None:
             monkeypatch.setattr(
-                grok_x.subprocess, "run",
+                grok_x.subproc, "run_with_timeout",
                 lambda cmd, **kw: sp.CompletedProcess(cmd, 1, "", "boom"),
             )
         result = grok_x.search_x("topic", "2026-07-14", "2026-08-13")
@@ -194,7 +194,7 @@ def test_a_call_is_not_started_when_it_cannot_finish_in_budget(monkeypatch):
         calls["n"] += 1
         return subprocess.CompletedProcess(cmd, 0, "no posts", "")
 
-    monkeypatch.setattr(grok_x.subprocess, "run", fake_run)
+    monkeypatch.setattr(grok_x.subproc, "run_with_timeout", fake_run)
     # 5s left: below the minimum useful call, so nothing should start.
     near = _time.monotonic() + 5
     items, error, auth_revoked = grok_x._run_query("topic", "2026-07-14", "2026-08-13", deadline=near)
@@ -213,7 +213,7 @@ def test_timeout_never_exceeds_the_remaining_budget(monkeypatch):
         seen["timeout"] = kwargs.get("timeout")
         return subprocess.CompletedProcess(cmd, 0, "no posts", "")
 
-    monkeypatch.setattr(grok_x.subprocess, "run", fake_run)
+    monkeypatch.setattr(grok_x.subproc, "run_with_timeout", fake_run)
     remaining = 40
     grok_x._run_query(
         "topic", "2026-07-14", "2026-08-13",

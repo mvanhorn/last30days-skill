@@ -10,16 +10,30 @@ import logging
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.parse import urlsplit
+from urllib.request import (
+    HTTPDefaultErrorHandler,
+    HTTPErrorProcessor,
+    HTTPHandler,
+    HTTPRedirectHandler,
+    HTTPSHandler,
+    OpenerDirector,
+    ProxyHandler,
+    Request,
+    UnknownHandler,
+    getproxies,
+)
 
-from . import brightdata, health
-from .private_files import write_private_text
+from . import brightdata, health, private_files, providers
+from .private_files import replace_private_text, write_private_text
 
 logger = logging.getLogger(__name__)
 
@@ -598,18 +612,28 @@ def install_default_pp_sources() -> Dict[str, Dict[str, Any]]:
 def _open_secret_append(path: Path):
     """Open ``path`` for appending as a 0o600 secret file with no readable window.
 
-    ``os.open`` with ``O_CREAT|O_WRONLY|O_APPEND`` and mode ``0o600`` sets
-    restrictive permissions at creation (umask can only further restrict, never
-    widen, so the file is never world-readable even transiently). An explicit
-    ``chmod`` afterwards also tightens a pre-existing loose file. This matters
-    because the .env stores API keys, cookies, and tokens.
+    Uses ``O_NOFOLLOW`` and parent verification on POSIX (and junction/symlink
+    checks on Windows), tightens the open file descriptor with ``os.fchmod``,
+    and closes the descriptor if post-open setup or ``os.fdopen`` raises.
     """
-    fd = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
+    path = Path(path)
+    flags = os.O_CREAT | os.O_WRONLY | os.O_APPEND
+    if os.name == "posix":
+        path = private_files._resolve_parent_only(path)
+        flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    else:
+        private_files._reject_symlink_or_nonregular(path)
+    fd = os.open(path, flags, 0o600)
     try:
-        os.chmod(path, 0o600)
-    except OSError:
-        pass
-    return os.fdopen(fd, "a", encoding="utf-8")
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise OSError(f"Expected a regular private file: {path}")
+        if os.name == "posix" and hasattr(os, "fchmod"):
+            os.fchmod(fd, 0o600)
+        return os.fdopen(fd, "a", encoding="utf-8")
+    except BaseException:
+        os.close(fd)
+        raise
 
 
 def _env_line_key(stripped: str) -> str:
@@ -619,13 +643,23 @@ def _env_line_key(stripped: str) -> str:
     return _env.env_line_key(stripped.split("=", 1)[0])
 
 
+_ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# All characters that Python's str.splitlines() splits on.
+_ENV_LINE_BREAKS_RE = re.compile(r"[\r\n\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029]")
+# Line breaks plus NUL are disallowed in persisted secret values.
+_ENV_DISALLOWED_KEY_CHARS_RE = re.compile(r"[\x00\r\n\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029]")
+
+
 def _replace_env_line(env_path: Path, content: str, key_name: str, value: str) -> bool:
     """Rewrite every ``key_name=`` line of ``content`` with ``value`` as a 0o600 secret.
 
-    The new file is written to a sibling temp path opened at 0o600 and moved
-    over the original, so the secret never has a readable window and a
+    The new file is written to an owner-only sibling temp path and atomically
+    moved over the original, so the secret never has a readable window and a
     crash mid-write leaves the old file intact.
     """
+    if not isinstance(key_name, str) or not _ENV_KEY_RE.fullmatch(key_name):
+        return False
+
     def _is_key(stripped: str) -> bool:
         return bool(
             stripped and not stripped.startswith("#") and "=" in stripped
@@ -652,15 +686,12 @@ def _replace_env_line(env_path: Path, content: str, key_name: str, value: str) -
         lines.append(line)
     if not replaced:
         lines.append(new_line)
-    tmp_path = env_path.with_name(env_path.name + ".tmp")
-    fd = os.open(tmp_path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines) + "\n")
-    os.replace(tmp_path, env_path)
-    try:
-        os.chmod(env_path, 0o600)
-    except OSError:
-        pass
+    replace_private_text(env_path, "\n".join(lines) + "\n")
+    if os.name != "posix":
+        try:
+            os.chmod(env_path, 0o600)
+        except OSError:
+            pass
     return True
 
 
@@ -669,15 +700,21 @@ def _format_env_value(value: str) -> str:
 
     env.load_env_file strips a single layer of matching surrounding quotes but
     does NOT process backslash escapes, so we wrap (never escape):
-      - plain tokens (no whitespace, no leading quote): returned unchanged;
-      - values with whitespace/leading quote and no double-quote: double-quoted;
+      - plain tokens (no whitespace, no leading quote or ``#``): returned unchanged;
+      - values with whitespace/leading quote/``#`` and no double-quote: double-quoted;
       - values containing a double-quote but no single-quote: single-quoted;
       - values containing both quote types: returned as-is (best effort; no
         wrapper round-trips through the loader, and tokens never hit this).
-    Newlines are not valid in a single-line env value and are stripped.
+    All characters split by ``str.splitlines()`` and NUL are removed/collapsed
+    so a single value can never inject a second ``KEY=value`` line.
     """
-    value = value.replace("\r", "").replace("\n", " ")
-    needs_quoting = (not value) or value[0] in ("'", '"') or any(c.isspace() for c in value)
+    value = value.replace("\r", "").replace("\x00", "")
+    value = _ENV_LINE_BREAKS_RE.sub(" ", value)
+    needs_quoting = (
+        (not value)
+        or value[0] in ("'", '"', "#")
+        or any(c.isspace() for c in value)
+    )
     if not needs_quoting:
         return value
     if '"' not in value:
@@ -688,7 +725,7 @@ def _format_env_value(value: str) -> str:
 
 
 def write_setup_config(
-    env_path: Path,
+    env_path: Optional[Path],
     from_browser: str | None = None,
     *,
     browser_consent: bool | None = None,
@@ -715,9 +752,12 @@ def write_setup_config(
     Returns:
         True if config was written successfully, False on error.
     """
+    if not env_path or not isinstance(env_path, (str, os.PathLike)):
+        return False
     try:
         env_path = Path(env_path)
-        env_path.parent.mkdir(parents=True, exist_ok=True)
+        env_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        private_files._reject_symlink_or_nonregular(env_path)
         if browser_consent is not None:
             if not write_api_key(
                 env_path, "true" if browser_consent else "false",
@@ -735,7 +775,7 @@ def write_setup_config(
         existing_keys: set = set()
         existing_content = ""
         if env_path.exists():
-            existing_content = env_path.read_text(encoding="utf-8")
+            existing_content = env_path.read_text(encoding="utf-8-sig")
             for line in existing_content.splitlines():
                 stripped = line.strip()
                 if stripped and not stripped.startswith("#") and "=" in stripped:
@@ -766,7 +806,7 @@ def write_setup_config(
 
 
 def write_api_key(
-    env_path: Path,
+    env_path: Optional[Path],
     api_key: str,
     key_name: str = "SCRAPECREATORS_API_KEY",
     *,
@@ -791,17 +831,26 @@ def write_api_key(
 
     Returns:
         True if the key was written or already present, False on error or when
-        ``api_key`` is empty.
+        ``api_key`` is empty or malformed.
     """
-    if not api_key:
+    if (
+        not env_path
+        or not isinstance(env_path, (str, os.PathLike))
+        or not api_key
+        or not isinstance(api_key, str)
+        or not isinstance(key_name, str)
+        or not _ENV_KEY_RE.fullmatch(key_name)
+        or _ENV_DISALLOWED_KEY_CHARS_RE.search(api_key)
+    ):
         return False
     try:
         env_path = Path(env_path)
-        env_path.parent.mkdir(parents=True, exist_ok=True)
+        env_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        private_files._reject_symlink_or_nonregular(env_path)
 
         existing_content = ""
         if env_path.exists():
-            existing_content = env_path.read_text(encoding="utf-8")
+            existing_content = env_path.read_text(encoding="utf-8-sig")
             for line in existing_content.splitlines():
                 stripped = line.strip()
                 if stripped and not stripped.startswith("#") and "=" in stripped:
@@ -1112,6 +1161,180 @@ def _device_base() -> str:
 # or key-shaped value (e.g. a returning-account server response) is never
 # mislabeled as a device code or leaked to stdout/clipboard.
 _DEVICE_CODE_RE = re.compile(r"^[0-9A-Z]{4}-[0-9A-Z]{4}$")
+_AUTH_HEADER_RE = re.compile(r"\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+", re.IGNORECASE)
+_GITHUB_TOKEN_RE = re.compile(
+    r"\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+)\b"
+)
+_SECRET_FIELD_NAMES = frozenset(
+    {
+        "access_token",
+        "refresh_token",
+        "api_key",
+        "apikey",
+        "token",
+        "secret",
+        "authorization",
+        "password",
+        "cookie",
+    }
+)
+_SAFE_ERROR_SUMMARY_KEYS = ("error", "error_description", "message", "detail")
+_SECRET_FIELD_RE = re.compile(
+    r"""(["']?(?:access_token|refresh_token|api_key|apikey|token|secret|authorization|password|cookie)["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,}&;]+)""",
+    re.IGNORECASE,
+)
+_UNCLOSED_SECRET_QUOTE_RE = re.compile(
+    r"""["']?(?:access_token|refresh_token|api_key|apikey|token|secret|authorization|password|cookie)["']?\s*[:=]\s*(?:"(?:\\.|[^"\\])*\\?$|'(?:\\.|[^'\\])*\\?$)""",
+    re.IGNORECASE,
+)
+_URL_USERINFO_RE = re.compile(r"(https?://)[^\s/?#]+@", re.IGNORECASE)
+_MAX_DEVICE_RESPONSE_BYTES = 64 * 1024
+
+
+class _DeviceNoRedirectHandler(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if fp is not None:
+            try:
+                fp.close()
+            except Exception:
+                pass
+        raise HTTPError(
+            req.full_url,
+            403,
+            "redirect refused for device auth endpoint",
+            headers,
+            None,
+        )
+
+
+def _build_device_opener(*, loopback_http: bool = False) -> OpenerDirector:
+    """Build a no-redirect opener for device-auth endpoints.
+
+    Omits FileHandler, FTPHandler, and DataHandler. Remote targets are HTTPS-only
+    (honoring only the ``https`` proxy entry); loopback HTTP test targets bypass
+    ambient proxies directly.
+    """
+    opener = OpenerDirector()
+    if loopback_http:
+        handlers = [
+            ProxyHandler({}),
+            UnknownHandler(),
+            HTTPHandler(),
+            HTTPDefaultErrorHandler(),
+            _DeviceNoRedirectHandler(),
+            HTTPErrorProcessor(),
+        ]
+    else:
+        https_proxy = getproxies().get("https")
+        proxies = {"https": https_proxy} if https_proxy else {}
+        handlers = [
+            ProxyHandler(proxies),
+            UnknownHandler(),
+            HTTPSHandler(),
+            HTTPDefaultErrorHandler(),
+            _DeviceNoRedirectHandler(),
+            HTTPErrorProcessor(),
+        ]
+    for handler in handlers:
+        opener.add_handler(handler)
+    return opener
+
+
+def _default_urlopen(req: Request, timeout: int = 15):
+    url = getattr(req, "full_url", None) or str(req)
+    if not isinstance(url, str) or not url or url != url.strip():
+        raise URLError("unsupported URL scheme: <empty>")
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in url):
+        raise URLError("unsupported URL control characters")
+    try:
+        parts = urlsplit(url)
+    except ValueError as exc:
+        raise URLError(f"invalid URL: {exc}") from exc
+    scheme = parts.scheme.lower()
+    if scheme == "https" and parts.hostname:
+        return _build_device_opener(loopback_http=False).open(req, timeout=timeout)
+    if scheme == "http" and providers.is_loopback_http_endpoint(url):
+        return _build_device_opener(loopback_http=True).open(req, timeout=timeout)
+    raise URLError(f"unsupported URL scheme or non-loopback http: {scheme or '<empty>'}")
+
+
+# Sole test compatibility seam for patches targeting ``lib.setup_wizard.urlopen``;
+# production requests always use the dedicated no-redirect opener above and never
+# delegate to ``urllib.request.urlopen``.
+urlopen = _default_urlopen
+
+
+def _open_device_request(req: Request, *, timeout: int = 15):
+    return urlopen(req, timeout=timeout)
+
+
+def _close_http_error(exc: HTTPError) -> None:
+    close = getattr(exc, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:
+            pass
+
+
+def _read_bounded_json_dict(resp: Any) -> Optional[Dict[str, Any]]:
+    try:
+        raw = resp.read(_MAX_DEVICE_RESPONSE_BYTES + 1)
+    except TypeError:
+        raw = resp.read()
+    if not isinstance(raw, (bytes, bytearray)) or len(raw) > _MAX_DEVICE_RESPONSE_BYTES:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError, RecursionError, ValueError, TypeError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _is_valid_verification_uri(uri: Any) -> bool:
+    """Return True only for exact HTTPS ``github.com`` device-login verification URIs."""
+    if not isinstance(uri, str) or not uri:
+        return False
+    if "\\" in uri or any(ord(ch) <= 0x20 or ord(ch) >= 0x7F for ch in uri):
+        return False
+    try:
+        parts = urlsplit(uri)
+        port = parts.port
+    except ValueError:
+        return False
+    if parts.scheme != "https":
+        return False
+    if parts.username is not None or parts.password is not None or "@" in parts.netloc:
+        return False
+    if port not in (None, 443):
+        return False
+    if (parts.hostname or "").lower() != "github.com":
+        return False
+    if parts.query or parts.fragment or "?" in uri or "#" in uri:
+        return False
+    path = parts.path
+    if path != "/login/device" and not path.startswith("/login/device/"):
+        return False
+    lowered_path = path.lower()
+    if ".." in path.split("/") or "%2e" in lowered_path or "%2f" in lowered_path or "%5c" in lowered_path:
+        return False
+    return True
+
+
+def _scrub_error_text(text: str, *, secrets: Tuple[str, ...] = ()) -> str:
+    """Redact known secrets, bearer tokens, and URL credentials from error text."""
+    scrubbed = text
+    for secret in secrets:
+        if not isinstance(secret, str):
+            continue
+        for candidate in {secret, secret.strip()}:
+            if candidate and candidate.strip():
+                scrubbed = scrubbed.replace(candidate, "[REDACTED]")
+    scrubbed = _URL_USERINFO_RE.sub(r"\1", scrubbed)
+    scrubbed = _AUTH_HEADER_RE.sub(r"\1 [REDACTED]", scrubbed)
+    scrubbed = _GITHUB_TOKEN_RE.sub("[REDACTED]", scrubbed)
+    scrubbed = _SECRET_FIELD_RE.sub(r'\1"[REDACTED]"', scrubbed)
+    return scrubbed
 
 
 def _existing_scrapecreators_key() -> Optional[str]:
@@ -1154,10 +1377,20 @@ def run_device_auth() -> Optional[Tuple[str, str, str, int]]:
         body = json.dumps({}).encode()
         req = Request(f"{_device_base()}/code", data=body, method="POST")
         req.add_header("Content-Type", "application/json")
-        with urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read())
-    except (HTTPError, URLError, OSError) as exc:
-        logger.warning("Device auth code request failed: %s", exc)
+        with _open_device_request(req, timeout=15) as resp:
+            data = _read_bounded_json_dict(resp)
+    except HTTPError as exc:
+        try:
+            logger.warning("Device auth code request failed: %s", _scrub_error_text(str(exc)))
+        finally:
+            _close_http_error(exc)
+        return None
+    except (URLError, OSError) as exc:
+        logger.warning("Device auth code request failed: %s", _scrub_error_text(str(exc)))
+        return None
+
+    if data is None:
+        logger.warning("Device auth code request returned invalid or oversized JSON.")
         return None
 
     device_code = data.get("device_code")
@@ -1173,7 +1406,13 @@ def run_device_auth() -> Optional[Tuple[str, str, str, int]]:
         )
         return None
 
-    return (device_code, user_code, verification_uri or "", interval)
+    if verification_uri is None:
+        verification_uri = ""
+    elif verification_uri != "" and not _is_valid_verification_uri(verification_uri):
+        logger.warning("Device auth returned an untrusted verification_uri; aborting.")
+        return None
+
+    return (device_code, user_code, verification_uri, interval)
 
 
 def poll_device_auth(
@@ -1227,15 +1466,26 @@ def poll_device_auth(
             body = json.dumps({"device_code": device_code}).encode()
             req = Request(f"{_device_base()}/token", data=body, method="POST")
             req.add_header("Content-Type", "application/json")
-            with urlopen(req, timeout=15) as resp:
-                data = json.loads(resp.read())
+            with _open_device_request(req, timeout=15) as resp:
+                data = _read_bounded_json_dict(resp)
         except HTTPError as exc:
-            if exc.code in (400, 403, 428):
-                continue
-            logger.warning("Device auth poll error: %s", exc)
-            return None
+            try:
+                reason = str(getattr(exc, "reason", "") or "").lower()
+                if exc.code in (400, 403, 428) and "redirect refused" not in reason:
+                    continue
+                logger.warning(
+                    "Device auth poll error: %s",
+                    _scrub_error_text(str(exc), secrets=(device_code,)),
+                )
+                return None
+            finally:
+                _close_http_error(exc)
         except (URLError, OSError):
             continue
+
+        if data is None:
+            logger.warning("Device auth poll returned invalid or oversized JSON.")
+            return None
 
         if data.get("access_token"):
             return data["access_token"]
@@ -1259,22 +1509,98 @@ _PROFILE_FETCH_RETRY_SLEEP_S = 1.0
 _PROFILE_ERROR_BODY_LIMIT = 200
 
 
-def _http_error_detail(exc: HTTPError, *, body_limit: int = _PROFILE_ERROR_BODY_LIMIT) -> str:
-    """Build a diagnosable HTTPError string including a truncated body.
+_PROFILE_ERROR_READ_LIMIT = 65536
 
-    The body is capped and never treated as a secret source of truth; callers
-    still must not log bearer tokens. Used so a 5xx is not a black box.
+
+_MAX_JSON_REDACT_DEPTH = 8
+
+
+def _redact_json_value(
+    value: Any,
+    *,
+    secrets: Tuple[str, ...] = (),
+    depth: int = 0,
+) -> Any:
+    """Recursively redact sensitive keys/names and scrub string values in parsed JSON."""
+    if depth >= _MAX_JSON_REDACT_DEPTH:
+        return "[REDACTED]"
+    if isinstance(value, dict):
+        redacted: Dict[str, Any] = {}
+        for k, v in value.items():
+            is_secret_key = isinstance(k, str) and k.strip().lower() in _SECRET_FIELD_NAMES
+            safe_key = _scrub_error_text(str(k), secrets=secrets)
+            redacted[safe_key] = (
+                "[REDACTED]"
+                if is_secret_key
+                else _redact_json_value(v, secrets=secrets, depth=depth + 1)
+            )
+        return redacted
+    if isinstance(value, list):
+        return [_redact_json_value(item, secrets=secrets, depth=depth + 1) for item in value]
+    if isinstance(value, str):
+        return _scrub_error_text(value, secrets=secrets)
+    return value
+
+
+def _http_error_detail(
+    exc: HTTPError,
+    *,
+    body_limit: int = _PROFILE_ERROR_BODY_LIMIT,
+    secrets: Tuple[str, ...] = (),
+) -> str:
+    """Build a diagnosable HTTPError string including a scrubbed, truncated body.
+
+    JSON dict bodies are parsed, recursively redacted (keys and values), and
+    reduced to safe summary fields before serialization. Deeply nested JSON
+    that triggers ``RecursionError`` or non-JSON bodies with unclosed secret
+    quotes fall back to the scrubbed HTTP status/reason alone.
     """
-    base = f"HTTP Error {exc.code}: {getattr(exc, 'reason', '') or ''}".rstrip(": ")
+    base = _scrub_error_text(
+        f"HTTP Error {exc.code}: {getattr(exc, 'reason', '') or ''}".rstrip(": "),
+        secrets=secrets,
+    )
     try:
-        raw = exc.read() or b""
+        try:
+            raw = exc.read(_PROFILE_ERROR_READ_LIMIT) or b""
+        except TypeError:
+            raw = exc.read() or b""
     except Exception:
         return base
+    finally:
+        _close_http_error(exc)
     if not raw:
         return base
     text = raw.decode("utf-8", errors="replace").strip()
     if not text:
         return base
+    try:
+        parsed = json.loads(text)
+    except RecursionError:
+        return base
+    except (json.JSONDecodeError, ValueError, TypeError):
+        parsed = None
+    if isinstance(parsed, (dict, list)):
+        try:
+            redacted = _redact_json_value(parsed, secrets=secrets)
+            if isinstance(redacted, dict):
+                summary = {
+                    key: redacted[key]
+                    for key in _SAFE_ERROR_SUMMARY_KEYS
+                    if key in redacted
+                }
+                payload = summary or redacted
+            else:
+                payload = redacted
+            text = _scrub_error_text(
+                json.dumps(payload, ensure_ascii=False),
+                secrets=secrets,
+            )
+        except (RecursionError, ValueError, TypeError):
+            return base
+    else:
+        if _UNCLOSED_SECRET_QUOTE_RE.search(text):
+            return base
+        text = _scrub_error_text(text, secrets=secrets)
     if len(text) > body_limit:
         text = text[:body_limit] + "…"
     return f"{base} body={text!r}"
@@ -1298,6 +1624,18 @@ def fetch_api_key(access_token: str) -> Dict[str, Any]:
       - ``{"ok": False, "reason": "request_failed", "detail": str}`` on
         network/OS failures
     """
+    if (
+        not isinstance(access_token, str)
+        or not access_token.strip()
+        or any(ord(ch) < 0x20 or ord(ch) >= 0x7F for ch in access_token)
+    ):
+        logger.warning("Failed to fetch API key: invalid access token")
+        return {
+            "ok": False,
+            "reason": "request_failed",
+            "detail": "Invalid access token",
+        }
+
     data: Optional[Dict[str, Any]] = None
     last_upstream: Optional[Dict[str, Any]] = None
 
@@ -1305,12 +1643,23 @@ def fetch_api_key(access_token: str) -> Dict[str, Any]:
         try:
             req = Request(f"{_device_base()}/profile")
             req.add_header("Authorization", f"Bearer {access_token}")
-            with urlopen(req, timeout=15) as resp:
-                data = json.loads(resp.read())
+            with _open_device_request(req, timeout=15) as resp:
+                data = _read_bounded_json_dict(resp)
+            if data is None:
+                logger.warning("Failed to fetch API key: invalid or oversized JSON response")
+                return {
+                    "ok": False,
+                    "reason": "request_failed",
+                    "detail": "Invalid or oversized profile response",
+                }
             break
         except HTTPError as exc:
-            detail = _http_error_detail(exc)
-            if 500 <= int(exc.code) <= 599:
+            try:
+                detail = _http_error_detail(exc, secrets=(access_token,))
+                status_code = int(exc.code)
+            finally:
+                _close_http_error(exc)
+            if 500 <= status_code <= 599:
                 logger.warning(
                     "Device auth /profile upstream error (attempt %s/%s): %s",
                     attempt + 1,
@@ -1320,7 +1669,7 @@ def fetch_api_key(access_token: str) -> Dict[str, Any]:
                 last_upstream = {
                     "ok": False,
                     "reason": "upstream_error",
-                    "http_status": int(exc.code),
+                    "http_status": status_code,
                     "detail": detail,
                 }
                 if attempt + 1 < _PROFILE_FETCH_ATTEMPTS:
@@ -1331,12 +1680,20 @@ def fetch_api_key(access_token: str) -> Dict[str, Any]:
             return {
                 "ok": False,
                 "reason": "http_error",
-                "http_status": int(exc.code),
+                "http_status": status_code,
                 "detail": detail,
             }
         except (URLError, OSError) as exc:
-            logger.warning("Failed to fetch API key: %s", exc)
-            return {"ok": False, "reason": "request_failed", "detail": str(exc)}
+            detail = _scrub_error_text(str(exc), secrets=(access_token,))
+            logger.warning("Failed to fetch API key: %s", detail)
+            return {"ok": False, "reason": "request_failed", "detail": detail}
+        except ValueError:
+            logger.warning("Failed to fetch API key: invalid request configuration")
+            return {
+                "ok": False,
+                "reason": "request_failed",
+                "detail": "Invalid request configuration",
+            }
 
     if data is None:
         # Defensive: loop exited without success or an explicit return.
@@ -1360,11 +1717,24 @@ def fetch_api_key(access_token: str) -> Dict[str, Any]:
     return {"ok": True, "api_key": api_key}
 
 
+def _device_handle_fallback_dir() -> Path:
+    """Return a per-user private fallback directory for the GitHub device handle."""
+    if os.name == "posix":
+        uid = os.geteuid() if hasattr(os, "geteuid") else os.getuid()
+        return Path(tempfile.gettempdir()) / f"last30days-{uid}"
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if local_app_data:
+        return Path(local_app_data) / "last30days"
+    raw_user = os.environ.get("USERNAME") or os.environ.get("USER") or "user"
+    safe_user = re.sub(r"[^A-Za-z0-9._-]", "_", raw_user).strip("._-") or "user"
+    return Path(tempfile.gettempdir()) / f"last30days-{safe_user}"
+
+
 def _device_handle_path() -> Path:
     """Where run_github_start persists the device_code/interval for run_github_poll.
 
-    Kept next to the .env in the config dir; falls back to the OS temp dir when
-    no config dir is resolvable (clean/no-config mode).
+    Kept next to the .env in the config dir; falls back to a per-user private
+    directory when no config dir is resolvable (clean/no-config mode).
     """
     try:
         from . import env as _env
@@ -1373,21 +1743,104 @@ def _device_handle_path() -> Path:
             return _env.CONFIG_FILE.parent / ".github-device-handle.json"
     except Exception:
         pass
-    import tempfile
-
-    return Path(tempfile.gettempdir()) / "last30days-github-device-handle.json"
+    return _device_handle_fallback_dir() / "github-device-handle.json"
 
 
-def _start_device_flow() -> "Tuple[Dict[str, Any], Optional[Dict[str, Any]]]":
+def _ensure_private_handle_dir(directory: Path) -> None:
+    """Create and verify a private directory for persisting the device handle."""
+    directory = Path(directory)
+    is_junction = getattr(os.path, "isjunction", None)
+    if is_junction is not None and is_junction(directory):
+        raise OSError(f"Refusing to use junction directory: {directory}")
+    try:
+        st = os.lstat(directory)
+    except FileNotFoundError:
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        st = os.lstat(directory)
+    if stat.S_ISLNK(st.st_mode):
+        raise OSError(f"Refusing to use symlink directory: {directory}")
+    if not stat.S_ISDIR(st.st_mode):
+        raise OSError(f"Expected a directory for device handle: {directory}")
+    if os.name == "posix":
+        euid = os.geteuid() if hasattr(os, "geteuid") else os.getuid()
+        if st.st_uid != euid:
+            raise OSError(f"Refusing to use device handle directory owned by another user: {directory}")
+        if directory == _device_handle_fallback_dir() and stat.S_IMODE(st.st_mode) != 0o700:
+            flags = (
+                os.O_RDONLY
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_CLOEXEC", 0)
+            )
+            fd = os.open(directory, flags)
+            try:
+                fd_st = os.fstat(fd)
+                if not stat.S_ISDIR(fd_st.st_mode) or fd_st.st_uid != euid:
+                    raise OSError(f"Refusing to tighten untrusted device handle directory: {directory}")
+                if hasattr(os, "fchmod"):
+                    os.fchmod(fd, 0o700)
+            finally:
+                os.close(fd)
+
+
+def _persist_device_handle(handle: Dict[str, Any]) -> Path:
+    """Atomically persist the private GitHub device-flow handle with 0o600 permissions."""
+    path = _device_handle_path()
+    _ensure_private_handle_dir(path.parent)
+    replace_private_text(path, json.dumps(handle))
+    if os.name != "posix":
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+    return path
+
+
+def _read_device_handle(path: Path) -> Dict[str, Any]:
+    """Read a persisted device handle without following symlinks or trusting foreign files."""
+    path = Path(path)
+    if os.name == "posix":
+        path = private_files._resolve_parent_only(path)
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+        fd = os.open(path, flags)
+        try:
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode):
+                raise OSError(f"Expected a regular device handle file: {path}")
+            euid = os.geteuid() if hasattr(os, "geteuid") else os.getuid()
+            if st.st_uid != euid:
+                raise OSError(f"Refusing device handle owned by another user: {path}")
+            if private_files._is_writable_by_others(st, euid):
+                raise OSError(f"Refusing device handle writable by other users: {path}")
+            with os.fdopen(fd, "r", encoding="utf-8") as stream:
+                fd = -1
+                raw = stream.read(65536)
+        finally:
+            if fd != -1:
+                os.close(fd)
+    else:
+        private_files._reject_symlink_or_nonregular(path)
+        raw = path.read_text(encoding="utf-8")
+    data = json.loads(raw)
+    if not isinstance(data, dict) or not data.get("device_code"):
+        raise ValueError("Invalid device handle payload")
+    return data
+
+
+def _start_device_flow(
+    *,
+    persist_handle: Optional[Callable[[Dict[str, Any]], None]] = None,
+) -> "Tuple[Dict[str, Any], Optional[Dict[str, Any]]]":
     """Submit the GitHub device flow and surface the code, without polling.
 
     Returns ``(public_result, handle)``. ``handle`` is None for the
     already-registered and error cases (nothing to poll); otherwise it carries
     the private poll state (``device_code``/``interval``/``user_code``/
     ``clipboard_ok``) that never belongs in the public, stdout-printed result.
-    Callers either persist the handle to a file (``run_github_start``, for a
-    separate poll process) or hand it straight to ``run_github_poll`` in-memory
-    (``run_full_device_auth``, so a failed file write can't strand the one-shot).
+    Callers either supply ``persist_handle`` (``run_github_start``, persisting
+    before printing the code or opening the browser so a write failure never
+    strands ``--github-poll``) or hand the handle straight to ``run_github_poll``
+    in-memory (``run_full_device_auth``).
     """
     import sys
     import webbrowser
@@ -1415,7 +1868,7 @@ def _start_device_flow() -> "Tuple[Dict[str, Any], Optional[Dict[str, Any]]]":
     # Validate the code shape BEFORE copying, labeling, or emitting it. A
     # non-conforming user_code (e.g. a key-shaped value) is never surfaced as a
     # GitHub device code; we stop rather than instruct the user to paste garbage.
-    if not _DEVICE_CODE_RE.match(user_code):
+    if not isinstance(user_code, str) or not _DEVICE_CODE_RE.match(user_code):
         logger.warning("Device auth returned a non-device-shaped user_code; aborting.")
         return (
             {
@@ -1424,6 +1877,52 @@ def _start_device_flow() -> "Tuple[Dict[str, Any], Optional[Dict[str, Any]]]":
             },
             None,
         )
+
+    if verification_uri is None:
+        verification_uri = ""
+    if verification_uri != "" and not _is_valid_verification_uri(verification_uri):
+        logger.warning("Device auth returned an untrusted verification_uri; aborting.")
+        return (
+            {
+                "status": "error",
+                "message": "ScrapeCreators returned an unexpected verification URI.",
+            },
+            None,
+        )
+
+    # Copy the code to the clipboard BEFORE opening the browser.
+    clipboard_ok = False
+    if sys.platform == "darwin":
+        try:
+            subprocess.run(["pbcopy"], input=user_code.encode(), check=True, timeout=5)
+            clipboard_ok = True
+        except Exception:
+            pass  # pbcopy unavailable or failed, fall through
+
+    public = {
+        "status": "awaiting_authorization",
+        "user_code": user_code,
+        "verification_uri": verification_uri,
+        "clipboard_ok": clipboard_ok,
+    }
+    handle = {
+        "device_code": device_code,
+        "interval": interval,
+        "user_code": user_code,
+        "clipboard_ok": clipboard_ok,
+    }
+    if persist_handle is not None:
+        try:
+            persist_handle(handle)
+        except Exception as exc:
+            logger.warning("Could not persist device handle: %s", exc)
+            return (
+                {
+                    "status": "error",
+                    "message": "Could not persist GitHub device flow handle.",
+                },
+                None,
+            )
 
     # Structured stdout line for machine consumers.
     print(
@@ -1436,15 +1935,6 @@ def _start_device_flow() -> "Tuple[Dict[str, Any], Optional[Dict[str, Any]]]":
         ),
         flush=True,
     )
-
-    # Copy the code to the clipboard BEFORE opening the browser.
-    clipboard_ok = False
-    if sys.platform == "darwin":
-        try:
-            subprocess.run(["pbcopy"], input=user_code.encode(), check=True, timeout=5)
-            clipboard_ok = True
-        except Exception:
-            pass  # pbcopy unavailable or failed, fall through
 
     # Print the code as a plain HUMAN line on stdout too, so a foreground caller
     # sees it in the returned output even without reading the JSON. The clipboard
@@ -1474,38 +1964,31 @@ def _start_device_flow() -> "Tuple[Dict[str, Any], Optional[Dict[str, Any]]]":
         except Exception:
             print(f"Open: {verification_uri}", file=sys.stderr)
 
-    public = {
-        "status": "awaiting_authorization",
-        "user_code": user_code,
-        "verification_uri": verification_uri,
-        "clipboard_ok": clipboard_ok,
-    }
-    handle = {
-        "device_code": device_code,
-        "interval": interval,
-        "user_code": user_code,
-        "clipboard_ok": clipboard_ok,
-    }
     return (public, handle)
 
 
 def run_github_start() -> Dict[str, Any]:
     """Start the device flow and persist the poll handle for a later
     ``run_github_poll`` process. Returns the public result (never the private
-    device_code). See ``_start_device_flow`` for the returned statuses."""
-    public, handle = _start_device_flow()
-    if handle is not None:
-        # Persist the poll handle (0o600) so a separate --github-poll process can
-        # resume it. Best-effort: the in-memory one-shot path does not depend on
-        # this write succeeding.
-        path = _device_handle_path()
+    device_code). Fails closed with ``status="error"`` if handle persistence
+    fails so ``--github-poll`` is never stranded."""
+    persisted = False
+
+    def _persist(handle: Dict[str, Any]) -> None:
+        nonlocal persisted
+        _persist_device_handle(handle)
+        persisted = True
+
+    public, handle = _start_device_flow(persist_handle=_persist)
+    if handle is not None and not persisted:
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            write_private_text(path, json.dumps(handle), encoding="utf-8")
-            if os.name != "posix":
-                os.chmod(path, 0o600)
+            _persist_device_handle(handle)
         except Exception as exc:
             logger.warning("Could not persist device handle: %s", exc)
+            return {
+                "status": "error",
+                "message": "Could not persist GitHub device flow handle.",
+            }
     return public
 
 
@@ -1523,7 +2006,7 @@ def run_github_poll(timeout: int = 300, *, _handle: Optional[Dict[str, Any]] = N
         data = _handle
     else:
         try:
-            data = json.loads(_device_handle_path().read_text(encoding="utf-8"))
+            data = _read_device_handle(_device_handle_path())
         except Exception:
             return {
                 "status": "error",
@@ -1544,8 +2027,15 @@ def run_github_poll(timeout: int = 300, *, _handle: Optional[Dict[str, Any]] = N
     )
 
     def _cleanup() -> None:
+        if _handle is not None:
+            return
         try:
-            _device_handle_path().unlink()
+            target = _device_handle_path()
+            if os.name == "posix":
+                target = private_files._resolve_parent_only(target)
+            else:
+                private_files._reject_symlink_or_nonregular(target)
+            target.unlink()
         except Exception:
             pass
 
@@ -1650,7 +2140,7 @@ def _reddit_scan_order(config: Dict[str, Any]) -> list[str]:
 
 def run_reddit_session_setup(
     config: Dict[str, Any],
-    env_path: Path,
+    env_path: Optional[Path],
     *,
     consent: bool,
     reader: Optional[Any] = None,
@@ -1671,10 +2161,13 @@ def run_reddit_session_setup(
     host = str(config.get(_env.X_HOST_VAR) or os.environ.get(_env.X_HOST_VAR) or "").strip().lower()
     if host == _env.GROK_BOT_HOST:
         return {"status": "unavailable", "note": "The Reddit session is never used on a Grok Bot host."}
-    written = write_api_key(env_path, "true", key_name=_env.REDDIT_OFFERED_VAR, replace=True)
-    written = write_api_key(
-        env_path, "true" if consent else "false", key_name=_env.REDDIT_CONSENT_VAR, replace=True,
-    ) and written
+    if env_path:
+        written = write_api_key(env_path, "true", key_name=_env.REDDIT_OFFERED_VAR, replace=True)
+        written = write_api_key(
+            env_path, "true" if consent else "false", key_name=_env.REDDIT_CONSENT_VAR, replace=True,
+        ) and written
+    else:
+        written = False
     if not consent:
         return {"status": "declined", "consent": False, "env_written": written}
     result: Dict[str, Any] = {"consent": True, "env_written": written, "note": REDDIT_SESSION_NOTE}
@@ -1690,9 +2183,13 @@ def run_reddit_session_setup(
         cookie, state = (reader or _env.read_reddit_session_cookie)(config, browser)
         checked.append({"browser": browser, "result": state})
         if cookie:
-            result["env_written"] = write_api_key(
-                env_path, browser, key_name=_env.REDDIT_FROM_BROWSER_VAR, replace=True,
-            ) and written
+            result["env_written"] = bool(
+                env_path
+                and write_api_key(
+                    env_path, browser, key_name=_env.REDDIT_FROM_BROWSER_VAR, replace=True,
+                )
+                and written
+            )
             result.update(status="found", browser=browser, checked=checked)
             return result
     result.update(status="not-found", checked=checked)

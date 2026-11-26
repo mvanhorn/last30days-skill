@@ -19,7 +19,7 @@ def test_person_partition_queries_are_public_and_keep_auth(monkeypatch, username
             query = parse_qs(urlsplit(url).query)["q"][0]
             queries.append(query)
             assert token == TOKEN
-            return {"total_count": 1, "items": []}
+            return {"total_count": 0 if query.endswith(" is:open") else 1, "items": []}
         assert path == f"/users/{username}/repos"
         return []
 
@@ -28,7 +28,7 @@ def test_person_partition_queries_are_public_and_keep_auth(monkeypatch, username
     results = github.search_github_person(username, START, END, token=TOKEN)
 
     base = f"is:public author:{username} type:pr created:{START}..{END}"
-    assert queries == [base, f"{base} is:merged"]
+    assert queries == [base, f"{base} is:merged", f"{base} is:open"]
     assert results[0]["engagement"]["total_prs"] == 1
 
 

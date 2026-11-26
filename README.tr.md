@@ -1,6 +1,6 @@
 # /last30days
 
-[English](README.md) | [Français](README.fr.md) | [Deutsch](README.de.md) | [Español](README.es.md) | [Português (Brasil)](README.pt-BR.md) | [日本語](README.ja.md) | [简体中文](README.zh-CN.md) | [العربية](README.ar.md) | [فارسی](README.fa.md) | Türkçe
+[English](README.md) | [Français](README.fr.md) | [Deutsch](README.de.md) | [Español](README.es.md) | [Português (Brasil)](README.pt-BR.md) | [日本語](README.ja.md) | [简体中文](README.zh-CN.md) | [العربية](README.ar.md) | [فارسی](README.fa.md) | Türkçe | [Tiếng Việt](README.vi.md) | [Русский](README.ru.md)
 
 <p align="center">
   <img src="media/pr-assets/last30days-ad.gif" width="720" alt="last30days - an AI agent-led search engine that searches people, not editors" />
@@ -371,17 +371,17 @@ PR açmak için [CONTRIBUTING.md](CONTRIBUTING.md), tüm topluluk katkıcıları
 
 Beceri varsayılan olarak tamamen bilgisayarınızda çalışır; çağırdığınız arama API'lerine (Reddit, ScrapeCreators vb.) gidenler dışında veri gönderilmez.
 
-**Yeniden sıralama.** Bir akıl yürütme sağlayıcısı yapılandırdığınızda (`OPENAI_API_KEY`, `XAI_API_KEY`, `OPENROUTER_API_KEY`, `GOOGLE_API_KEY`, `GEMINI_API_KEY` veya `GOOGLE_GENAI_API_KEY`), motor araştırma konusunu ve alınan içerik parçalarını ilgi puanlaması için sağlayıcıya gönderir. Bu isteğe bağlıdır: anahtar ayarlamazsanız yerel puanlamaya döner ve dış yeniden sıralama çağrısı yapmaz. Sağlayıcı önceliği için [CONFIGURATION.md](CONFIGURATION.md) dosyasına bakın.
+**Yeniden sıralama.** Varsayılan `auto` modunda motor, bir akıl yürütme sağlayıcısı seçmek için mevcut kimlik bilgilerini kullanır. Buna başka bir araç için ayarladığınız anahtarlar da dahil olmak üzere kabuğunuzdan devralınan anahtarlar (`OPENAI_API_KEY`, `XAI_API_KEY`, `OPENROUTER_API_KEY`, `GOOGLE_API_KEY`, `GEMINI_API_KEY` veya `GOOGLE_GENAI_API_KEY`) dahildir. Bir sağlayıcı seçilirse motor, ilgi puanlaması için araştırma konunuzu ve ön elemeyi geçen içerik parçalarını o sağlayıcıya gönderir. Kullanılabilir akıl yürütme sağlayıcısı yoksa puanlama yerel kalır. Seçim sırası ve yeniden sıralamayı yerel tutma yöntemi için [akıl yürütme sağlayıcısı önceliği](CONFIGURATION.md#reasoning-provider-priority) bölümüne bakın.
 
 **Yerel depo.** `LAST30DAYS_STORE=1` olduğunda bulgular etkin kayıt dizinindeki `research.db` SQLite veritabanında tutulur (`--save-dir`, `LAST30DAYS_MEMORY_DIR` değerinden önceliklidir). Etkin kayıt dizini yoksa `~/.local/share/last30days/research.db` kullanılır. Depoyu etkinleştirmek veritabanını uzak hizmete yüklemez. Saklama ve silme ayrıntıları, silmeden önce veritabanını kullananları durdurma dahil, [CONFIGURATION.md](CONFIGURATION.md#--store-flag) içindedir.
 
 ## Yıldız geçmişi
 
-<a href="https://star-history.dera.page/#mvanhorn/last30days-skill&Date">
+<a href="https://github.com/mvanhorn/last30days-skill/stargazers">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://star-history.dera.page/svg?repos=mvanhorn/last30days-skill&type=Date&theme=dark" />
-    <source media="(prefers-color-scheme: light)" srcset="https://star-history.dera.page/svg?repos=mvanhorn/last30days-skill&type=Date" />
-    <img alt="Star History Chart" src="https://star-history.dera.page/svg?repos=mvanhorn/last30days-skill&type=Date" />
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/mvanhorn/last30days-skill/star-history-assets/star-history-dark.svg" />
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/mvanhorn/last30days-skill/star-history-assets/star-history-light.svg" />
+    <img alt="Star History Chart" src="https://raw.githubusercontent.com/mvanhorn/last30days-skill/star-history-assets/star-history-light.svg" />
   </picture>
 </a>
 
