@@ -88,7 +88,7 @@ Agents open most PRs. Follow this so `CHANGELOG.md` stops conflicting and versio
 
 ## Maintaining README translations
 
-`README.md` is the canonical English README. When changing it, reflect the same substantive updates in `README.fr.md`, `README.de.md`, `README.es.md`, `README.pt-BR.md`, `README.ja.md`, `README.zh-CN.md`, `README.ar.md`, `README.fa.md`, `README.tr.md`, and `README.vi.md`, preserving commands, links, tables, and reciprocal language navigation.
+`README.md` is the canonical English README. When changing it, reflect the same substantive updates in `README.fr.md`, `README.de.md`, `README.es.md`, `README.pt-BR.md`, `README.ja.md`, `README.zh-CN.md`, `README.ar.md`, `README.fa.md`, `README.tr.md`, `README.vi.md`, and `README.ru.md`, preserving commands, links, tables, and reciprocal language navigation.
 
 ## Maintaining CONFIGURATION.md
 
