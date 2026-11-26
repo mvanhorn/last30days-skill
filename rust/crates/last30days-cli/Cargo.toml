@@ -1,0 +1,22 @@
+[package]
+name = "last30days-cli"
+description = "Standalone native accelerator binary for last30days-skill."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "last30days-core"
+path = "src/main.rs"
+doc = false
+
+[dependencies]
+anyhow.workspace = true
+last30days-core = { path = "../last30days-core" }
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

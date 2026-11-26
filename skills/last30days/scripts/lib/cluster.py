@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from . import dedupe, entity_extract, schema
+from . import cjk, dedupe, entity_extract, rust_accel, schema
 
 
 def _cluster_score(group: list[schema.Candidate]) -> float:
@@ -101,6 +101,55 @@ def cluster_candidates(
                 )
             )
         return clusters
+
+    mode = rust_accel.engine_mode()
+    if (mode == "rust" and candidates) or (mode == "auto" and len(candidates) >= 8):
+        jieba_active = cjk._jieba is not None
+        has_jieba_cjk = jieba_active and (
+            cjk.has_cjk(plan.raw_topic)
+            or any(cjk.has_cjk(_candidate_text(c)) for c in candidates)
+        )
+        if not has_jieba_cjk:
+            payload_candidates = [
+                {
+                    "candidate_id": c.candidate_id,
+                    "title": c.title,
+                    "snippet": c.snippet,
+                    "sources": sorted(schema.candidate_sources(c)),
+                    "final_score": float(c.final_score),
+                    "window_state": (
+                        "out_of_window" if schema.candidate_out_of_window(c) else "in_window"
+                    ),
+                }
+                for c in candidates
+            ]
+            payload_plan = {
+                "intent": plan.intent,
+                "cluster_mode": plan.cluster_mode,
+                "raw_topic": plan.raw_topic,
+            }
+            rust_clusters = rust_accel.cluster_candidates(payload_candidates, payload_plan)
+            if rust_clusters is not None:
+                candidate_by_id = {c.candidate_id: c for c in candidates}
+                result_clusters: list[schema.Cluster] = []
+                for rc in rust_clusters:
+                    cluster_id = rc["cluster_id"]
+                    for cid in rc["candidate_ids"]:
+                        cand = candidate_by_id.get(cid)
+                        if cand is not None:
+                            cand.cluster_id = cluster_id
+                    result_clusters.append(
+                        schema.Cluster(
+                            cluster_id=cluster_id,
+                            title=rc["title"],
+                            candidate_ids=list(rc["candidate_ids"]),
+                            representative_ids=list(rc["representative_ids"]),
+                            sources=list(rc["sources"]),
+                            score=float(rc["score"]),
+                            uncertainty=rc.get("uncertainty"),
+                        )
+                    )
+                return result_clusters
 
     text_cache: dict[str, dedupe._PreparedText] = {
         c.candidate_id: dedupe._PreparedText(_candidate_text(c))

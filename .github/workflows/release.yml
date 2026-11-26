@@ -229,9 +229,75 @@ jobs:
           name: mcpb-${{ matrix.goos }}-${{ matrix.goarch }}
           path: ${{ env.MCPB_OUTPUT }}
 
+  # Build standalone native last30days-core binaries so end users never need a
+  # Rust toolchain installed. Linked only against OS system libraries.
+  build-rust-core:
+    needs: [validate]
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            platform: darwin-arm64
+            ext: ""
+          - runner: ubuntu-latest
+            platform: linux-amd64
+            ext: ""
+          - runner: windows-latest
+            platform: windows-amd64
+            ext: ".exe"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ needs.validate.outputs.tag }}
+          persist-credentials: false
+
+      - name: Verify checked-out tag commit
+        shell: bash
+        env:
+          EXPECTED_COMMIT: ${{ needs.validate.outputs.commit }}
+        run: |
+          set -euo pipefail
+          HEAD_COMMIT="$(git rev-parse --verify HEAD)"
+          if [ "${HEAD_COMMIT}" != "${EXPECTED_COMMIT}" ]; then
+            echo "::error::Checked-out HEAD (${HEAD_COMMIT}) does not match validated commit ${EXPECTED_COMMIT}."
+            exit 1
+          fi
+
+      - name: Build release binary
+        shell: bash
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          BIN_EXT: ${{ matrix.ext }}
+        run: |
+          set -euo pipefail
+          cargo build --manifest-path rust/Cargo.toml --release --locked
+          mkdir -p rust/dist
+          cp "rust/target/release/last30days-core${BIN_EXT}" "rust/dist/last30days-core-${PLATFORM}${BIN_EXT}"
+          if [ -z "${BIN_EXT}" ]; then
+            chmod 0755 "rust/dist/last30days-core-${PLATFORM}"
+          fi
+
+      - name: Attest last30days-core artifact provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: rust/dist/last30days-core-${{ matrix.platform }}${{ matrix.ext }}
+
+      - name: Upload last30days-core artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rust-core-${{ matrix.platform }}
+          path: rust/dist/last30days-core-${{ matrix.platform }}${{ matrix.ext }}
+
   # Gather every platform artifact and attach to one GitHub release.
   release:
-    needs: [validate, build-skill, build-mcpb]
+    needs: [validate, build-skill, build-mcpb, build-rust-core]
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -274,5 +340,6 @@ jobs:
           gh release create "${RELEASE_TAG}" \
             dist/last30days.skill \
             dist/last30days-pp-mcp-*.mcpb \
+            dist/last30days-core-* \
             --generate-notes \
             --verify-tag

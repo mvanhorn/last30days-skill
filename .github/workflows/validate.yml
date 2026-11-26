@@ -93,3 +93,48 @@ jobs:
       - name: Run MCP Go tests
         run: go test -race ./...
         working-directory: mcp
+
+  rust-core:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Verify Rust formatting, clippy, tests, and docs
+        working-directory: rust
+        run: |
+          cargo fmt --check
+          cargo clippy --all-targets --all-features -- -D warnings
+          cargo test
+          RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
+          cargo build --release
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Run Rust-accelerated parity tests
+        env:
+          LAST30DAYS_ENGINE: rust
+        run: |
+          uv run pytest \
+            tests/test_rust_accel.py \
+            tests/test_dedupe_v3.py \
+            tests/test_cluster_v3.py \
+            tests/test_cluster_diversity.py \
+            tests/test_relevance.py \
+            tests/test_relevance_core_v3.py \
+            tests/test_signals_v3.py \
+            tests/test_cjk.py \
+            tests/test_entity_extract.py \
+            tests/test_entity_extract_v3.py \
+            tests/test_library_feed.py \
+            tests/test_library_search.py \
+            tests/test_pr09_library_watchlist_store_security.py \
+            tests/test_pr32_signals_relevance_rerank_cluster_fusion_dedupe.py

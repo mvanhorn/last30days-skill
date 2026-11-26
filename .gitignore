@@ -42,6 +42,9 @@ htmlcov/
 !/mcp/internal/engine/vendored/.gitkeep
 /mcp/build/
 
+# Rust accelerator build outputs
+/rust/target/
+
 # Internal planning docs (ce:plan output) — keep local, don't publish
 docs/plans/
 docs/brainstorms/
