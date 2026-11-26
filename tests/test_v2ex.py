@@ -211,6 +211,21 @@ def test_enrichment_targets_top_items_and_refreshes_reply_counts(monkeypatch):
     assert items[3].engagement["replies"] == 9
 
 
+def test_refreshed_reply_count_reaches_the_engagement_score(monkeypatch):
+    from lib import signals
+
+    _install(monkeypatch, FakeApi(replies={"1": [_reply(f"user{n}", f"回复 {n}") for n in range(60)]}))
+    [item] = _source_items([_hit(1, "Claude Code one", replies=0)])
+    signals.annotate_stream([item], "claude code", "balanced_recent", reference_date="2026-11-26")
+    stale_score = item.engagement_score
+    v2ex.enrich_source_items([item])
+    assert item.engagement["replies"] == 60
+    assert item.engagement_score == signals.engagement_score(item)
+    # Zero replies measure no engagement at all (None), not a zero score.
+    assert stale_score is None
+    assert item.engagement_score > 0
+
+
 def test_failed_reply_fetch_keeps_the_item(monkeypatch):
     _install(monkeypatch, FakeApi(fail={"replies"}))
     items = _source_items([_hit(1, "Claude Code one", replies=4)])

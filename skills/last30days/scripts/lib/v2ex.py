@@ -31,7 +31,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from concurrent.futures import TimeoutError as FuturesTimeout
 from typing import Any
 
-from . import http, log
+from . import http, log, signals
 from .relevance import token_overlap_relevance
 
 SEARCH_URL = "https://www.sov2ex.com/api/search"
@@ -259,6 +259,9 @@ def enrich_source_items(
             item = futures[future]
             count, comments = result
             item.engagement = {**(item.engagement or {}), "replies": max(count, int((item.engagement or {}).get("replies") or 0))}
+            # Scores were set before enrichment; fusion ranks on this one, so
+            # the refreshed count must reach it (as fusion's own merge does).
+            item.engagement_score = signals.engagement_score(item)
             item.metadata["top_comments"] = _remap_comments(
                 comments,
                 # V2EX replies carry no votes; the absent score stays None.
