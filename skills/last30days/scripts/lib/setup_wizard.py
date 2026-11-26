@@ -32,7 +32,7 @@ from urllib.request import (
     getproxies,
 )
 
-from . import brightdata, health, private_files, providers
+from . import brightdata, health, private_files, providers, rust_accel
 from .private_files import replace_private_text, write_private_text
 
 logger = logging.getLogger(__name__)
@@ -201,6 +201,7 @@ def run_auto_setup(config: Dict[str, Any], *, allow_browser_cookies: bool = Fals
 
     digg_installed, digg_action, digg_stderr, digg_path = _install_digg_cli()
     pp_sources = install_default_pp_sources()
+    rust_core = rust_accel.install_release_binary()
 
     scan_attempted = allow_browser_cookies and bool(browsers)
     results: Dict[str, Any] = {
@@ -218,6 +219,7 @@ def run_auto_setup(config: Dict[str, Any], *, allow_browser_cookies: bool = Fals
         # Per-CLI status for the additional default-on Printing Press sources
         # (arxiv, techmeme, yahoo_finance): {source: {installed, action, ...}}.
         "pp_sources": pp_sources,
+        "rust_core": rust_core,
         # Reported, never installed: this CLI spends the user's own metered
         # credits, so acquiring it stays their decision. Passing
         # config matters: a user whose key lives in a .env file or the
@@ -1066,6 +1068,25 @@ def get_setup_status_text(results: Dict[str, Any]) -> str:
             "requests/month). Install with: npm i -g @brightdata/cli && brightdata login"
         )
 
+    rust_core = results.get("rust_core") or {}
+    rc_action = rust_core.get("action", "")
+    rc_version = rust_core.get("version")
+    ver_suffix = f" (v{rc_version})" if rc_version else ""
+    if rc_action == "installed":
+        lines.append(f"  - Installed native Rust core{ver_suffix} (default local compute active)")
+    elif rc_action == "upgraded":
+        lines.append(f"  - Upgraded native Rust core{ver_suffix} (default local compute active)")
+    elif rc_action == "already_installed":
+        lines.append(f"  - Native Rust core{ver_suffix} already installed")
+    elif rc_action == "unsupported_platform":
+        lines.append("  - Native Rust core has no prebuilt binary for this platform (using pure-Python fallback)")
+    elif rc_action == "install_failed":
+        detail = rust_core.get("detail") or "download failed"
+        if rust_core.get("installed"):
+            lines.append(f"  - Native Rust core upgrade skipped ({detail}); keeping existing binary")
+        else:
+            lines.append(f"  - Native Rust core install skipped ({detail}); using pure-Python fallback")
+
     cookie_note = results.get("cookie_note")
     if cookie_note:
         # Official-only host: relay the neutral note; say nothing about
@@ -1112,6 +1133,7 @@ def run_openclaw_setup(config: Dict[str, Any]) -> Dict[str, Any]:
     python3 = shutil.which("python3") is not None
 
     digg_installed, digg_action, digg_stderr, digg_path = _install_digg_cli()
+    rust_core = rust_accel.install_release_binary()
 
     keys: Dict[str, bool] = {}
     for key_name in _OPENCLAW_KEY_NAMES:
@@ -1133,6 +1155,8 @@ def run_openclaw_setup(config: Dict[str, Any]) -> Dict[str, Any]:
         "python3": python3,
         "digg_cli": digg_installed,
         "digg_action": digg_action,
+        "rust_core": bool(rust_core.get("installed")),
+        "rust_core_action": rust_core.get("action", ""),
         "keys": keys,
         "x_method": x_method,
     }

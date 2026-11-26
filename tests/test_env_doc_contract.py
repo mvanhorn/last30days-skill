@@ -56,6 +56,11 @@ DOC_ONLY_KEYS = {
     "LAST30DAYS_NO_REPORT_CHECKLIST",
     # Same wrapper, same reason: a .env line cannot opt ambient tokens into xapi.
     "LAST30DAYS_X_API_OPT_IN",
+    # Optional Rust accelerator controls are read from the process environment
+    # only so a .env file cannot redirect the executed binary or worker policy.
+    "LAST30DAYS_ENGINE",
+    "LAST30DAYS_RUST_BIN",
+    "LAST30DAYS_RUST_TIMEOUT",
 }
 
 

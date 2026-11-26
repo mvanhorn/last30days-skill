@@ -468,6 +468,11 @@ def render_text(preflight: dict[str, Any]) -> str:
         kind = write.get("kind", "file")
         if kind == "engine_cache_on_first_use":
             lines.append(f"- MCP engine cache (first use may initialize it): {write.get('path')}")
+        elif kind == "native_core_on_first_run":
+            lines.append(
+                "- Native Rust core binary (first live run may download from GitHub Releases "
+                f"with SHA-256 verification and execute): {write.get('path')}"
+            )
         elif kind.endswith("_on_save"):
             label = kind.removesuffix("_on_save").replace("_", " ").capitalize()
             lines.append(f"- {label} (if saved): {write.get('path')}")

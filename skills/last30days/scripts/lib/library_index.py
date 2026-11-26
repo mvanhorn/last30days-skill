@@ -13,7 +13,7 @@ from dataclasses import dataclass, replace
 from datetime import date
 from pathlib import Path
 
-from . import library, private_files
+from . import library, private_files, rust_accel
 from .private_files import prepare_private_sqlite_files
 
 _IS_JUNCTION = getattr(os.path, "isjunction", None)
@@ -289,11 +289,188 @@ def sync_and_search(
     ), synced
 
 
+def _sync_library_rust(
+    memory_dir: Path | str,
+    briefs_dir: Path | str,
+    db_path: Path,
+) -> SyncResult | None:
+    """Fast parallel sync path using ``last30days-core`` for Markdown scanning and fingerprinting."""
+    md_requests, json_entries, notes = library._collect_sync_inputs(memory_dir, briefs_dir)
+    if md_requests:
+        wire_requests = [
+            {
+                "path": r["path"],
+                "stem": r["stem"],
+                "source_format": r["source_format"],
+                "expected_dev_ino": r["expected_dev_ino"],
+                "fallback_date": r["fallback_date"],
+            }
+            for r in md_requests
+        ]
+        outcomes = rust_accel.scan_markdown_files(wire_requests)
+        if outcomes is None:
+            return None
+    else:
+        outcomes = []
+
+    # Merge scanned Markdown metadata + JSON entries using exact _keep_preferred semantics.
+    # Each value: (kind, mtime_ns, size, entry_id, slug, pub_date, stem, source_format, unbounded, fingerprint, payload)
+    preferred: dict[str, dict[str, object]] = {}
+
+    def _keep(record: dict[str, object]) -> None:
+        eid = str(record["entry_id"])
+        existing_rec = preferred.get(eid)
+        if existing_rec is None or int(record["mtime_ns"]) > int(existing_rec["mtime_ns"]):
+            preferred[eid] = record
+
+    for req, outcome in zip(md_requests, outcomes):
+        if outcome.get("status") != "ok":
+            notes.append(f"Skipped {req['path']}: {outcome.get('reason', 'scan failed')}")
+            continue
+        meta = outcome["meta"]
+        _keep(
+            {
+                "kind": "md",
+                "mtime_ns": req["_mtime_ns"],
+                "size": req["_size"],
+                "entry_id": meta["entry_id"],
+                "slug": meta["slug"],
+                "topic": meta["topic"],
+                "published_date": meta["published_date"],
+                "stem": req["stem"],
+                "source_format": meta["source_format"],
+                "unbounded_private": bool(meta["unbounded_private"]),
+                "fingerprint": meta["indexable_fingerprint"],
+                "path": Path(str(req["path"])),
+                "root": req.get("_root"),
+                "expected_parent_dir": req.get("_expected_parent_dir"),
+                "expected_parent_id": req.get("_expected_parent_id"),
+            }
+        )
+
+    for entry in json_entries:
+        mtime_ns, file_size = _entry_file_identity(entry)
+        _keep(
+            {
+                "kind": "json",
+                "mtime_ns": mtime_ns,
+                "size": file_size,
+                "entry_id": entry.entry_id,
+                "slug": entry.slug,
+                "topic": entry.topic,
+                "published_date": entry.published_date.isoformat(),
+                "stem": entry.source_path.stem,
+                "source_format": entry.source_format,
+                "unbounded_private": library.is_unbounded_private_brief(
+                    entry.content, source_format=entry.source_format
+                ),
+                "fingerprint": _fingerprint(_indexable_content(entry.content)),
+                "entry": entry,
+            }
+        )
+
+    # Mirror library._suppress_superseded_raw (requires full topic agreement
+    # alongside slug and date so distinct topics such as C# and C++ stay visible).
+    finished_keys = {
+        (rec["slug"], str(rec["topic"]).casefold(), rec["published_date"])
+        for rec in preferred.values()
+        if rec["source_format"] == "finished-brief" and not rec["unbounded_private"]
+    }
+    if finished_keys:
+        preferred = {
+            eid: rec
+            for eid, rec in preferred.items()
+            if not (
+                rec["source_format"] == "markdown"
+                and (rec["slug"], str(rec["topic"]).casefold(), rec["published_date"]) in finished_keys
+                and library._is_unsuffixed_raw_dump(str(rec["stem"]))
+            )
+        }
+
+    _ensure_private_directory(db_path.parent)
+    indexed = unchanged = 0
+    with _managed_connection(_connect(db_path)) as conn:
+        existing = {
+            row["entry_id"]: (row["source_mtime_ns"], row["source_size"], row["content_hash"])
+            for row in conn.execute(
+                "SELECT entry_id, source_mtime_ns, source_size, content_hash FROM library_documents"
+            )
+        }
+        current_ids: set[str] = set()
+        fts_rows = conn.execute("SELECT count(*) FROM library_fts").fetchone()[0]
+        fts_trustworthy = fts_rows >= len(existing) if existing else True
+
+        for rec in preferred.values():
+            if rec["unbounded_private"]:
+                continue
+            eid = str(rec["entry_id"])
+            current_ids.add(eid)
+            mtime_ns = int(rec["mtime_ns"])
+            file_size = int(rec["size"])
+            fingerprint = str(rec["fingerprint"])
+            if fts_trustworthy and existing.get(eid) == (mtime_ns, file_size, fingerprint):
+                unchanged += 1
+                continue
+            if rec["kind"] == "json":
+                _upsert_entry(conn, rec["entry"], fingerprint=fingerprint)  # type: ignore[arg-type]
+                indexed += 1
+            else:
+                try:
+                    entry = library.parse_markdown_file(
+                        rec["path"],  # type: ignore[arg-type]
+                        source_format=str(rec["source_format"]),
+                        root=rec.get("root"),  # type: ignore[arg-type]
+                        expected_parent_dir=rec.get("expected_parent_dir"),  # type: ignore[arg-type]
+                        expected_parent_id=rec.get("expected_parent_id"),  # type: ignore[arg-type]
+                    )
+                except (OSError, UnicodeError, ValueError) as exc:
+                    notes.append(f"Skipped {rec['path']}: {exc}")
+                    current_ids.discard(eid)
+                    continue
+                if library.is_unbounded_private_brief(
+                    entry.content, source_format=entry.source_format
+                ):
+                    current_ids.discard(eid)
+                    continue
+                if entry.entry_id != eid:
+                    current_ids.discard(eid)
+                    current_ids.add(entry.entry_id)
+                if (
+                    entry.entry_id != eid
+                    or entry.source_mtime_ns != mtime_ns
+                    or entry.source_size != file_size
+                ):
+                    fingerprint = _fingerprint(_indexable_content(entry.content))
+                _upsert_entry(conn, entry, fingerprint=fingerprint)
+                indexed += 1
+
+        stale_ids = set(existing) - current_ids
+        for entry_id in stale_ids:
+            conn.execute("DELETE FROM library_fts WHERE entry_id = ?", (entry_id,))
+            conn.execute("DELETE FROM library_documents WHERE entry_id = ?", (entry_id,))
+        conn.commit()
+
+    return SyncResult(
+        indexed=indexed,
+        removed=len(stale_ids),
+        unchanged=unchanged,
+        notes=tuple(notes),
+    )
+
+
 def _sync_library(
     memory_dir: Path | str,
     briefs_dir: Path | str,
     db_path: Path,
 ) -> SyncResult:
+    if (
+        rust_accel.engine_mode() != "python"
+        and library.scan_library is library._ORIGINAL_SCAN_LIBRARY
+    ):
+        accelerated = _sync_library_rust(memory_dir, briefs_dir, db_path)
+        if accelerated is not None:
+            return accelerated
+
     entries, notes = library.scan_library(memory_dir, briefs_dir)
     _ensure_private_directory(db_path.parent)
     indexed = unchanged = 0

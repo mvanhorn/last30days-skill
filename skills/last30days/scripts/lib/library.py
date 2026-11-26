@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
 
+from . import rust_accel
+
 try:
     import fcntl
 except ImportError:
@@ -501,6 +503,11 @@ def _strip_private_corpus_blocks(markdown: str) -> str:
 
 
 def public_markdown(markdown: str) -> str:
+    mode = rust_accel.engine_mode()
+    if mode == "rust" or (mode == "auto" and len(markdown) >= 2048):
+        accelerated = rust_accel.public_markdown(markdown)
+        if accelerated is not None:
+            return accelerated
     if is_unbounded_private_brief(markdown):
         return ""
     corpus_document = has_private_corpus(markdown)
@@ -1416,3 +1423,231 @@ def _clean_inline(value: str) -> str:
     value = re.sub(r"(?<!\w)([*_])(?=\S)(.+?)(?<=\S)\1(?!\w)", r"\2", value)
     value = re.sub(r"(?<!\w)`(?=\S)(.+?)(?<=\S)`(?!\w)", r"\1", value)
     return re.sub(r"\s+", " ", value).strip()
+
+
+def _dir_matches_fd(dir_path: Path, dir_fd: int) -> bool:
+    """Return True when ``dir_path`` still refers to the same non-symlink directory as ``dir_fd``."""
+    try:
+        path_st = dir_path.lstat()
+        fd_st = os.fstat(dir_fd)
+    except OSError:
+        return False
+    if stat.S_ISLNK(path_st.st_mode) or not stat.S_ISDIR(path_st.st_mode):
+        return False
+    return (path_st.st_dev, path_st.st_ino) == (fd_st.st_dev, fd_st.st_ino)
+
+
+def _collect_sync_inputs(
+    memory_dir: Path | str = DEFAULT_MEMORY_DIR,
+    briefs_dir: Path | str = DEFAULT_BRIEFS_DIR,
+) -> tuple[list[dict[str, object]], list[LibraryEntry], list[str]]:
+    """Collect validated Markdown file descriptors and direct/JSON entries without reading unswapped Markdown bodies."""
+    md_requests: list[dict[str, object]] = []
+    json_entries: list[LibraryEntry] = []
+    notes: list[str] = []
+    memory_path = _resolve_scan_root(Path(memory_dir).expanduser(), notes)
+    briefs_path = _resolve_scan_root(Path(briefs_dir).expanduser(), notes)
+
+    def _enqueue_md(
+        path: Path,
+        source_format: str,
+        *,
+        dir_fd: int | None = None,
+        root: Path | None = None,
+        expected_parent_dir: Path | None = None,
+        expected_parent_id: tuple[int, int] | None = None,
+    ) -> None:
+        try:
+            if dir_fd is not None:
+                entry_name = path.name
+                if not entry_name or entry_name in (".", "..") or "/" in entry_name or "\\" in entry_name:
+                    raise OSError(f"Invalid library entry name: {path}")
+                st = os.lstat(entry_name, dir_fd=dir_fd)
+            else:
+                if root is not None:
+                    _verify_checked_parent(
+                        path,
+                        root_resolved=root,
+                        expected_parent_dir=expected_parent_dir,
+                        expected_parent_id=expected_parent_id,
+                    )
+                if _IS_JUNCTION is not None and _IS_JUNCTION(path):
+                    raise OSError(errno.ELOOP, f"Refusing to follow junction: {path}")
+                st = path.lstat()
+            if stat.S_ISLNK(st.st_mode):
+                raise OSError(errno.ELOOP, f"Refusing to follow symlink: {path}")
+            if not stat.S_ISREG(st.st_mode):
+                raise OSError(f"Not a regular file: {path}")
+            if st.st_size > MAX_LIBRARY_FILE_BYTES:
+                raise ValueError(f"file exceeds {MAX_LIBRARY_FILE_BYTES} byte limit")
+            md_requests.append(
+                {
+                    "path": str(path),
+                    "stem": path.stem,
+                    "source_format": source_format,
+                    "expected_dev_ino": [int(st.st_dev), int(st.st_ino)] if os.name == "posix" else None,
+                    "fallback_date": datetime.fromtimestamp(st.st_mtime).date().isoformat(),
+                    "_mtime_ns": int(st.st_mtime_ns),
+                    "_size": int(st.st_size),
+                    "_root": root,
+                    "_expected_parent_dir": expected_parent_dir,
+                    "_expected_parent_id": expected_parent_id,
+                }
+            )
+        except (OSError, ValueError) as exc:
+            notes.append(f"Skipped {path}: {exc}")
+
+    if _SUPPORTS_DIR_FD:
+        if memory_path is not None:
+            try:
+                with _open_dir_fd(memory_path) as memory_fd:
+                    memory_fd_st = os.fstat(memory_fd)
+                    memory_id = (memory_fd_st.st_dev, memory_fd_st.st_ino)
+                    finished_path = memory_path / FINISHED_SUBDIR
+                    try:
+                        with _open_dir_fd(
+                            FINISHED_SUBDIR, dir_fd=memory_fd, nofollow=True
+                        ) as finished_fd:
+                            finished_fd_st = os.fstat(finished_fd)
+                            finished_id = (finished_fd_st.st_dev, finished_fd_st.st_ino)
+                            names = _listdir_pinned(finished_fd, finished_path)
+                            finished_intact = _dir_matches_fd(finished_path, finished_fd)
+                            for name in names:
+                                if not name.endswith(".md"):
+                                    continue
+                                if finished_intact:
+                                    _enqueue_md(
+                                        finished_path / name,
+                                        "finished-brief",
+                                        dir_fd=finished_fd,
+                                        root=memory_path,
+                                        expected_parent_dir=finished_path,
+                                        expected_parent_id=finished_id,
+                                    )
+                                else:
+                                    path = finished_path / name
+                                    try:
+                                        json_entries.append(
+                                            parse_markdown_file(
+                                                path,
+                                                source_format="finished-brief",
+                                                dir_fd=finished_fd,
+                                            )
+                                        )
+                                    except (OSError, UnicodeError, ValueError) as exc:
+                                        notes.append(f"Skipped {path}: {exc}")
+                    except FileNotFoundError:
+                        pass
+                    except OSError as exc:
+                        if exc.errno == errno.ELOOP:
+                            notes.append(f"Skipped {finished_path}: refusing to follow symlink directory")
+                        elif exc.errno == errno.ENOTDIR:
+                            try:
+                                if stat.S_ISLNK(os.lstat(FINISHED_SUBDIR, dir_fd=memory_fd).st_mode):
+                                    notes.append(
+                                        f"Skipped {finished_path}: refusing to follow symlink directory"
+                                    )
+                            except OSError:
+                                pass
+                        else:
+                            notes.append(f"Skipped {finished_path}: {exc}")
+
+                    mem_names = _listdir_pinned(memory_fd, memory_path)
+                    mem_intact = _dir_matches_fd(memory_path, memory_fd)
+                    for name in mem_names:
+                        if not name.endswith(".md"):
+                            continue
+                        if mem_intact:
+                            _enqueue_md(
+                                memory_path / name,
+                                "markdown",
+                                dir_fd=memory_fd,
+                                root=memory_path,
+                                expected_parent_dir=memory_path,
+                                expected_parent_id=memory_id,
+                            )
+                        else:
+                            path = memory_path / name
+                            try:
+                                json_entries.append(
+                                    parse_markdown_file(
+                                        path,
+                                        source_format="markdown",
+                                        dir_fd=memory_fd,
+                                    )
+                                )
+                            except (OSError, UnicodeError, ValueError) as exc:
+                                notes.append(f"Skipped {path}: {exc}")
+            except (FileNotFoundError, NotADirectoryError):
+                pass
+            except OSError as exc:
+                if exc.errno not in (errno.ENOENT, errno.ENOTDIR):
+                    notes.append(f"Skipped {memory_path}: {exc}")
+
+        if briefs_path is not None:
+            try:
+                with _open_dir_fd(briefs_path) as briefs_fd:
+                    for name in _listdir_pinned(briefs_fd, briefs_path):
+                        if not name.endswith(".json"):
+                            continue
+                        path = briefs_path / name
+                        try:
+                            json_entries.append(_parse_briefing(path, dir_fd=briefs_fd))
+                        except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+                            notes.append(f"Skipped {path}: {exc}")
+            except (FileNotFoundError, NotADirectoryError):
+                pass
+            except OSError as exc:
+                if exc.errno not in (errno.ENOENT, errno.ENOTDIR):
+                    notes.append(f"Skipped {briefs_path}: {exc}")
+    else:
+        if memory_path is not None:
+            memory_stat = _checked_subdir_stat(memory_path, memory_path)
+            if memory_stat is not None:
+                memory_id = (memory_stat.st_dev, memory_stat.st_ino)
+                finished_path = memory_path / FINISHED_SUBDIR
+                finished_stat = _checked_subdir_stat(finished_path, memory_path)
+                if finished_stat is not None:
+                    finished_id = (finished_stat.st_dev, finished_stat.st_ino)
+                    for path in sorted(finished_path.glob("*.md")):
+                        _enqueue_md(
+                            path,
+                            "finished-brief",
+                            root=memory_path,
+                            expected_parent_dir=finished_path,
+                            expected_parent_id=finished_id,
+                        )
+                elif finished_path.is_symlink() or (
+                    _IS_JUNCTION is not None and _IS_JUNCTION(finished_path)
+                ):
+                    notes.append(f"Skipped {finished_path}: refusing to follow symlink directory")
+                for path in sorted(memory_path.glob("*.md")):
+                    _enqueue_md(
+                        path,
+                        "markdown",
+                        root=memory_path,
+                        expected_parent_dir=memory_path,
+                        expected_parent_id=memory_id,
+                    )
+
+        if briefs_path is not None:
+            briefs_stat = _checked_subdir_stat(briefs_path, briefs_path)
+            if briefs_stat is not None:
+                briefs_id = (briefs_stat.st_dev, briefs_stat.st_ino)
+                for path in sorted(briefs_path.glob("*.json")):
+                    try:
+                        json_entries.append(
+                            _parse_briefing(
+                                path,
+                                root=briefs_path,
+                                expected_parent_dir=briefs_path,
+                                expected_parent_id=briefs_id,
+                            )
+                        )
+                    except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+                        notes.append(f"Skipped {path}: {exc}")
+
+    return md_requests, json_entries, notes
+
+
+_ORIGINAL_SCAN_LIBRARY = scan_library

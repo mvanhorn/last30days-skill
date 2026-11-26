@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from . import cjk, fusion, reddit_refs, schema
+from . import cjk, fusion, reddit_refs, rust_accel, schema
 
 STOPWORDS = frozenset(
     {
@@ -193,6 +193,26 @@ def dedupe_items(items: list[schema.SourceItem], threshold: float = 0.7) -> list
         fusion.merge_source_items(collapsed[existing_idx], item)
 
     # Pass 2: fuzzy near-duplicate removal on remaining distinct-URL items.
+    mode = rust_accel.engine_mode()
+    use_rust = mode == "rust" or (mode == "auto" and len(collapsed) >= 12)
+    if use_rust:
+        entries: list[dict[str, str]] = []
+        has_jieba_cjk = False
+        jieba_active = cjk._jieba is not None
+        for item in collapsed:
+            if _is_url_only_dedupe(item, conflicted_poly_urls):
+                entries.append({"mode": "url_only", "text": ""})
+            else:
+                text = item_text(item)
+                if jieba_active and cjk.has_cjk(text):
+                    has_jieba_cjk = True
+                    break
+                entries.append({"mode": "fuzzy", "text": text})
+        if not has_jieba_cjk:
+            kept_indices = rust_accel.dedupe_kept_indices(entries, threshold)
+            if kept_indices is not None:
+                return [collapsed[idx] for idx in kept_indices]
+
     kept: list[schema.SourceItem] = []
     kept_prepared: list[_PreparedText] = []
     for item in collapsed:

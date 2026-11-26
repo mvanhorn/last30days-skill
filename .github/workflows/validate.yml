@@ -93,3 +93,36 @@ jobs:
       - name: Run MCP Go tests
         run: go test -race ./...
         working-directory: mcp
+
+  rust-core:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Verify Rust formatting, clippy, tests, and docs
+        working-directory: rust
+        run: |
+          cargo fmt --check
+          cargo clippy --all-targets --all-features -- -D warnings
+          cargo test
+          RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
+          cargo build --release
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Run full test suite and evals with Rust core active
+        env:
+          LAST30DAYS_ENGINE: rust
+        run: |
+          uv run python -c "import sys; sys.path.insert(0, 'skills/last30days/scripts'); from lib import rust_accel; assert rust_accel.engine_mode() == 'rust' and rust_accel.is_available(), 'Rust core binary not active'"
+          uv run pytest -n auto --dist worksteal
+          uv run pytest tests/eval -x
