@@ -437,9 +437,12 @@ def search_github(
         seen_ids = set()
         failed_qualifiers: List[str] = []
         for qualifier in ("is:issue", "is:pull-request"):
-            if (stopped is not None and stopped()) or (
-                deadline is not None and time.monotonic() >= deadline
-            ):
+            if stopped is not None and stopped():
+                fetch_failures.append("cancelled")
+                failed_qualifiers.append(qualifier)
+                break
+            if deadline is not None and time.monotonic() >= deadline:
+                fetch_failures.append("deadline exceeded")
                 failed_qualifiers.append(qualifier)
                 break
             part = _search(qualifier)
@@ -465,17 +468,23 @@ def search_github(
             )
     else:
         data = _search(None)
+    stop_reason = (
+        fetch_failures[-1]
+        if fetch_failures and fetch_failures[-1] in {"cancelled", "deadline exceeded"}
+        else None
+    )
     if not data:
         envelope = {"items": [], "context": {"core": core, "from_date": from_date,
                                              "to_date": to_date, "count": count}}
-        if authed and partition_failure:
+        if stop_reason is not None:
+            envelope["stopped_reason"] = stop_reason
+            envelope["error"] = f"GitHub search timed out ({stop_reason})"
+        elif authed and partition_failure:
             envelope["error"] = partition_failure
         elif authed and fetch_failures:
             # Authenticated transport failures must not be laundered into a
             # clean no-results outcome (issue #384).
             envelope["error"] = f"GitHub API request failed: {fetch_failures[-1]}"
-        elif not authed and fetch_failures and fetch_failures[-1] in {"cancelled", "deadline exceeded"}:
-            envelope["error"] = f"GitHub search stopped: {fetch_failures[-1]}"
         elif not authed:
             # Could be the anon rate limit (403) or an unprocessable query (422)
             # -- _fetch_json maps both to None. Don't over-claim which; suggest a
@@ -498,6 +507,8 @@ def search_github(
             "count": count,
         },
     }
+    if stop_reason is not None:
+        envelope["stopped_reason"] = stop_reason
     if partition_failure:
         envelope["error"] = partition_failure
     return envelope

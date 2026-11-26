@@ -9396,10 +9396,17 @@ def _retrieve_stream_impl(
         # tokenless anon tier and returns empty here rather than raising — github
         # is now always eligible, so raising would spam "github failed" on every
         # tokenless run. The condition is logged in github.search_github.
+        # Reserve a short return margin before _research_deadline so slow comment
+        # fetches never cause the stream collector to discard already-found issues.
+        comment_deadline = (deadline - 1.0) if deadline is not None else None
         if token and items and not _research_stopped(config):
             items = github.enrich_with_comments(
-                items, depth=depth, deadline=deadline, stopped=stopped_fn
+                items, depth=depth, deadline=comment_deadline, stopped=stopped_fn
             )
+        if response.get("stopped_reason"):
+            state = schema.PARTIAL if items else health.TIMEOUT
+            detail = str(response.get("error") or response["stopped_reason"])
+            return items, _outcome_artifact(state, detail, attempted=True)
         return items, _result_outcome_artifact(source, response)
     if source == "pinterest":
         result = pinterest.search_pinterest(

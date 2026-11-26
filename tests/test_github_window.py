@@ -326,3 +326,102 @@ def test_enrich_with_comments_respects_deadline_and_keeps_found_items():
     assert result[0]["title"] == "Claude Code hooks stop firing"
     assert elapsed < 1.0
     assert seen_timeouts and 0 < seen_timeouts[0] <= 0.2
+
+
+def test_unauth_stopped_search_reports_timeout_not_rate_limit():
+    import time
+
+    with patch.object(github, "_resolve_token", return_value=None), patch.object(
+        github, "_fetch_json"
+    ) as fetch_mock:
+        env = github.search_github(
+            "Claude Code",
+            "2026-03-01",
+            "2026-03-31",
+            deadline=time.monotonic() - 1.0,
+        )
+
+    fetch_mock.assert_not_called()
+    assert env["stopped_reason"] == "deadline exceeded"
+    assert "GITHUB_TOKEN" not in env["error"]
+    assert "rate limit" not in env["error"]
+
+    sq = schema.SubQuery(
+        label="primary",
+        search_query="Claude Code",
+        ranking_query="Claude Code",
+        sources=["github"],
+    )
+    with patch.object(github, "resolve_token", return_value=None), patch.object(
+        github, "search_github", return_value=env
+    ):
+        items, artifact = pipeline._retrieve_stream_impl(
+            topic="Claude Code",
+            subquery=sq,
+            source="github",
+            config={"_research_deadline": time.monotonic() - 1.0},
+            depth="default",
+            date_range=("2026-03-01", "2026-03-31"),
+            runtime=schema.ProviderRuntime(
+                reasoning_provider="local",
+                planner_model="local",
+                rerank_model="local",
+            ),
+            mock=False,
+            raw_topic="Claude Code",
+        )
+    from lib import health
+    assert items == []
+    assert artifact["_source_outcome"]["state"] == health.TIMEOUT
+
+
+def test_pipeline_github_reserves_return_margin_for_comment_enrichment():
+    import time
+
+    deadline = time.monotonic() + 5.0
+    captured = {}
+
+    def _fake_enrich(items, depth="default", *, deadline=None, stopped=None):
+        captured["deadline"] = deadline
+        return items
+
+    sq = schema.SubQuery(
+        label="primary",
+        search_query="Claude Code",
+        ranking_query="Claude Code",
+        sources=["github"],
+    )
+    response = {
+        "items": [
+            {
+                "id": 99,
+                "html_url": "https://github.com/anthropics/claude-code/issues/99",
+                "title": "Claude Code hooks stop firing",
+                "body": "Body",
+                "created_at": "2026-03-15T00:00:00Z",
+                "reactions": {"total_count": 25},
+            }
+        ],
+        "context": {"core": "Claude Code", "from_date": "2026-03-01", "to_date": "2026-03-31", "count": 30},
+    }
+    with patch.object(github, "resolve_token", return_value="tok"), patch.object(
+        github, "search_github", return_value=response
+    ), patch.object(github, "enrich_with_comments", side_effect=_fake_enrich):
+        items, _artifact = pipeline._retrieve_stream_impl(
+            topic="Claude Code",
+            subquery=sq,
+            source="github",
+            config={"_research_deadline": deadline},
+            depth="default",
+            date_range=("2026-03-01", "2026-03-31"),
+            runtime=schema.ProviderRuntime(
+                reasoning_provider="local",
+                planner_model="local",
+                rerank_model="local",
+            ),
+            mock=False,
+            raw_topic="Claude Code",
+        )
+
+    assert len(items) == 1
+    assert captured["deadline"] == deadline - 1.0
