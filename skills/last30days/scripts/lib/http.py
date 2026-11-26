@@ -696,14 +696,14 @@ def _open_request(req, timeout, *, bypass_proxy=False):
     return opener.open(req, timeout=timeout)
 
 
-def open_request(req, timeout):
+def open_request(req, timeout, *, bypass_proxy=False):
     """Open ``req`` with cross-origin credential stripping (see #1062).
 
     Public entry point for modules that build their own ``Request`` and would
     otherwise call ``urllib.request.urlopen`` directly, bypassing the redirect
     handler installed above.
     """
-    return _open_request(req, timeout)
+    return _open_request(req, timeout, bypass_proxy=bypass_proxy)
 
 
 _failure_sink: ContextVar[Optional[list["HTTPError"]]] = ContextVar(
@@ -1662,8 +1662,6 @@ def request(
         raise ValueError("owned transport requires a bodyless GET")
     if owned_get and deadline_monotonic is None:
         raise ValueError("owned GET requires an operation deadline")
-    if owned_get and bypass_proxy:
-        raise ValueError("owned GET does not support proxy bypass")
     if owned_get and return_headers:
         raise ValueError("owned GET does not report response headers")
     if public_only and local_bridge_only:
@@ -1691,7 +1689,7 @@ def request(
     # `Authorization`, so it needs the same rule as the bearer-based providers.
     # Keyed on the credential header, not the URL alone: ordinary loopback
     # traffic keeps whatever proxy route it was configured with.
-    if not bypass_proxy and not owned_get and _is_loopback_http_url(url) and _carries_provider_credential(headers):
+    if not bypass_proxy and _is_loopback_http_url(url) and _carries_provider_credential(headers):
         bypass_proxy = True
 
     if params:
@@ -1889,6 +1887,8 @@ def request(
                     owned_kwargs["with_headers"] = True
                 if max_bytes is not None:
                     owned_kwargs["max_bytes"] = max_bytes
+                if bypass_proxy:
+                    owned_kwargs["bypass_proxy"] = True
                 if on_dispatch is not None or dispatch_hook is not None:
                     owned_kwargs["on_start"] = _notify_dispatch
                 owned = bounded_get.get(

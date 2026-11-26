@@ -180,6 +180,32 @@ def test_scrapecreators_loopback_override_bypasses_proxy(monkeypatch, serve):
     assert headers["x-api-key"] == "dummy-key"
 
 
+def test_scrapecreators_owned_get_loopback_override_bypasses_proxy(monkeypatch, serve):
+    """Owned GET (used by YouTube transcripts) must also bypass HTTP_PROXY for
+    loopback provider overrides so X-api-key stays on the local connection."""
+    import time
+
+    endpoint, endpoint_requests = serve(payload={"transcript": "direct"})
+    proxy, proxy_requests = serve(reply="proxy")
+    _enable_proxy(monkeypatch, proxy)
+
+    result = http.get(
+        f"{endpoint}/v1/youtube/video/transcript",
+        headers={"x-api-key": "dummy-key"},
+        timeout=5,
+        retries=1,
+        deadline_monotonic=time.monotonic() + 10.0,
+        owned_get=True,
+    )
+
+    assert result == {"transcript": "direct"}
+    assert proxy_requests == []
+    assert len(endpoint_requests) == 1
+    method, path, headers = endpoint_requests[0]
+    assert (method, path) == ("GET", "/v1/youtube/video/transcript")
+    assert headers["x-api-key"] == "dummy-key"
+
+
 def test_get_text_failure_log_masks_credential_query_params(monkeypatch, capsys):
     """A failed fetch logs its URL; credential query params must be masked."""
     monkeypatch.setenv("LAST30DAYS_DEBUG", "1")
