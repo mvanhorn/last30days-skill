@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import http.client
 import os
 import random
 import stat
@@ -580,6 +581,41 @@ def test_ensure_installed_for_run_records_cooldown_on_failure(tmp_path: Path, mo
     second = rust_accel.ensure_installed_for_run()
     assert second is None
     assert attempts == 1
+
+
+def test_install_release_binary_catches_incomplete_read(tmp_path: Path, monkeypatch):
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("LAST30DAYS_ENGINE", "auto")
+    managed = rust_accel.install_bin_path()
+    monkeypatch.setattr(rust_accel, "_candidate_binary_paths", lambda: [managed])
+    monkeypatch.setattr(rust_accel, "platform_asset_name", lambda *_a, **_k: "last30days-core-test-bin")
+    monkeypatch.setattr(rust_accel, "expected_skill_version", lambda: "4.7.0")
+
+    def _truncated_fetch(url: str, *, max_bytes: int, timeout: float = 30.0) -> bytes:
+        raise http.client.IncompleteRead(b"partial")
+
+    monkeypatch.setattr(rust_accel, "_https_fetch_bytes", _truncated_fetch)
+
+    res = rust_accel.ensure_installed_for_run()
+    assert res is not None
+    assert res["installed"] is False
+    assert res["action"] == "install_failed"
+    assert not managed.exists()
+
+
+def test_expected_skill_version_reads_mcp_sentinel_without_skill_md(tmp_path: Path):
+    bundle_root = tmp_path / "last30days-pp-mcp" / "v4.7.0"
+    fake_mod = bundle_root / "lib" / "rust_accel.py"
+    fake_mod.parent.mkdir(parents=True)
+    fake_mod.write_text("", encoding="utf-8")
+    (bundle_root / ".version").write_text("v4.7.0\n", encoding="utf-8")
+
+    assert rust_accel.expected_skill_version(fake_mod) == "4.7.0"
+
+    (bundle_root / ".version").write_text("dev\n", encoding="utf-8")
+    assert rust_accel.expected_skill_version(fake_mod) is None
 
 
 def test_setup_status_and_doctor_render_rust_core(monkeypatch):

@@ -12,6 +12,7 @@ from __future__ import annotations
 import atexit
 import hashlib
 import hmac
+import http.client
 import json
 import math
 import os
@@ -141,13 +142,38 @@ def platform_asset_name(
     return None
 
 
-def expected_skill_version() -> str | None:
-    """Return validated ``X.Y.Z`` version from ``SKILL.md``, or ``None``."""
-    skill_md = Path(__file__).resolve().parents[2] / "SKILL.md"
-    raw = skill_meta.read_skill_version(skill_md)
-    if not raw or not _SEMVER_RE.fullmatch(raw):
-        return None
-    return raw
+def expected_skill_version(script_file: Path | None = None) -> str | None:
+    """Return validated ``X.Y.Z`` version from skill, plugin, or MCP sentinel metadata."""
+    here = (script_file if script_file is not None else Path(__file__)).resolve()
+    candidates: list[str | None] = []
+
+    # 1. Standard skill install: <skill>/scripts/lib/rust_accel.py -> <skill>/SKILL.md
+    if len(here.parents) > 2:
+        candidates.append(skill_meta.read_skill_version(here.parents[2] / "SKILL.md"))
+
+    # 2. Plugin cache install: ancestor .claude-plugin/plugin.json
+    for parent in here.parents:
+        manifest = parent / ".claude-plugin" / "plugin.json"
+        if manifest.is_file():
+            try:
+                raw_ver = json.loads(manifest.read_text(encoding="utf-8")).get("version")
+            except (OSError, ValueError):
+                continue
+            if isinstance(raw_ver, str):
+                candidates.append(raw_ver)
+                break
+
+    # 3. Extracted MCP bundle: <cache>/<version>/lib/rust_accel.py -> <cache>/<version>/.version
+    if len(here.parents) > 1:
+        candidates.append(_read_stamp(here.parents[1] / ".version"))
+
+    for raw in candidates:
+        if not raw:
+            continue
+        cleaned = raw.strip().removeprefix("v")
+        if _SEMVER_RE.fullmatch(cleaned):
+            return cleaned
+    return None
 
 
 def _validate_download_url(url: str) -> str:
@@ -435,7 +461,13 @@ def install_release_binary(
             "version": target_version or bin_ver,
             "detail": f"verified SHA-256 and installed {asset}",
         }
-    except (OSError, ValueError, urllib.error.URLError, RustAccelError) as exc:
+    except (
+        OSError,
+        ValueError,
+        urllib.error.URLError,
+        http.client.HTTPException,
+        RustAccelError,
+    ) as exc:
         return {
             "installed": had_managed,
             "action": "install_failed",
