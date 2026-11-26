@@ -224,6 +224,10 @@ npx skills update -g
 
 Liệt kê và gỡ bỏ bằng `npx skills list -g` và `npx skills remove last30days -g`.
 
+### DeepSeek Harness
+
+[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH) tải các skill từ `~/.agents/skills` (hoặc `$DSH_AGENTS_HOME/skills` khi được thiết lập). Đây chính là thư mục mà lệnh cài đặt toàn cục `npx skills add mvanhorn/last30days-skill -g` ở trên lưu last30days, nên DSH tự nhận diện mà không cần cấu hình thêm. Khởi động lại DSH sau khi cài đặt.
+
 ### claude.ai (web)
 
 1. [Tải `last30days.skill`](https://github.com/mvanhorn/last30days-skill/releases/latest/download/last30days.skill) từ bản phát hành mới nhất
@@ -285,6 +289,7 @@ Các nền tảng này không có quan hệ với nhau. X không biết Reddit n
 | YouTube | `brew install yt-dlp` | Miễn phí |
 | Bluesky | Mật khẩu ứng dụng từ bsky.app | Miễn phí |
 | TikTok + Instagram + Threads + Pinterest + LinkedIn + bình luận YouTube | Khóa ScrapeCreators | 10.000 cuộc gọi miễn phí, sau đó PAYG |
+| TikTok (và Instagram, tối đa khả năng) không cần khóa | `yt-dlp`, dùng khi không có khóa ScrapeCreators (`INCLUDE_SOURCES=tiktok,instagram`) | Miễn phí |
 | Xiaohongshu (RED) | Chạy một plugin trình duyệt x-mcp đã đăng nhập hoặc dịch vụ `xiaohongshu-mcp` và chọn tham gia bằng `--search xhs` mỗi lượt chạy hoặc `INCLUDE_SOURCES=xiaohongshu` trong `.env`; last30days tự thăm dò `http://localhost:18060` rồi `http://host.docker.internal:18060`, hoặc dùng `XIAOHONGSHU_API_BASE` cho một URL tùy chỉnh | Không cần API key của last30days; phụ thuộc vào dịch vụ phiên trình duyệt cục bộ của bạn |
 | DripStack (bản tin tài chính cao cấp) | Tuỳ chọn tham gia: `--search dripstack` mỗi lượt chạy, hoặc `INCLUDE_SOURCES=dripstack` trong `.env` | Không cần khóa; API tìm kiếm công khai miễn phí |
 | Perplexity Agent API / Search API / Deep Research | Khóa Perplexity, hoặc khóa OpenRouter làm dự phòng Sonar | Trả theo mức dùng; một khóa trực tiếp bật Agent API và Deep Research nền |
