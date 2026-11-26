@@ -522,7 +522,12 @@ def annotate_stream(
             or any(
                 cjk.has_cjk(part)
                 for it in items
-                for part in (it.title or "", it.body or "", it.snippet or "")
+                for part in (
+                    it.title or "",
+                    it.body or "",
+                    it.snippet or "",
+                    *(str(tag) for tag in ((it.metadata or {}).get("hashtags") or [])),
+                )
             )
         )
         if not has_jieba_cjk:

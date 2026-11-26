@@ -699,3 +699,21 @@ fn markdown_nbsp_from_your_files_label_in_legacy_cluster_is_redacted() {
         "private label leaked when preceded by NBSP: {redacted:?}"
     );
 }
+
+#[test]
+fn markdown_unicode_case_variants_from_your_files_are_redacted() {
+    for heading in [
+        "## From your f\u{0131}les",
+        "## From your file\u{017f}",
+        "### From your f\u{0131}les",
+        "**From your f\u{0131}les**",
+    ] {
+        let doc = format!("{heading}\nSecret\n## Public\nVisible\n");
+        let redacted = markdown::public_markdown(&doc);
+        assert!(
+            !redacted.contains("Secret"),
+            "private note leaked for {heading:?}: {redacted:?}"
+        );
+        assert_eq!(redacted, "## Public\nVisible\n", "mismatch for {heading:?}");
+    }
+}

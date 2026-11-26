@@ -75,26 +75,47 @@ static BADGE_LINE_RE: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 static CORPUS_FOOTER_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\bYour files\b").expect("CORPUS_FOOTER_RE is a valid literal regex")
+    Regex::new(r"(?i)\bYour f[i\u{0130}\u{0131}]les\b")
+        .expect("CORPUS_FOOTER_RE is a valid literal regex")
 });
 
 static BOLD_FROM_YOUR_FILES_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?im)^\s*(?:\*\*|__)?From your files:?(?:\*\*|__)?:?\s*$")
+    Regex::new(r"(?im)^\s*(?:\*\*|__)?From your f[i\u{0130}\u{0131}]les:?(?:\*\*|__)?:?\s*$")
         .expect("BOLD_FROM_YOUR_FILES_RE is a valid literal regex")
 });
 
 static PRIVATE_FRESHNESS_ROW_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?im)^\| \*\*contradicted\*\* \| [^\r\n]*(?:\]\(corpus://| \(Newer corpus item disagrees\))[^\r\n]*(?:\r?\n|$)",
+        r"(?im)^\| \*\*contrad[i\u{0130}\u{0131}]cted\*\* \| [^\r\n]*(?:\]\(corpus://| \(Newer corpus [i\u{0130}\u{0131}]tem d[i\u{0130}\u{0131}]sagrees\))[^\r\n]*(?:\r?\n|$)",
     )
     .expect("PRIVATE_FRESHNESS_ROW_RE is a valid literal regex")
 });
 
 static LEGACY_CORPUS_SIGNAL_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?im)^#{1,3}[ \t]+From your files:?[ \t]*\r?$|^- (?:Sources|Re-researched sources):[^\r\n]*\bYour files\b|^[0-9]+\. \[[^\]\r\n]*\b(?:corpus|your files)\b[^\]\r\n]*\]",
+        r"(?im)^#{1,3}[ \t]+From your f[i\u{0130}\u{0131}]les:?[ \t]*\r?$|^- (?:Sources|Re-researched sources):[^\r\n]*\bYour f[i\u{0130}\u{0131}]les\b|^[0-9]+\. \[[^\]\r\n]*\b(?:corpus|your f[i\u{0130}\u{0131}]les)\b[^\]\r\n]*\]",
     )
     .expect("LEGACY_CORPUS_SIGNAL_RE is a valid literal regex")
+});
+
+static FROM_YOUR_FILES_ANY_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)from your f[i\u{0130}\u{0131}]les")
+        .expect("FROM_YOUR_FILES_ANY_RE is a valid literal regex")
+});
+
+static FROM_YOUR_FILES_H12_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)^#{1,2}[ \t]+From your f[i\u{0130}\u{0131}]les:?[ \t]*$")
+        .expect("FROM_YOUR_FILES_H12_RE is a valid literal regex")
+});
+
+static FROM_YOUR_FILES_H3_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)^###[ \t]+From your f[i\u{0130}\u{0131}]les:?[ \t]*$")
+        .expect("FROM_YOUR_FILES_H3_RE is a valid literal regex")
+});
+
+static FROM_YOUR_FILES_BOLD_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)^[ \t]*(?:\*\*|__)From your f[i\u{0130}\u{0131}]les:?(?:\*\*|__)?:?[ \t]*$")
+        .expect("FROM_YOUR_FILES_BOLD_RE is a valid literal regex")
 });
 
 static RANKED_CLUSTER_HEADING_RE: LazyLock<Regex> = LazyLock::new(|| {
@@ -117,19 +138,10 @@ static RANKED_FRESHNESS_BADGE_RE: LazyLock<Regex> = LazyLock::new(|| {
         .expect("RANKED_FRESHNESS_BADGE_RE is a valid literal regex")
 });
 
-/// Case-insensitive ASCII substring search without allocating a lowercased copy.
+/// Returns `true` when `haystack` contains `"corpus://"` after Python-style lowercasing.
 #[inline]
-fn contains_ascii_ignore_case(haystack: &str, needle: &[u8]) -> bool {
-    let bytes = haystack.as_bytes();
-    if needle.is_empty() {
-        return true;
-    }
-    if bytes.len() < needle.len() {
-        return false;
-    }
-    bytes
-        .windows(needle.len())
-        .any(|w| w.eq_ignore_ascii_case(needle))
+fn contains_corpus_scheme(haystack: &str) -> bool {
+    haystack.contains("://") && haystack.to_lowercase().contains("corpus://")
 }
 
 /// Splits `text` into lines keeping their original line endings, matching
@@ -269,64 +281,17 @@ fn is_drill_sources(line_text: &str) -> bool {
 
 #[inline]
 fn is_from_your_files_h12(line_text: &str) -> bool {
-    let b = line_text.as_bytes();
-    let hashes = b.iter().take_while(|&&c| c == b'#').count();
-    if hashes != 1 && hashes != 2 {
-        return false;
-    }
-    let rest = &line_text[hashes..];
-    let after_ws = rest.trim_start_matches([' ', '\t']);
-    if after_ws.len() == rest.len() {
-        return false;
-    }
-    let trimmed = after_ws.trim_end_matches([' ', '\t']);
-    let body = trimmed.strip_suffix(':').unwrap_or(trimmed);
-    body.eq_ignore_ascii_case("from your files")
+    FROM_YOUR_FILES_H12_RE.is_match(line_text)
 }
 
 #[inline]
 fn is_from_your_files_h3(line_text: &str) -> bool {
-    let Some(rest) = line_text.strip_prefix("###") else {
-        return false;
-    };
-    let after_ws = rest.trim_start_matches([' ', '\t']);
-    if after_ws.len() == rest.len() {
-        return false;
-    }
-    let trimmed = after_ws.trim_end_matches([' ', '\t']);
-    let body = trimmed.strip_suffix(':').unwrap_or(trimmed);
-    body.eq_ignore_ascii_case("from your files")
+    FROM_YOUR_FILES_H3_RE.is_match(line_text)
 }
 
 #[inline]
 fn is_from_your_files_bold(line_text: &str) -> bool {
-    let trimmed = line_text.trim_matches([' ', '\t']);
-    let after_open = if let Some(s) = trimmed.strip_prefix("**") {
-        s
-    } else if let Some(s) = trimmed.strip_prefix("__") {
-        s
-    } else {
-        return false;
-    };
-    if after_open.len() < "from your files".len() {
-        return false;
-    }
-    if !after_open.as_bytes()[.."from your files".len()].eq_ignore_ascii_case(b"from your files") {
-        return false;
-    }
-    let mut rest = &after_open["from your files".len()..];
-    if let Some(s) = rest.strip_prefix(':') {
-        rest = s;
-    }
-    if let Some(s) = rest.strip_prefix("**") {
-        rest = s;
-    } else if let Some(s) = rest.strip_prefix("__") {
-        rest = s;
-    }
-    if let Some(s) = rest.strip_prefix(':') {
-        rest = s;
-    }
-    rest.is_empty()
+    FROM_YOUR_FILES_BOLD_RE.is_match(line_text)
 }
 
 #[inline]
@@ -392,26 +357,12 @@ fn find_section_end(lines: &[&str], start: usize, boundary: SectionBoundary) -> 
 
 /// Returns `true` when `markdown` carries local-corpus markers or citations.
 pub fn has_private_corpus(markdown: &str) -> bool {
-    if markdown.contains(PRIVATE_CORPUS_START) {
-        return true;
-    }
-    if contains_ascii_ignore_case(markdown, b"corpus://") {
-        return true;
-    }
-    if contains_ascii_ignore_case(markdown, b"your files")
-        && (CORPUS_FOOTER_RE.is_match(markdown)
-            || BOLD_FROM_YOUR_FILES_RE.is_match(markdown)
-            || LEGACY_CORPUS_SIGNAL_RE.is_match(markdown))
-    {
-        return true;
-    }
-    if contains_ascii_ignore_case(markdown, b"corpus")
-        && (LEGACY_CORPUS_SIGNAL_RE.is_match(markdown)
-            || PRIVATE_FRESHNESS_ROW_RE.is_match(markdown))
-    {
-        return true;
-    }
-    false
+    markdown.contains(PRIVATE_CORPUS_START)
+        || LEGACY_CORPUS_SIGNAL_RE.is_match(markdown)
+        || PRIVATE_FRESHNESS_ROW_RE.is_match(markdown)
+        || contains_corpus_scheme(markdown)
+        || CORPUS_FOOTER_RE.is_match(markdown)
+        || BOLD_FROM_YOUR_FILES_RE.is_match(markdown)
 }
 
 fn is_structured_engine_report(markdown: &str) -> bool {
@@ -535,7 +486,7 @@ fn strip_unmarked_drills(markdown: &str) -> String {
 }
 
 fn strip_from_your_files_sections(markdown: &str) -> String {
-    if !contains_ascii_ignore_case(markdown, b"from your files") {
+    if !FROM_YOUR_FILES_ANY_RE.is_match(markdown) {
         return markdown.to_owned();
     }
     let lines = splitlines_keepends(markdown);
@@ -656,7 +607,7 @@ fn public_legacy_cluster_lines(heading_line: &str, body_lines: &[&str]) -> Strin
         return String::new();
     }
     if LEGACY_CORPUS_SIGNAL_RE.is_match(&cleaned_body)
-        || contains_ascii_ignore_case(&cleaned_body, b"corpus://")
+        || contains_corpus_scheme(&cleaned_body)
         || BOLD_FROM_YOUR_FILES_RE.is_match(&cleaned_body)
     {
         return String::new();
@@ -864,7 +815,7 @@ pub fn public_markdown(markdown: &str) -> String {
         }
         current = strip_unmarked_freshness_sections(&current);
     }
-    if contains_ascii_ignore_case(&current, b"| **contradicted** | ") {
+    if PRIVATE_FRESHNESS_ROW_RE.is_match(&current) {
         PRIVATE_FRESHNESS_ROW_RE
             .replace_all(&current, "")
             .into_owned()

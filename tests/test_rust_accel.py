@@ -732,6 +732,45 @@ def test_public_markdown_unicode_line_breaks_parity(monkeypatch):
     assert "Secret" not in py_nbsp
     assert rs_nbsp == py_nbsp
 
+    for variant in ("## From your f\u0131les", "## From your file\u017f", "## From your f\u0130les"):
+        case_doc = f"{padding}{variant}\nSecret\n## Public\nVisible\n"
+        monkeypatch.setenv("LAST30DAYS_ENGINE", "python")
+        py_case = library.public_markdown(case_doc)
+        monkeypatch.setenv("LAST30DAYS_ENGINE", "rust")
+        rs_case = library.public_markdown(case_doc)
+        monkeypatch.setenv("LAST30DAYS_ENGINE", "auto")
+        auto_case = library.public_markdown(case_doc)
+        assert "Secret" not in py_case
+        assert rs_case == py_case, f"rust mismatch for {variant!r}"
+        assert auto_case == py_case, f"auto mismatch for {variant!r}"
+
+
+def test_annotate_stream_jieba_fallback_checks_cjk_hashtags(monkeypatch):
+    from types import SimpleNamespace
+    from lib import cjk
+
+    monkeypatch.setenv("LAST30DAYS_ENGINE", "rust")
+    monkeypatch.setattr(cjk, "_jieba", SimpleNamespace(cut=lambda text: [text]))
+    called = []
+    monkeypatch.setattr(
+        rust_accel,
+        "annotate_stream",
+        lambda *args, **kwargs: called.append(args) or [],
+    )
+    items = [
+        schema.SourceItem(
+            item_id="tt-1",
+            source="tiktok",
+            title="English review clip",
+            body="Hands-on comparison",
+            url="https://example.com/tt/1",
+            published_at="2026-11-25",
+            metadata={"hashtags": ["国产大模型"]},
+        )
+    ]
+    signals.annotate_stream(items, "English review", "balanced_recent", reference_date="2026-11-26")
+    assert called == []
+
 
 def test_status_distinguishes_unverified_and_disabled_worker(tmp_path: Path, monkeypatch):
     fake_bin = tmp_path / "custom-core"
