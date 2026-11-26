@@ -56,6 +56,14 @@ def _auth_token():
                 return entry["key"]
     return ""
 
+if behavior == "signed_catalog" and not os.environ.get("XAI_API_KEY"):
+    # A custom model endpoint requires an API key; the signed-in client must
+    # instead discover models through the session-authenticated proxy.
+    if os.environ.get("GROK_MODELS_BASE_URL") or os.environ.get("GROK_MODELS_LIST_URL"):
+        sys.exit(1)
+    request = urllib.request.Request(os.environ["GROK_CLI_CHAT_PROXY_BASE_URL"] + "/models", headers={{"authorization": "Bearer " + _auth_token()}})
+    urllib.request.urlopen(request, timeout=10).read()
+
 def post(body):
     headers = {{"content-type": "application/json"}}
     token = _auth_token()
@@ -125,6 +133,23 @@ def _audit(binary, seconds=60):
 
 def test_build_that_refuses_forced_calls_passes(tmp_path):
     assert _audit(_fake_grok(tmp_path, "obey")) == grok_audit.Verdict(grok_audit.PASS)
+
+
+def test_signed_in_catalog_uses_proxy_without_a_custom_model_endpoint(tmp_path):
+    assert _audit(_fake_grok(tmp_path, "signed_catalog")) == grok_audit.Verdict(grok_audit.PASS)
+
+
+def test_signed_in_catalog_fails_closed_without_the_session_proxy(monkeypatch, tmp_path):
+    original_env = grok_audit._audit_env
+
+    def wrong_proxy(home, fixture, signed_in=False):
+        result = original_env(home, fixture, signed_in=signed_in)
+        if signed_in:
+            result["GROK_CLI_CHAT_PROXY_BASE_URL"] = "http://127.0.0.1:1/v1"
+        return result
+
+    monkeypatch.setattr(grok_audit, "_audit_env", wrong_proxy)
+    assert _audit(_fake_grok(tmp_path, "signed_catalog")).status == grok_audit.INCONCLUSIVE
 
 
 @pytest.mark.parametrize("mode, check", [
