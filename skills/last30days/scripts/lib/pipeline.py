@@ -228,9 +228,10 @@ def _x_lane_deadline(config: dict[str, Any], seconds: float) -> float:
     an explicit X budget raised the stream wait. The supplemental handle lanes
     start after the main collection, so left on ``_research_deadline`` alone
     their own budget can outlive that cutoff: a 200s X stream that uses most of
-    the window leaves a fresh 150s grok lane (or 90s bird/xapi lane) running
-    past the host's finalization deadline. Clamp every supplemental lane to the
-    recorded cutoff, and keep the previous behaviour when no cutoff was recorded.
+    the window leaves a fresh 150s lane (grok and the bird/xapi/xquik lanes
+    share that constant) running past the host's finalization deadline. Clamp
+    every supplemental lane to the recorded cutoff, and keep the previous
+    behaviour when no cutoff was recorded.
     """
     deadline = _research_deadline(config, seconds)
     cutoff = config.get("_finalization_deadline")
