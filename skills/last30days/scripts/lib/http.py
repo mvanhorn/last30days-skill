@@ -33,6 +33,28 @@ MAX_ERROR_BODY_BYTES = 64 * 1024
 _URL_USERINFO_RE = re.compile(r"(https?://)[^\s/?#]+@", re.IGNORECASE)
 
 
+def _is_loopback_http_url(url: str) -> bool:
+    """True for a plaintext URL whose host never leaves the machine."""
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname or ""
+    except ValueError:
+        return False
+    if parts.scheme != "http":
+        return False
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _carries_provider_credential(headers: Dict[str, str]) -> bool:
+    """True when the request carries an API key in a header, not in the URL."""
+    return any(str(name).lower() in proxy._PROVIDER_AUTH_HEADERS for name in headers)
+
+
 def log(msg: str):
     """Log debug message to stderr with any embedded URL userinfo scrubbed."""
     _log.debug(_URL_USERINFO_RE.sub(r"\1", msg))
@@ -674,14 +696,14 @@ def _open_request(req, timeout, *, bypass_proxy=False):
     return opener.open(req, timeout=timeout)
 
 
-def open_request(req, timeout):
+def open_request(req, timeout, *, bypass_proxy=False):
     """Open ``req`` with cross-origin credential stripping (see #1062).
 
     Public entry point for modules that build their own ``Request`` and would
     otherwise call ``urllib.request.urlopen`` directly, bypassing the redirect
     handler installed above.
     """
-    return _open_request(req, timeout)
+    return _open_request(req, timeout, bypass_proxy=bypass_proxy)
 
 
 _failure_sink: ContextVar[Optional[list["HTTPError"]]] = ContextVar(
@@ -860,6 +882,21 @@ def _scrub_fixture_url(url: str) -> str:
         return urlunsplit((parts.scheme, parts.netloc, parts.path, query, parts.fragment))
     except ValueError:
         return url
+
+
+def _scrub_log_url(url: str) -> str:
+    """Redact secret query parameters for logs, omitting unparseable URLs entirely."""
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return "<unparseable url>"
+    query = urlencode(
+        [
+            (key, "<redacted>" if _is_secret_key(key) else value)
+            for key, value in parse_qsl(parts.query, keep_blank_values=True)
+        ]
+    )
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, query, parts.fragment))
 
 
 def _fixture_request(
@@ -1625,8 +1662,6 @@ def request(
         raise ValueError("owned transport requires a bodyless GET")
     if owned_get and deadline_monotonic is None:
         raise ValueError("owned GET requires an operation deadline")
-    if owned_get and bypass_proxy:
-        raise ValueError("owned GET does not support proxy bypass")
     if owned_get and return_headers:
         raise ValueError("owned GET does not report response headers")
     if public_only and local_bridge_only:
@@ -1646,6 +1681,16 @@ def request(
             _raise(HTTPError("Refused non-public URL"))
     headers = headers or {}
     headers.setdefault("User-Agent", USER_AGENT)
+
+    # A provider key bound for a plaintext loopback endpoint must not ride the
+    # ambient HTTP proxy. CONFIGURATION.md promises loopback provider overrides
+    # bypass proxy settings for the request, "keeping the token on the local
+    # connection" - `SCRAPECREATORS_BASE_URL` carries its key in `X-api-key`, not
+    # `Authorization`, so it needs the same rule as the bearer-based providers.
+    # Keyed on the credential header, not the URL alone: ordinary loopback
+    # traffic keeps whatever proxy route it was configured with.
+    if not bypass_proxy and _is_loopback_http_url(url) and _carries_provider_credential(headers):
+        bypass_proxy = True
 
     if params:
         filtered = {k: str(v) for k, v in params.items() if v is not None}
@@ -1842,6 +1887,8 @@ def request(
                     owned_kwargs["with_headers"] = True
                 if max_bytes is not None:
                     owned_kwargs["max_bytes"] = max_bytes
+                if bypass_proxy:
+                    owned_kwargs["bypass_proxy"] = True
                 if on_dispatch is not None or dispatch_hook is not None:
                     owned_kwargs["on_start"] = _notify_dispatch
                 owned = bounded_get.get(
@@ -2262,7 +2309,7 @@ def get_text(
             **bounds,
         )
     except HTTPError as e:
-        log(f"get_text failed ({e}): {url}")
+        log(f"get_text failed ({e}): {_scrub_log_url(url)}")
         return None
     if landed is None:
         return answer

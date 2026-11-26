@@ -285,6 +285,7 @@ def get(
     max_bytes: int = MAX_RESPONSE_BYTES,
     public_only: bool | None = None,
     redirect_policy: dict[str, Any] | None = None,
+    bypass_proxy: bool = False,
     on_start: Callable[[], None] | None = None,
 ):
     """Run one GET in a child process killed at the deadline.
@@ -340,6 +341,7 @@ def get(
             "body_path": body_path,
             "public_only": effective_public_only,
             "redirect_policy": effective_redirect_policy,
+            "bypass_proxy": bool(bypass_proxy),
         }
         transport_deadline = deadline_monotonic - 2 * CLEANUP_GRACE_SECONDS
         try:
@@ -419,7 +421,9 @@ def _main():
                 raise urllib.error.URLError("refused URL by redirect policy")
             setattr(req, http._REDIRECT_GUARD_ATTR, _build_redirect_guard(redirect_policy))
         try:
-            response = http.open_request(req, payload["timeout"])
+            response = http.open_request(
+                req, payload["timeout"], bypass_proxy=bool(payload.get("bypass_proxy"))
+            )
         except urllib.error.HTTPError as exc:
             response = exc
             error_reason = str(exc.reason)
