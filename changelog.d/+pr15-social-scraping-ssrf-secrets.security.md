@@ -1,1 +1,0 @@
-Harden social and scraping adapters against credential leakage in header errors, Xiaohongshu base-URL SSRF and null-payload crashes, LinkedIn profile URL forwarding, GitHub negated-qualifier/quote query breakout and `.git` star-mapping corruption, and static Whisper multipart boundaries.

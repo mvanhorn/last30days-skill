@@ -1,6 +1,6 @@
 ---
 name: last30days
-version: "4.6.0"
+version: "4.7.0"
 description: "Research the last 30 days; doctor diagnoses broken sources."
 argument-hint: 'last30days nvidia earnings reaction | last30days AI video tools | last30days what users want in react'
 allowed-tools: Bash, Read, Write, AskUserQuestion, WebSearch
@@ -71,7 +71,7 @@ metadata:
 ---
 
 
-# last30days v4.6.0: Research Any Topic from the Last 30 Days
+# last30days v4.7.0: Research Any Topic from the Last 30 Days
 
 ## Skill contract
 

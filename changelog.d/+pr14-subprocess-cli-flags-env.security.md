@@ -1,1 +1,0 @@
-Harden subprocess source adapters and the search-quality evaluator against CLI flag injection, unvalidated upstream IDs, Windows `.cmd` launch failures, parent-environment secret leakage, and unscrubbed Bright Data credentials.

@@ -1,1 +1,0 @@
-Hardened HTML rendering against URL-scheme, template-placeholder, and marker/footer attribute injection, restricted hosted HTML publishing to strict HTTPS without redirects, and hardened private file and SQLite helpers with atomic owner-only writes, `O_NOFOLLOW`/`fchmod` checks, and parent directory-chain validation.
