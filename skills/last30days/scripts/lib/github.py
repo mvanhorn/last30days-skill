@@ -16,7 +16,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait as futures_wait
 from http.client import HTTPException
 from typing import Any, Callable, Dict, List, Optional
 
@@ -595,10 +595,21 @@ def parse_github_response(
 def enrich_with_comments(
     items: List[Dict[str, Any]],
     depth: str = "default",
+    *,
+    deadline: Optional[float] = None,
+    stopped: Optional[Callable[[], bool]] = None,
 ) -> List[Dict[str, Any]]:
     """Fetch public comments for top items by reactions and attach to metadata."""
     if not items:
         return items
+    if stopped is not None and stopped():
+        return items
+    req_timeout = 15.0
+    if deadline is not None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return items
+        req_timeout = min(req_timeout, remaining)
 
     limit = ENRICH_LIMITS.get(depth, ENRICH_LIMITS["default"])
 
@@ -611,23 +622,51 @@ def enrich_with_comments(
 
     _log(f"Enriching top {len(to_enrich)} items with comments")
 
-    with ThreadPoolExecutor(max_workers=5) as executor:
+    executor = ThreadPoolExecutor(max_workers=5)
+    try:
         futures = {
             executor.submit(
                 _fetch_item_comments,
                 items[idx]["url"],
+                timeout=req_timeout,
             ): idx
             for idx in to_enrich
         }
 
-        for future in as_completed(futures):
-            idx = futures[future]
-            try:
-                comments = future.result(timeout=15)
-                items[idx]["metadata"]["top_comments"] = comments
-            except (KeyError, TypeError, OSError) as exc:
-                _log(f"Comment enrichment failed for {items[idx].get('url', '?')}: {type(exc).__name__}: {exc}")
-                items[idx]["metadata"]["top_comments"] = []
+        if deadline is None and stopped is None:
+            for future in as_completed(futures):
+                idx = futures[future]
+                try:
+                    comments = future.result(timeout=15)
+                    items[idx]["metadata"]["top_comments"] = comments
+                except (KeyError, TypeError, OSError) as exc:
+                    _log(f"Comment enrichment failed for {items[idx].get('url', '?')}: {type(exc).__name__}: {exc}")
+                    items[idx]["metadata"]["top_comments"] = []
+        else:
+            pending = set(futures)
+            while pending:
+                if stopped is not None and stopped():
+                    break
+                if deadline is not None:
+                    left = deadline - time.monotonic()
+                    if left <= 0:
+                        break
+                    step = min(0.1, left)
+                else:
+                    step = 0.1
+                done, pending = futures_wait(pending, timeout=step, return_when=FIRST_COMPLETED)
+                for future in done:
+                    idx = futures[future]
+                    try:
+                        comments = future.result(timeout=0)
+                        items[idx]["metadata"]["top_comments"] = comments
+                    except (KeyError, TypeError, OSError) as exc:
+                        _log(f"Comment enrichment failed for {items[idx].get('url', '?')}: {type(exc).__name__}: {exc}")
+                        items[idx]["metadata"]["top_comments"] = []
+            for future in pending:
+                future.cancel()
+    finally:
+        executor.shutdown(wait=(deadline is None and stopped is None), cancel_futures=True)
 
     return items
 
@@ -635,12 +674,14 @@ def enrich_with_comments(
 def _fetch_item_comments(
     issue_url: str,
     max_comments: int = 5,
+    timeout: float = 15,
 ) -> List[Dict[str, Any]]:
     """Fetch comments for a GitHub issue/PR.
 
     Args:
         issue_url: HTML URL like https://github.com/owner/repo/issues/123
         max_comments: Max comments to return
+        timeout: Request timeout in seconds
 
     Returns:
         List of comment dicts with score, excerpt, author.
@@ -654,7 +695,7 @@ def _fetch_item_comments(
     # support reaction sorting, so fetch its largest page and rank locally.
     api_url = f"https://api.github.com/repos/{path}/comments?per_page=100"
 
-    data = _fetch_json(api_url, timeout=15)
+    data = _fetch_json(api_url, timeout=timeout)
     if not data or not isinstance(data, list):
         return []
 

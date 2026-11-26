@@ -289,3 +289,40 @@ def test_search_github_clamps_timeout_and_stops_between_partitions():
 
     assert len(seen_timeouts) == 1
     assert 0 < seen_timeouts[0] <= 2.5
+
+
+def test_enrich_with_comments_respects_deadline_and_keeps_found_items():
+    import threading
+    import time
+
+    unblock = threading.Event()
+    seen_timeouts = []
+
+    def _slow_comments(issue_url, max_comments=5, timeout=15):
+        seen_timeouts.append(timeout)
+        unblock.wait(timeout=5.0)
+        return [{"score": 1, "excerpt": "late", "author": "bob"}]
+
+    items = [
+        {
+            "id": "GH1",
+            "title": "Claude Code hooks stop firing",
+            "url": "https://github.com/anthropics/claude-code/issues/99",
+            "score": 10,
+            "metadata": {},
+        }
+    ]
+    start = time.monotonic()
+    try:
+        with patch.object(github, "_fetch_item_comments", side_effect=_slow_comments):
+            result = github.enrich_with_comments(
+                items, depth="default", deadline=start + 0.15
+            )
+        elapsed = time.monotonic() - start
+    finally:
+        unblock.set()
+
+    assert len(result) == 1
+    assert result[0]["title"] == "Claude Code hooks stop firing"
+    assert elapsed < 1.0
+    assert seen_timeouts and 0 < seen_timeouts[0] <= 0.2

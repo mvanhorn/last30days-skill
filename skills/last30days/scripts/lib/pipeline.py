@@ -9397,7 +9397,9 @@ def _retrieve_stream_impl(
         # is now always eligible, so raising would spam "github failed" on every
         # tokenless run. The condition is logged in github.search_github.
         if token and items and not _research_stopped(config):
-            items = github.enrich_with_comments(items, depth=depth)
+            items = github.enrich_with_comments(
+                items, depth=depth, deadline=deadline, stopped=stopped_fn
+            )
         return items, _result_outcome_artifact(source, response)
     if source == "pinterest":
         result = pinterest.search_pinterest(
