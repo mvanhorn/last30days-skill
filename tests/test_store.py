@@ -16,20 +16,19 @@ from lib import schema
 @pytest.fixture
 
 
-def temp_db():
+def temp_db(tmp_path):
     """Create a temporary database for testing."""
-    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-        db_path = Path(f.name)
-    
+    db_path = tmp_path / "test_store.db"
+
     # Override the database path
     original_override = store._db_override
     store._db_override = db_path
-    
+
     # Initialize fresh database
     store.init_db()
-    
+
     yield db_path
-    
+
     # Cleanup
     store._db_override = original_override
     if db_path.exists():

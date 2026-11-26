@@ -54,6 +54,31 @@ DEPTH_CONFIG = {
 
 # Module-level credentials injected from .env config
 _credentials: Dict[str, str] = {}
+_SECRET_ENV_NAMES = ("AUTH_TOKEN", "CT0", "TWITTER_AUTH_TOKEN", "TWITTER_CT0")
+_seen_secrets: set[str] = set()
+_secrets_lock = threading.Lock()
+
+
+def _secret_variants(value: Optional[str]) -> List[str]:
+    if not isinstance(value, str) or not value:
+        return []
+    variants: List[str] = []
+    for candidate in (value, value.strip()):
+        # Short values would match too much ordinary text to be worth it.
+        if len(candidate) >= 8:
+            variants.append(candidate)
+            escaped = json.dumps(candidate)[1:-1]
+            if escaped != candidate and len(escaped) >= 8:
+                variants.append(escaped)
+    return variants
+
+
+def _record_secret(value: Optional[str]) -> None:
+    variants = _secret_variants(value)
+    if not variants:
+        return
+    with _secrets_lock:
+        _seen_secrets.update(variants)
 
 # The vendored bird-search client reads exactly this env surface, and the
 # node subprocess it spawns needs the node-runtime env (platform, locale,
@@ -74,17 +99,36 @@ _SUBPROCESS_ENV_ALLOWLIST = (
     "http_proxy", "https_proxy", "no_proxy",
     # X session cookies the vendored client reads from the environment
     "AUTH_TOKEN", "CT0", "TWITTER_AUTH_TOKEN", "TWITTER_CT0",
-    # Browser-cookie disable flag the client reads (cookies.js envFlagEnabled)
-    "LAST30DAYS_DISABLE_BROWSER_COOKIES",
+    # Browser-cookie consent/disable flags the client reads (cookies.js)
+    "LAST30DAYS_DISABLE_BROWSER_COOKIES", "FROM_BROWSER", "BROWSER_CONSENT",
 )
+
+_BIRD_CAPTURE_LIMIT_BYTES = 8 * 1024 * 1024
+
+
+def _set_credentials_only(auth_token: Optional[str], ct0: Optional[str]) -> None:
+    """Update injected AUTH_TOKEN/CT0 without altering browser-failover state."""
+    _record_secret(_credentials.get('AUTH_TOKEN'))
+    _record_secret(_credentials.get('CT0'))
+    if auth_token:
+        _record_secret(auth_token)
+        _credentials['AUTH_TOKEN'] = auth_token
+    else:
+        _credentials.pop('AUTH_TOKEN', None)
+    if ct0:
+        _record_secret(ct0)
+        _credentials['CT0'] = ct0
+    else:
+        _credentials.pop('CT0', None)
 
 
 def set_credentials(auth_token: Optional[str], ct0: Optional[str]):
     """Inject AUTH_TOKEN/CT0 from .env config so Node subprocesses can use them."""
-    if auth_token:
-        _credentials['AUTH_TOKEN'] = auth_token
-    if ct0:
-        _credentials['CT0'] = ct0
+    global _session_browser, _next_session
+    with _session_lock:
+        _set_credentials_only(auth_token, ct0)
+        _session_browser = None
+        _next_session = None
 
 
 # Browser-session failover: the browser that supplied the current session and
@@ -151,6 +195,8 @@ def _subprocess_env() -> Dict[str, str]:
         if key.startswith("BIRD_")
     })
     env.update(_credentials)
+    for secret_name in _SECRET_ENV_NAMES:
+        _record_secret(env.get(secret_name))
     # Hard-disable browser-cookie fallback so normal pipeline runs never hit
     # Safari/Chrome Keychain prompts during source detection or search.
     env["BIRD_DISABLE_BROWSER_COOKIES"] = "1"
@@ -171,12 +217,23 @@ def _scrub_credentials(text: str) -> str:
     otherwise carry it into user-facing output. Log lines get the same
     treatment because stderr is captured in agent harnesses.
     """
-    scrubbed = text
-    for name in ("AUTH_TOKEN", "CT0", "TWITTER_AUTH_TOKEN", "TWITTER_CT0"):
-        value = _credentials.get(name) or os.environ.get(name)
-        # Short values would match too much ordinary text to be worth it.
-        if value and len(value) >= 8:
-            scrubbed = scrubbed.replace(value, "<redacted>")
+    if not text:
+        return "" if text is None else text
+    scrubbed = str(text)
+    candidates: set[str] = set()
+    for name in _SECRET_ENV_NAMES:
+        cred_val = _credentials.get(name)
+        if cred_val:
+            _record_secret(cred_val)
+            candidates.update(_secret_variants(cred_val))
+        env_val = os.environ.get(name)
+        if env_val:
+            _record_secret(env_val)
+            candidates.update(_secret_variants(env_val))
+    with _secrets_lock:
+        candidates.update(_seen_secrets)
+    for secret in sorted(candidates, key=len, reverse=True):
+        scrubbed = scrubbed.replace(secret, "<redacted>")
     return scrubbed
 
 
@@ -384,7 +441,34 @@ def get_bird_status() -> Dict[str, Any]:
     }
 
 
-def _invoke_bird_subprocess(query: str, count: int, timeout: int, top: bool = False):
+_MAX_NODE_TIMEOUT_MS = 2_147_483_647
+
+
+def _bird_timeout_ms(timeout: int, deadline: Optional[float]) -> int:
+    """Compute Node --timeout-ms with headroom before Python kills the child."""
+    budget_ms = max(1, int(timeout * 1000))
+    if deadline is not None:
+        remaining_ms = max(1, int((deadline - time.monotonic()) * 1000))
+        budget_ms = min(budget_ms, remaining_ms)
+    # Leave flush headroom so Node self-aborts and writes partial JSON to stdout
+    # before subproc.run_with_timeout terminates the child process.
+    if budget_ms > 1000:
+        headroom_ms = min(1500, budget_ms // 5)
+        budget_ms = max(250, budget_ms - headroom_ms)
+    elif budget_ms > 250:
+        budget_ms = max(1, budget_ms - budget_ms // 5)
+    return min(budget_ms, _MAX_NODE_TIMEOUT_MS)
+
+
+def _invoke_bird_subprocess(
+    query: str,
+    count: int,
+    timeout: int,
+    top: bool = False,
+    *,
+    deadline: Optional[float] = None,
+    cancel: Any = None,
+):
     """Invoke the vendored bird-search.mjs subprocess once.
 
     Returns (result, error_dict). If error_dict is non-None, treat it as the
@@ -393,25 +477,32 @@ def _invoke_bird_subprocess(query: str, count: int, timeout: int, top: bool = Fa
     and `result` is the SubprocResult; the caller decides whether to retry
     based on the result.stdout content.
     """
+    timeout_ms = _bird_timeout_ms(timeout, deadline)
     cmd = [
         "node", str(_BIRD_SEARCH_MJS),
-        query,
         "--count", str(count),
+        "--timeout-ms", str(timeout_ms),
         "--json",
     ]
     if top:
         cmd.append("--top")
+    cmd.extend(["--", query])
 
     try:
         result = subproc.run_with_timeout(
             cmd,
             timeout=timeout,
             env=_subprocess_env(),
+            cancel=cancel,
+            deadline_monotonic=deadline,
+            capture_limit_bytes=_BIRD_CAPTURE_LIMIT_BYTES,
         )
     except subproc.SubprocTimeout:
+        if cancel is not None and cancel.is_set():
+            return None, {"error": "bird: research cancelled", "items": []}
         return None, {"error": f"Search timed out after {timeout}s", "items": []}
     except Exception as e:
-        return None, {"error": str(e), "items": []}
+        return None, {"error": _scrub_credentials(str(e)), "items": []}
 
     return result, None
 
@@ -432,6 +523,30 @@ def _invalid_json_error(
     }
 
 
+def _usable_item_count(response: Any) -> int:
+    """Count raw tweets in a Bird response that parse_bird_response will keep."""
+    if isinstance(response, list):
+        raw_items = response
+    elif isinstance(response, dict):
+        raw_items = response.get("items", response.get("tweets", []))
+    else:
+        return 0
+    if not isinstance(raw_items, list):
+        return 0
+    count = 0
+    for tweet in raw_items:
+        if not isinstance(tweet, dict):
+            continue
+        url = tweet.get("permanent_url") or tweet.get("url", "")
+        if not url and tweet.get("id"):
+            author = tweet.get("author") or tweet.get("user") or {}
+            if isinstance(author, dict) and (author.get("username") or author.get("screen_name")):
+                url = "ok"
+        if url:
+            count += 1
+    return count
+
+
 def _run_bird_search(
     query: str,
     count: int,
@@ -448,24 +563,44 @@ def _run_bird_search(
     rest of the run. Without a usable alternate, the error names the browser
     whose session failed so the report says what to fix.
     """
+    best_partial: Optional[Dict[str, Any]] = None
+    best_partial_count = 0
+
+    def _keep_best_partial(
+        current: Dict[str, Any], current_error: str, current_count: int
+    ) -> Dict[str, Any]:
+        if best_partial is None or current_count >= best_partial_count:
+            return current
+        if current_error:
+            return {**best_partial, "error": _scrub_credentials(current_error)}
+        return best_partial
+
     while True:
         started_with = _credentials.get('AUTH_TOKEN')
         response = _run_bird_search_once(
             query, count, timeout, deadline=deadline, cancel=cancel, top=top,
         )
         error = str(response.get("error") or "") if isinstance(response, dict) else ""
+        usable_count = _usable_item_count(response)
         if not error or not _session_suspect(error):
+            if best_partial is not None and usable_count < best_partial_count and (error or usable_count == 0):
+                return _keep_best_partial(response, error, usable_count)
             return response
+        if usable_count > best_partial_count:
+            best_partial = response
+            best_partial_count = usable_count
         if cancel is not None and cancel.is_set():
-            return response
+            return _keep_best_partial(response, error, usable_count)
         failed_browser = _session_browser
         # Never start browser reads (possible Keychain prompts) once the
         # search budget can no longer fit a retry.
         if deadline is not None and _clamped_bird_timeout(timeout, deadline) is None:
-            return _annotate_session_error(response, error, failed_browser)
+            chosen = _keep_best_partial(response, error, usable_count)
+            return _annotate_session_error(chosen, error, failed_browser)
         wait = -1 if deadline is None else max(0.0, deadline - time.monotonic())
         if not _session_lock.acquire(timeout=wait):
-            return _annotate_session_error(response, error, failed_browser)
+            chosen = _keep_best_partial(response, error, usable_count)
+            return _annotate_session_error(chosen, error, failed_browser)
         try:
             if _credentials.get('AUTH_TOKEN') != started_with:
                 switched = True  # another search already moved to a new session
@@ -478,7 +613,7 @@ def _run_bird_search(
                 )
                 if nxt:
                     auth_token, ct0, browser = nxt
-                    set_credentials(auth_token, ct0)
+                    _set_credentials_only(auth_token, ct0)
                     _session_browser_update(browser)
                     log.source_log(
                         "X/bird",
@@ -491,17 +626,19 @@ def _run_bird_search(
         if switched:
             timeout = _clamped_bird_timeout(timeout, deadline)
             if timeout is None:
-                return response
+                return _keep_best_partial(response, error, usable_count)
             continue
-        return _annotate_session_error(response, error, failed_browser)
+        chosen = _keep_best_partial(response, error, usable_count)
+        return _annotate_session_error(chosen, error, failed_browser)
 
 
 def _annotate_session_error(
     response: Dict[str, Any], error: str, failed_browser: Optional[str]
 ) -> Dict[str, Any]:
     """Name the browser whose X session failed so the report says what to fix."""
+    error = _scrub_credentials(error)
     if not failed_browser:
-        return response
+        return {**response, "error": error} if "error" in response else response
     if _session_rejected(error):
         return {
             **response,
@@ -566,14 +703,21 @@ def _run_bird_search_once(
                 return _invalid_json_error(
                     attempt, last_decode_error, budget_exhausted=True,
                 )
-        result, terminal_error = _invoke_bird_subprocess(query, count, attempt_timeout, top=top)
+        result, terminal_error = _invoke_bird_subprocess(
+            query,
+            count,
+            attempt_timeout,
+            top=top,
+            deadline=deadline,
+            cancel=cancel,
+        )
         if terminal_error is not None:
             return terminal_error
 
         output = result.stdout.strip()
         if result.returncode != 0:
             if not output:
-                error = result.stderr.strip() or "Bird search failed"
+                error = _scrub_credentials(result.stderr.strip()) or "Bird search failed"
                 return {"error": error, "items": []}
             # Windows/Node 24: the vendored Bird CLI uses native fetch (undici),
             # and calling process.exit() while keep-alive sockets are still
@@ -593,12 +737,13 @@ def _run_bird_search_once(
             # from "no results" in logs, then retry the subprocess.
             looks_html = output.lstrip().lower().startswith(("<!doctype", "<html", "<"))
             attempt_num = attempt + 1
+            scrubbed_output = _scrub_credentials(output)
             log_msg = (
                 f"Bird search returned non-JSON stdout "
                 f"(looks_html={looks_html}, attempt {attempt_num}/{MAX_JSON_DECODE_RETRIES}, "
-                f"first 80 chars: {output[:80]!r})"
+                f"first 80 chars: {scrubbed_output[:80]!r})"
             )
-            last_decode_error = str(e)
+            last_decode_error = _scrub_credentials(str(e))
             if attempt_num < MAX_JSON_DECODE_RETRIES:
                 if deadline is not None and (
                     deadline - time.monotonic() < JSON_DECODE_RETRY_DELAY + 1
@@ -626,6 +771,8 @@ def _run_bird_search_once(
 
         if isinstance(parsed, list):
             return {"items": parsed}
+        if isinstance(parsed, dict) and parsed.get("error"):
+            return {**parsed, "error": _scrub_credentials(str(parsed["error"]))}
         return parsed
 
     # Defensive fallthrough — loop should always return above.
@@ -791,10 +938,11 @@ def search_x(
             response = _run_bird_search(query, count, timeout, deadline=deadline, **search_kwargs)
             if not response.get("error"):
                 last_clean_response = response
+            items = parse_bird_response(response, query=core_topic)
 
     if cancel is not None and cancel.is_set():
         return {**response, "error": "bird: research cancelled"}
-    if response.get("error") and last_clean_response is not None:
+    if response.get("error") and not items and last_clean_response is not None:
         _log("Optional retry failed after a clean empty response; preserving no-results outcome")
         return last_clean_response
     return response
@@ -832,6 +980,8 @@ def search_handles(
     Returns:
         List of raw item dicts (same format as parse_bird_response output).
     """
+    if not handles:
+        return []
     core_topic = _extract_core_subject(topic) if topic else None
     date_filters = _date_filters(from_date, to_date)
 
@@ -848,22 +998,37 @@ def search_handles(
         # Always unfiltered: pull the timeline, rank by topic relevance below.
         query = f"from:{handle} {date_filters}"
 
+        timeout_ms = _bird_timeout_ms(timeout, deadline)
         cmd = [
             "node", str(_BIRD_SEARCH_MJS),
-            query,
             "--count", str(count_per),
+            "--timeout-ms", str(timeout_ms),
             "--json",
+            "--",
+            query,
         ]
 
         try:
-            result = subproc.run_with_timeout(cmd, timeout=timeout, env=_subprocess_env())
+            result = subproc.run_with_timeout(
+                cmd,
+                timeout=timeout,
+                env=_subprocess_env(),
+                cancel=cancel,
+                deadline_monotonic=deadline,
+                capture_limit_bytes=_BIRD_CAPTURE_LIMIT_BYTES,
+            )
         except subproc.SubprocTimeout:
-            _log(f"Handle search timed out for @{handle}")
-            _note(f"@{handle}: bird-search timed out after 15s")
+            if cancel is not None and cancel.is_set():
+                _log(f"Handle search cancelled for @{handle}")
+                _note(f"@{handle}: bird-search cancelled")
+            else:
+                _log(f"Handle search timed out for @{handle}")
+                _note(f"@{handle}: bird-search timed out after {timeout}s")
             return []
         except OSError as e:
-            _log(f"Handle search error for @{handle}: {e}")
-            _note(f"@{handle}: could not spawn bird-search ({e})")
+            err = _scrub_credentials(str(e))
+            _log(f"Handle search error for @{handle}: {err}")
+            _note(f"@{handle}: could not spawn bird-search ({err})")
             return []
 
         output = result.stdout.strip()
@@ -875,8 +1040,8 @@ def search_handles(
                     f"({_scrub_credentials(result.stderr.strip())[:160] or 'no stderr'})"
                 )
                 return []
-            # Windows/Node 24: benign libuv assertion can cause non-zero exit
-            # AFTER valid JSON is written to stdout. Trust stdout content.
+            # Windows/Node 24 benign libuv assertion or partial-page JSON error:
+            # stdout carries the JSON payload.
 
         if not output:
             return []
@@ -887,6 +1052,10 @@ def search_handles(
             _log(f"Invalid JSON from handle search for @{handle}")
             _note(f"@{handle}: bird-search returned invalid JSON")
             return []
+        if isinstance(response, dict) and response.get("error"):
+            err = _scrub_credentials(str(response["error"]))
+            _log(f"Handle search error for @{handle}: {err}")
+            _note(f"@{handle}: {err[:160]}")
         items = parse_bird_response(response, query=core_topic)
         # Log on success/empty too (not only on failure): a silent handle search
         # made the from: query look like it never ran and caused wrong diagnoses.
@@ -933,6 +1102,8 @@ def search_mentions(
     Returns:
         List of raw item dicts (same format as parse_bird_response output).
     """
+    if not handles:
+        return []
     date_filters = _date_filters(from_date, to_date)
 
     def _note(msg: str) -> None:
@@ -946,30 +1117,48 @@ def search_mentions(
             return []
         handle = handle.lstrip("@")
         query = f"@{handle} {date_filters}"
+        timeout_ms = _bird_timeout_ms(timeout, deadline)
         cmd = [
             "node", str(_BIRD_SEARCH_MJS),
-            query,
             "--count", str(count_per),
+            "--timeout-ms", str(timeout_ms),
             "--json",
+            "--",
+            query,
         ]
         try:
-            result = subproc.run_with_timeout(cmd, timeout=timeout, env=_subprocess_env())
+            result = subproc.run_with_timeout(
+                cmd,
+                timeout=timeout,
+                env=_subprocess_env(),
+                cancel=cancel,
+                deadline_monotonic=deadline,
+                capture_limit_bytes=_BIRD_CAPTURE_LIMIT_BYTES,
+            )
         except subproc.SubprocTimeout:
-            _log(f"Mention search timed out for @{handle}")
-            _note(f"@{handle}: bird-search timed out after 15s")
+            if cancel is not None and cancel.is_set():
+                _log(f"Mention search cancelled for @{handle}")
+                _note(f"@{handle}: bird-search cancelled")
+            else:
+                _log(f"Mention search timed out for @{handle}")
+                _note(f"@{handle}: bird-search timed out after {timeout}s")
             return []
         except OSError as e:
-            _log(f"Mention search error for @{handle}: {e}")
-            _note(f"@{handle}: could not spawn bird-search ({e})")
-            return []
-        if result.returncode != 0:
-            _log(f"Mention search failed for @{handle}: {_scrub_credentials(result.stderr.strip())}")
-            _note(
-                f"@{handle}: bird-search exited {result.returncode} "
-                f"({_scrub_credentials(result.stderr.strip())[:160] or 'no stderr'})"
-            )
+            err = _scrub_credentials(str(e))
+            _log(f"Mention search error for @{handle}: {err}")
+            _note(f"@{handle}: could not spawn bird-search ({err})")
             return []
         output = result.stdout.strip()
+        if result.returncode != 0:
+            if not output:
+                _log(f"Mention search failed for @{handle}: {_scrub_credentials(result.stderr.strip())}")
+                _note(
+                    f"@{handle}: bird-search exited {result.returncode} "
+                    f"({_scrub_credentials(result.stderr.strip())[:160] or 'no stderr'})"
+                )
+                return []
+            # Windows/Node 24 benign libuv assertion or partial-page JSON error:
+            # stdout carries the JSON payload.
         if not output:
             return []
         try:
@@ -978,6 +1167,10 @@ def search_mentions(
             _log(f"Invalid JSON from mention search for @{handle}")
             _note(f"@{handle}: bird-search returned invalid JSON")
             return []
+        if isinstance(response, dict) and response.get("error"):
+            err = _scrub_credentials(str(response["error"]))
+            _log(f"Mention search error for @{handle}: {err}")
+            _note(f"@{handle}: {err[:160]}")
         items = parse_bird_response(response, query=None)
         # ABOUT lane = OTHERS mentioning the handle. Drop the handle's own tweets
         # (the FROM lane already covers those); identify by the status URL author.
@@ -1013,13 +1206,15 @@ def parse_bird_response(response: Dict[str, Any], query: str = "") -> List[Dict[
     """
     items = []
 
-    # Check for errors
-    if "error" in response and response["error"]:
-        _log(f"Bird error: {response['error']}")
-        return items
+    # Log any reported error (scrubbed), while still parsing partial items when
+    # a multi-page search succeeded on page 1 before failing on page 2+.
+    if isinstance(response, dict) and "error" in response and response["error"]:
+        _log(f"Bird error: {_scrub_credentials(str(response['error']))}")
 
     # Bird returns a list of tweets directly or under a key
-    raw_items = response if isinstance(response, list) else response.get("items", response.get("tweets", []))
+    raw_items = response if isinstance(response, list) else (
+        response.get("items", response.get("tweets", [])) if isinstance(response, dict) else []
+    )
 
     if not isinstance(raw_items, list):
         return items

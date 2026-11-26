@@ -448,7 +448,7 @@ def test_real_lane_tries_the_second_company_inside_the_same_budget():
         def __exit__(self, *_exc):
             return False
 
-        def read(self):
+        def read(self, size=-1):
             return spacex
 
     def opener(req, timeout=None, **_kwargs):

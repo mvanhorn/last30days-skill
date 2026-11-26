@@ -1,0 +1,1 @@
+Fixed null-safety and non-dict/non-list response handling across Reddit Arctic Shift, ScrapeCreators, and thread-enrichment parsers, and updated the Reddit canary to fail when Arctic Shift hydrates zero discovered threads.

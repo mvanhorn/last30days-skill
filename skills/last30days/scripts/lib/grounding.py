@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import math
 import re
 import sys
 import threading
+import time
 import urllib.parse
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -337,8 +339,8 @@ _SERPER_RELATIVE_WORDS = {"just now": 0, "today": 0, "yesterday": 1}
 
 
 def _now() -> datetime:
-    """Query-time clock. Isolated so tests can pin it."""
-    return datetime.now()
+    """Query-time UTC clock. Isolated so tests can pin it."""
+    return datetime.now(timezone.utc)
 
 
 def _parse_serper_relative(raw: str, now: datetime | None = None) -> str | None:
@@ -432,17 +434,34 @@ def web_search(
     date_range: tuple[str, str],
     config: dict,
     backend: str = "auto",
+    *,
+    deadline_monotonic: float | None = None,
+    cancel: threading.Event | None = None,
 ) -> tuple[list[dict], dict]:
     """Run web search with the specified or auto-detected backend."""
     if backend != "auto":
-        return _web_search_with(backend, query, date_range, config)
+        return _web_search_with(
+            backend,
+            query,
+            date_range,
+            config,
+            deadline_monotonic=deadline_monotonic,
+            cancel=cancel,
+        )
     tried: set[str] = set()
     while True:
         chosen = configured_backend(config) or (
             "keyless" if env.keyless_web_allowed(config) else "none"
         )
         try:
-            return _web_search_with(chosen, query, date_range, config)
+            return _web_search_with(
+                chosen,
+                query,
+                date_range,
+                config,
+                deadline_monotonic=deadline_monotonic,
+                cancel=cancel,
+            )
         except Exception:
             # The service has no key for this proxied provider: try the next
             # backend instead of failing the web source.
@@ -456,9 +475,22 @@ def _web_search_with(
     query: str,
     date_range: tuple[str, str],
     config: dict,
+    *,
+    deadline_monotonic: float | None = None,
+    cancel: threading.Event | None = None,
 ) -> tuple[list[dict], dict]:
     items: list[dict] = []
     artifact: dict = {}
+    effective_deadline = (
+        deadline_monotonic
+        if deadline_monotonic is not None
+        else config.get("_research_deadline")
+    )
+    effective_cancel = (
+        cancel
+        if cancel is not None
+        else config.get("_enrich_cancel")
+    )
     if backend == "brave":
         key = config.get("BRAVE_API_KEY")
         if not key:
@@ -482,24 +514,61 @@ def _web_search_with(
     elif backend == "parallel-mcp":
         # The MCP client is not behind the http.request proxy seam, so it
         # never receives the proxy-lane placeholder.
+        mcp_kwargs: dict = {}
+        if effective_deadline is not None:
+            mcp_kwargs["deadline_monotonic"] = min(
+                effective_deadline,
+                time.monotonic() + parallel_mcp._DEFAULT_SEARCH_TIMEOUT,
+            )
+        if effective_cancel is not None:
+            mcp_kwargs["cancel"] = effective_cancel
         items, artifact = parallel_mcp.search(
-            query, date_range, proxy.real_key(config.get("PARALLEL_API_KEY"))
+            query, date_range, proxy.real_key(config.get("PARALLEL_API_KEY")),
+            **mcp_kwargs,
         )
     elif backend == "keyless":
-        items, artifact = web_search_keyless.keyless_search(query, date_range, config)
+        keyless_kwargs: dict = {}
+        if effective_deadline is not None:
+            keyless_kwargs["deadline_monotonic"] = effective_deadline
+        if effective_cancel is not None:
+            keyless_kwargs["cancel"] = effective_cancel
+        items, artifact = web_search_keyless.keyless_search(
+            query, date_range, config, **keyless_kwargs,
+        )
     elif backend != "none":
         raise ValueError(f"Unsupported web backend: {backend!r}")
     else:
         return [], {}
-    if items and not _reddit_excluded(config):
+    enrich_deadline = _reddit_enrich_deadline(effective_deadline)
+    budget_stopped = bool(
+        (effective_cancel is not None and effective_cancel.is_set())
+        or (enrich_deadline is not None and time.monotonic() >= enrich_deadline)
+    )
+    if items and not _reddit_excluded(config) and not budget_stopped:
         # Reddit enrichment is a best-effort secondary fetch on already-retrieved
         # web results. Isolate its HTTP failures in a throwaway capture sink so a
         # reddit.com fetch failure (e.g. a 403 on a datacenter IP) is not
         # attributed to the web/grounding source itself — which would otherwise
         # discard the successfully retrieved results and report the source failed.
+        enrich_kwargs: dict = {}
+        if effective_deadline is not None:
+            enrich_kwargs["deadline_monotonic"] = effective_deadline
+        if effective_cancel is not None:
+            enrich_kwargs["cancel"] = effective_cancel
         with http.capture_failures():
-            items = _enrich_reddit_items(items)
+            items = _enrich_reddit_items(items, **enrich_kwargs)
     return items, artifact
+
+
+# Reserve headroom before the outer run deadline so optional Reddit enrichment
+# never crowds the stream future timeout and causes retrieved web results to be discarded.
+_REDDIT_ENRICH_HEADROOM_SECONDS = 3.0
+
+
+def _reddit_enrich_deadline(deadline_monotonic: float | None) -> float | None:
+    if deadline_monotonic is None:
+        return None
+    return deadline_monotonic - _REDDIT_ENRICH_HEADROOM_SECONDS
 
 
 def _reddit_excluded(config: dict) -> bool:
@@ -513,7 +582,12 @@ def _reddit_excluded(config: dict) -> bool:
     return any(s.strip().lower() == "reddit" for s in raw)
 
 
-def _enrich_reddit_items(items: list[dict]) -> list[dict]:
+def _enrich_reddit_items(
+    items: list[dict],
+    *,
+    deadline_monotonic: float | None = None,
+    cancel: threading.Event | None = None,
+) -> list[dict]:
     """Enrich web search results that are Reddit threads with body and comments.
 
     Claude Code's WebFetch blocks reddit.com, so the model can't retrieve
@@ -528,6 +602,11 @@ def _enrich_reddit_items(items: list[dict]) -> list[dict]:
     """
     from . import reddit_hydrate, reddit_refs
 
+    enrich_deadline = _reddit_enrich_deadline(deadline_monotonic)
+    if (cancel is not None and cancel.is_set()) or (
+        enrich_deadline is not None and time.monotonic() >= enrich_deadline
+    ):
+        return items
     refs_by_item: list[tuple[dict, reddit_refs.ThreadRef]] = []
     for item in items:
         ref = reddit_refs.canonical_thread(str(item.get("url") or ""))
@@ -536,34 +615,82 @@ def _enrich_reddit_items(items: list[dict]) -> list[dict]:
             refs_by_item.append((item, ref))
     if not refs_by_item:
         return items
+    hydrate_kwargs: dict = {}
+    if enrich_deadline is not None:
+        hydrate_kwargs["deadline"] = enrich_deadline
     try:
-        hydrated = reddit_hydrate.hydrate([ref for _item, ref in refs_by_item])
+        hydrated = reddit_hydrate.hydrate(
+            [ref for _item, ref in refs_by_item],
+            **hydrate_kwargs,
+        )
+    except (http.DeadlineExceeded, TimeoutError) as exc:
+        sys.stderr.write(f"[Web] Reddit enrichment timed out: {exc}\n")
+        return items
     except Exception as exc:  # enrichment is best-effort on results already in hand
         sys.stderr.write(f"[Web] Reddit enrichment failed: {exc}\n")
         return items
-    by_id = {
-        thread["metadata"]["post_id"]: thread
-        for thread in hydrated.items
-        if thread.get("engagement_source") != reddit_refs.UNKNOWN
-    }
+    by_id: dict[str, dict] = {}
+    for thread in hydrated.items:
+        if not isinstance(thread, dict) or thread.get("engagement_source") == reddit_refs.UNKNOWN:
+            continue
+        meta = thread.get("metadata")
+        post_id = meta.get("post_id") if isinstance(meta, dict) else None
+        if post_id:
+            by_id[str(post_id)] = thread
     for item, ref in refs_by_item:
         thread = by_id.get(ref.post_id)
         if thread is None:
             continue
+        if not item.get("date") and thread.get("date"):
+            item["date"] = thread["date"]
         selftext = thread.get("selftext") or ""
         if selftext:
             item["snippet"] = selftext[:2000]
+        thread_eng = thread.get("engagement")
+        if isinstance(thread_eng, dict):
+            thread_score = thread_eng.get("score")
+            if (
+                isinstance(thread_score, (int, float))
+                and not isinstance(thread_score, bool)
+                and math.isfinite(thread_score)
+            ):
+                item["reddit_thread_score"] = thread_score
+        subreddit = str(thread.get("subreddit") or ref.subreddit or "").strip().removeprefix("r/")
+        if subreddit:
+            item["reddit_subreddit"] = subreddit
         top = thread.get("top_comments") or []
         if top:
-            item["top_comments"] = [
-                {
+            enriched_comments: list[dict] = []
+            for c in top[:5]:
+                if not isinstance(c, dict):
+                    continue
+                entry: dict = {
                     "score": c.get("score"),
-                    "excerpt": (c.get("body") or c.get("excerpt") or "")[:200],
+                    "excerpt": str(c.get("body") or c.get("excerpt") or "")[:200],
                     "depth": c.get("depth", 0),
-                    **({"score_pending": True} if c.get("score_pending") else {}),
                 }
-                for c in top[:5]
-            ]
+                if c.get("id"):
+                    entry["id"] = str(c["id"])
+                if c.get("author"):
+                    entry["author"] = str(c["author"])
+                if c.get("date"):
+                    entry["date"] = str(c["date"])
+                comment_url = c.get("url")
+                if not comment_url:
+                    permalink = str(c.get("permalink") or "")
+                    if permalink.startswith(("http://", "https://")):
+                        comment_url = permalink
+                    elif permalink.startswith("/"):
+                        comment_url = f"https://reddit.com{permalink}"
+                if comment_url:
+                    entry["url"] = str(comment_url)
+                if isinstance(c.get("is_uploader"), bool):
+                    entry["is_uploader"] = c["is_uploader"]
+                if c.get("score_pending"):
+                    entry["score_pending"] = True
+                enriched_comments.append(entry)
+            if enriched_comments:
+                item["top_comments"] = enriched_comments
         item["enriched_via"] = "arctic"
     return items
 

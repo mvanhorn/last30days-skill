@@ -1,13 +1,13 @@
 package engine
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -47,21 +47,25 @@ const pipeGracePeriod = time.Second
 // PythonPath is exposed so tests can substitute a stub interpreter without
 // manipulating the process PATH.
 type RunOptions struct {
-	PythonPath string        // resolved test/caller override; empty honors PythonEnvOverride, then DefaultPythonBinary
-	CacheDir   string        // engine.Ensure result; lib/ here is added to PYTHONPATH
-	Args       []string      // arguments after last30days.py (topic, --emit=..., etc.)
-	ExtraEnv   []string      // appended to os.Environ() for the child process
-	Timeout    time.Duration // zero means DefaultTimeout or TimeoutEnvOverride
+	PythonPath     string        // resolved test/caller override; empty honors PythonEnvOverride, then DefaultPythonBinary
+	CacheDir       string        // engine.Ensure result; lib/ here is added to PYTHONPATH
+	Args           []string      // arguments after last30days.py (topic, --emit=..., etc.)
+	ExtraEnv       []string      // appended to os.Environ() for the child process
+	Timeout        time.Duration // zero means DefaultTimeout or TimeoutEnvOverride
+	MaxStdoutBytes int           // zero means DefaultMaxStdoutBytes
+	MaxStderrBytes int           // zero means DefaultMaxStderrBytes
 }
 
-// RunResult captures the engine's full output. Stdout is what we surface to
+// RunResult captures the engine's bounded output. Stdout is what we surface to
 // the agent; Stderr is included in error messages so users can diagnose
 // engine failures without leaving Claude Desktop.
 type RunResult struct {
-	Stdout   []byte
-	Stderr   []byte
-	ExitCode int
-	TimedOut bool
+	Stdout          []byte
+	Stderr          []byte
+	StdoutTruncated bool
+	StderrTruncated bool
+	ExitCode        int
+	TimedOut        bool
 }
 
 // Run shells out to python3 with last30days.py inside cacheDir. The child
@@ -93,17 +97,17 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 	args := append([]string{scriptPath}, opts.Args...)
 	cmd := exec.Command(pythonPath, args...)
 	cmd.Env = buildEnv(opts.CacheDir, opts.ExtraEnv)
-	cmd.WaitDelay = pipeGracePeriod
-	// Own process group so a timeout SIGTERM reaches same-group
-	// grandchildren (grok CLI). exec.CommandContext would SIGKILL only the
-	// direct python child while its SIGTERM-handler/atexit cleanup never
-	// runs on SIGKILL, orphaning the setsid'd descendant groups.
-	// Mirrors lib/subproc.py.
+	// Own process group so cancellation SIGTERM reaches same-group helpers on
+	// the primary unreaped wait path while Python's SIGTERM handler cleans up
+	// registered setsid'd descendant groups (including grok CLI via lib/subproc.py)
+	// on both primary and direct-child fallback paths. exec.CommandContext would
+	// SIGKILL only Python directly and skip its SIGTERM/atexit cleanup.
 	setProcessGroup(cmd)
 
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	maxStdout := resolveOutputLimit(opts.MaxStdoutBytes, DefaultMaxStdoutBytes)
+	maxStderr := resolveOutputLimit(opts.MaxStderrBytes, DefaultMaxStderrBytes)
+	stdout := newHeadBuffer(maxStdout)
+	stderr := newTailBuffer(maxStderr)
 
 	if err := subCtx.Err(); err != nil {
 		return &RunResult{
@@ -111,42 +115,40 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 			TimedOut: errors.Is(err, context.DeadlineExceeded),
 		}, fmt.Errorf("engine: subprocess not started: %w", err)
 	}
-	if err := cmd.Start(); err != nil {
-		res := &RunResult{
-			Stdout:   stdout.Bytes(),
-			Stderr:   stderr.Bytes(),
-			ExitCode: 0,
+	pipes, err := newOutputPipes()
+	if err != nil {
+		return &RunResult{
+			ExitCode: -1,
 			TimedOut: errors.Is(subCtx.Err(), context.DeadlineExceeded),
+		}, fmt.Errorf("engine: failed to create subprocess pipes: %w", err)
+	}
+	cmd.Stdout = pipes.stdoutW
+	cmd.Stderr = pipes.stderrW
+
+	if err := cmd.Start(); err != nil {
+		pipes.closeAll()
+		res := &RunResult{
+			Stdout:          stdout.Bytes(),
+			Stderr:          stderr.Bytes(),
+			StdoutTruncated: stdout.Truncated(),
+			StderrTruncated: stderr.Truncated(),
+			ExitCode:        0,
+			TimedOut:        errors.Is(subCtx.Err(), context.DeadlineExceeded),
 		}
 		return res, fmt.Errorf("engine: subprocess failed to start: %w", err)
 	}
-	waitCh := make(chan error, 1)
-	go func() { waitCh <- cmd.Wait() }()
+	pipes.startDraining(stdout, stderr)
 
-	select {
-	case <-subCtx.Done():
-		// Deadline or parent cancel: SIGTERM the group first so the
-		// python SIGTERM handler killpg()s the setsid'd descendant
-		// groups (node, yt-dlp, digg) that kill(-pid) cannot reach,
-		// then SIGKILL stragglers that ignore TERM. Then reap.
-		termProcessGroup(cmd)
-		select {
-		case err = <-waitCh:
-			killProcessGroup(cmd)
-		case <-time.After(termGracePeriod):
-			killProcessGroup(cmd)
-			err = <-waitCh
-		}
-	case werr := <-waitCh:
-		err = werr
-	}
+	err = waitCommandWithDrain(subCtx, cmd, termGracePeriod, pipeGracePeriod, pipes.drainDone, pipes.closeReadPipes)
 
 	ctxErr := subCtx.Err()
 	res := &RunResult{
-		Stdout:   stdout.Bytes(),
-		Stderr:   stderr.Bytes(),
-		ExitCode: 0,
-		TimedOut: errors.Is(ctxErr, context.DeadlineExceeded),
+		Stdout:          stdout.Bytes(),
+		Stderr:          stderr.Bytes(),
+		StdoutTruncated: stdout.Truncated(),
+		StderrTruncated: stderr.Truncated(),
+		ExitCode:        0,
+		TimedOut:        errors.Is(ctxErr, context.DeadlineExceeded),
 	}
 	if cmd.ProcessState != nil {
 		res.ExitCode = cmd.ProcessState.ExitCode()
@@ -156,6 +158,16 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 	}
 	if ctxErr != nil {
 		return res, fmt.Errorf("engine: subprocess canceled: %w", ctxErr)
+	}
+	if res.StdoutTruncated {
+		if err != nil {
+			var exitErr *exec.ExitError
+			if errors.As(err, &exitErr) {
+				return res, fmt.Errorf("%w (%d byte limit, received %d bytes; exit code %d)", ErrStdoutLimitExceeded, maxStdout, stdout.Total(), res.ExitCode)
+			}
+			return res, fmt.Errorf("%w (%d byte limit, received %d bytes; %v)", ErrStdoutLimitExceeded, maxStdout, stdout.Total(), err)
+		}
+		return res, fmt.Errorf("%w (%d byte limit, received %d bytes)", ErrStdoutLimitExceeded, maxStdout, stdout.Total())
 	}
 	if err == nil {
 		return res, nil
@@ -185,22 +197,47 @@ func resolveTimeout(explicit time.Duration) time.Duration {
 }
 
 // buildEnv stitches PYTHONPATH onto os.Environ + ExtraEnv. Any pre-existing
-// PYTHONPATH in the parent environment is dropped before appending the
-// cache dir; otherwise the child sees two PYTHONPATH= entries and POSIX
-// getenv returns the first one, so the user's value wins and the engine's
-// `from lib import ...` fails with ModuleNotFoundError. The engine is
-// self-contained and does not need the user's Python module search path.
+// PYTHONPATH, PYTHONDONTWRITEBYTECODE, or key overridden by ExtraEnv in the
+// parent environment is dropped before appending; otherwise the child sees
+// duplicate entries and POSIX getenv returns the first one, shadowing our
+// cache-dir or MCP-level overrides.
 func buildEnv(cacheDir string, extra []string) []string {
-	const pyKey = "PYTHONPATH="
+	const (
+		pyKey       = "PYTHONPATH="
+		bytecodeKey = "PYTHONDONTWRITEBYTECODE="
+	)
+	overrides := make(map[string]struct{}, len(extra))
+	for _, kv := range extra {
+		if key, ok := envKey(kv); ok {
+			overrides[key] = struct{}{}
+		}
+	}
 	parent := os.Environ()
-	base := make([]string, 0, len(parent)+1+len(extra))
+	base := make([]string, 0, len(parent)+2+len(extra))
 	for _, kv := range parent {
-		if strings.HasPrefix(kv, pyKey) {
+		if strings.HasPrefix(kv, pyKey) || strings.HasPrefix(kv, bytecodeKey) {
 			continue
+		}
+		if key, ok := envKey(kv); ok {
+			if _, replaced := overrides[key]; replaced {
+				continue
+			}
 		}
 		base = append(base, kv)
 	}
-	base = append(base, pyKey+cacheDir)
+	base = append(base, pyKey+cacheDir, bytecodeKey+"1")
 	base = append(base, extra...)
 	return base
+}
+
+func envKey(kv string) (string, bool) {
+	eq := strings.IndexByte(kv, '=')
+	if eq <= 0 {
+		return "", false
+	}
+	key := kv[:eq]
+	if runtime.GOOS == "windows" {
+		return strings.ToUpper(key), true
+	}
+	return key, true
 }

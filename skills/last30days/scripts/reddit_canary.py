@@ -232,6 +232,11 @@ def check_hydration(topic: str, refs: list[ThreadRef], hydrate: HydrateFn) -> Op
         # them slow-downs is a challenge; any other failure means the comments
         # endpoint is out. An empty tree is not a failure.
         state = CHALLENGED if throttles >= failures else DOWN
+    if state == OK and filled == 0:
+        # Discovery found recent threads but Arctic Shift hydrated none of
+        # them (e.g. an ingestion stall returning empty data while old
+        # KNOWN_THREAD_IDS still resolve). Treat total recent miss as down.
+        state = DOWN
     note = f"{filled} of {len(refs)} threads from arctic, {comments} comments"
     if failures:
         note += f", {failures} comment requests failed ({throttles} throttled)"

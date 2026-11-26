@@ -6,10 +6,28 @@ import threading
 import random
 from typing import Optional
 
+from . import log
 from .render import _skill_version
 
 # Check if we're in a real terminal (not captured by Claude Code)
-IS_TTY = sys.stderr.isatty()
+try:
+    IS_TTY = bool(sys.stderr is not None and sys.stderr.isatty())
+except OSError:
+    IS_TTY = False
+
+
+def _stderr_supports_utf8(stream=None) -> bool:
+    """Return False when stderr declares a non-UTF encoding (e.g. cp1252, ascii)."""
+    target = sys.stderr if stream is None else stream
+    encoding = getattr(target, "encoding", None)
+    if not isinstance(encoding, str) or not encoding:
+        return True
+    normalized = encoding.lower().replace("_", "-")
+    return normalized in ("utf-8", "utf8", "utf-16", "utf16", "utf-32", "utf32") or normalized.startswith("utf-")
+
+
+def _write_stderr(text: str, *, flush: bool = True) -> None:
+    log.safe_stderr_write(text, flush=flush)
 
 # ANSI color codes
 class Colors:
@@ -122,6 +140,7 @@ SOURCE_COMPLETION_ORDER = [
     "instagram",
     "hackernews",
     "devto",
+    "v2ex",
     "bluesky",
     "truthsocial",
     "polymarket",
@@ -143,6 +162,7 @@ SOURCE_COMPLETION_META = {
     "instagram": ("Instagram", "reel", "reels", Colors.PURPLE),
     "hackernews": ("HN", "story", "stories", Colors.YELLOW),
     "devto": ("dev.to", "article", "articles", Colors.GREEN),
+    "v2ex": ("V2EX", "topic", "topics", Colors.GREEN),
     "bluesky": ("Bluesky", "post", "posts", Colors.BLUE),
     "truthsocial": ("Truth Social", "post", "posts", Colors.CYAN),
     "polymarket": ("Polymarket", "market", "markets", Colors.GREEN),
@@ -240,6 +260,7 @@ To fix this:
 
 # Spinner frames
 SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
+ASCII_SPINNER_FRAMES = ['|', '/', '-', '\\']
 DOTS_FRAMES = ['   ', '.  ', '.. ', '...']
 
 
@@ -256,10 +277,10 @@ class Spinner:
         self.quiet = quiet  # Suppress non-TTY start message (still shows ✓ completion)
 
     def _spin(self):
+        frames = SPINNER_FRAMES if _stderr_supports_utf8() else ASCII_SPINNER_FRAMES
         while self.running:
-            frame = SPINNER_FRAMES[self.frame_idx % len(SPINNER_FRAMES)]
-            sys.stderr.write(f"\r{self.color}{frame}{Colors.RESET} {self.message}  ")
-            sys.stderr.flush()
+            frame = frames[self.frame_idx % len(frames)]
+            _write_stderr(f"\r{self.color}{frame}{Colors.RESET} {self.message}  ")
             self.frame_idx += 1
             time.sleep(0.08)
 
@@ -272,16 +293,16 @@ class Spinner:
         else:
             # Not a TTY (Claude Code) - just print once
             if not self.shown_static and not self.quiet:
-                sys.stderr.write(f"⏳ {self.message}\n")
-                sys.stderr.flush()
+                prefix = "⏳" if _stderr_supports_utf8() else "->"
+                _write_stderr(f"{prefix} {self.message}\n")
                 self.shown_static = True
 
     def update(self, message: str):
         self.message = message
         if not IS_TTY and not self.shown_static:
             # Print update in non-TTY mode
-            sys.stderr.write(f"⏳ {message}\n")
-            sys.stderr.flush()
+            prefix = "⏳" if _stderr_supports_utf8() else "->"
+            _write_stderr(f"{prefix} {message}\n")
 
     def stop(self, final_message: str = ""):
         self.running = False
@@ -289,10 +310,10 @@ class Spinner:
             self.thread.join(timeout=0.2)
         if IS_TTY:
             # Clear the line in real terminal
-            sys.stderr.write("\r" + " " * 80 + "\r")
+            _write_stderr("\r" + " " * 80 + "\r", flush=not final_message)
         if final_message:
-            sys.stderr.write(f"✓ {final_message}\n")
-        sys.stderr.flush()
+            ok_glyph = "✓" if _stderr_supports_utf8() else "[ok]"
+            _write_stderr(f"{ok_glyph} {final_message}\n")
 
 
 class ProgressDisplay:
@@ -307,13 +328,21 @@ class ProgressDisplay:
             self._show_banner()
 
     def _show_banner(self):
+        utf8 = _stderr_supports_utf8()
         if IS_TTY:
-            sys.stderr.write(MINI_BANNER + "\n")
-            sys.stderr.write(f"{Colors.DIM}Topic: {Colors.RESET}{Colors.BOLD}{self.topic}{Colors.RESET}\n\n")
+            banner = (
+                MINI_BANNER
+                if utf8
+                else f"{Colors.PURPLE}{Colors.BOLD}/last30days{Colors.RESET} {Colors.DIM}- researching...{Colors.RESET}"
+            )
+            _write_stderr(
+                banner + "\n"
+                + f"{Colors.DIM}Topic: {Colors.RESET}{Colors.BOLD}{self.topic}{Colors.RESET}\n\n"
+            )
         else:
             # Simple text for non-TTY
-            sys.stderr.write(f"/last30days · researching: {self.topic}\n")
-        sys.stderr.flush()
+            sep = "·" if utf8 else "-"
+            _write_stderr(f"/last30days {sep} researching: {self.topic}\n")
 
     def start_reddit(self):
         msg = random.choice(REDDIT_MESSAGES)
@@ -437,26 +466,28 @@ class ProgressDisplay:
             _format_completion_part(source, source_counts.get(source, 0), tty=IS_TTY)
             for source in ordered_sources
         ]
+        ok_glyph = "✓" if _stderr_supports_utf8() else "[ok]"
         if IS_TTY:
-            sys.stderr.write(f"\n{Colors.GREEN}{Colors.BOLD}✓ Research complete{Colors.RESET} ")
-            sys.stderr.write(f"{Colors.DIM}({elapsed:.1f}s){Colors.RESET}\n")
-            sys.stderr.write("  " + "  ".join(parts))
-            sys.stderr.write("\n\n")
+            _write_stderr(
+                f"\n{Colors.GREEN}{Colors.BOLD}{ok_glyph} Research complete{Colors.RESET} "
+                f"{Colors.DIM}({elapsed:.1f}s){Colors.RESET}\n"
+                + "  " + "  ".join(parts)
+                + "\n\n"
+            )
         else:
-            sys.stderr.write(f"✓ Research complete ({elapsed:.1f}s) - {', '.join(parts)}\n")
-        sys.stderr.flush()
+            _write_stderr(f"{ok_glyph} Research complete ({elapsed:.1f}s) - {', '.join(parts)}\n")
 
     def show_cached(self, age_hours: float = None):
         if age_hours is not None:
             age_str = f" ({age_hours:.1f}h old)"
         else:
             age_str = ""
-        sys.stderr.write(f"{Colors.GREEN}⚡{Colors.RESET} {Colors.DIM}Using cached results{age_str} - use --refresh for fresh data{Colors.RESET}\n\n")
-        sys.stderr.flush()
+        bolt = "⚡" if _stderr_supports_utf8() else "*"
+        _write_stderr(f"{Colors.GREEN}{bolt}{Colors.RESET} {Colors.DIM}Using cached results{age_str} - use --refresh for fresh data{Colors.RESET}\n\n")
 
     def show_error(self, message: str):
-        sys.stderr.write(f"{Colors.RED}✗ Error:{Colors.RESET} {message}\n")
-        sys.stderr.flush()
+        err_glyph = "✗" if _stderr_supports_utf8() else "[x]"
+        _write_stderr(f"{Colors.RED}{err_glyph} Error:{Colors.RESET} {message}\n")
 
     def start_web_only(self):
         """Show web-only mode indicator."""
@@ -472,13 +503,15 @@ class ProgressDisplay:
     def show_web_only_complete(self):
         """Show completion for web-only mode."""
         elapsed = time.time() - self.start_time
+        ok_glyph = "✓" if _stderr_supports_utf8() else "[ok]"
         if IS_TTY:
-            sys.stderr.write(f"\n{Colors.GREEN}{Colors.BOLD}✓ Ready for web search{Colors.RESET} ")
-            sys.stderr.write(f"{Colors.DIM}({elapsed:.1f}s){Colors.RESET}\n")
-            sys.stderr.write(f"  {Colors.GREEN}Web:{Colors.RESET} assistant will search blogs, docs & news\n\n")
+            _write_stderr(
+                f"\n{Colors.GREEN}{Colors.BOLD}{ok_glyph} Ready for web search{Colors.RESET} "
+                f"{Colors.DIM}({elapsed:.1f}s){Colors.RESET}\n"
+                f"  {Colors.GREEN}Web:{Colors.RESET} assistant will search blogs, docs & news\n\n"
+            )
         else:
-            sys.stderr.write(f"✓ Ready for web search ({elapsed:.1f}s)\n")
-        sys.stderr.flush()
+            _write_stderr(f"{ok_glyph} Ready for web search ({elapsed:.1f}s)\n")
 
     def show_promo(self, missing: str = "both", diag: dict = None):
         """Show NUX / promotional message for missing API keys.
@@ -487,19 +520,22 @@ class ProgressDisplay:
             missing: 'both', 'all', 'reddit', or 'x' - which keys are missing
             diag: Optional diagnostics dict for dynamic source status
         """
+        text = ""
         if missing in ("both", "all"):
-            sys.stderr.write(_build_nux_message(diag))
+            text = _build_nux_message(diag)
         elif missing in PROMO_SINGLE_KEY:
-            sys.stderr.write(PROMO_SINGLE_KEY[missing])
-        sys.stderr.flush()
+            text = PROMO_SINGLE_KEY[missing]
+        if text:
+            if not _stderr_supports_utf8():
+                text = text.replace("✓", "[ok]").replace("✗", "[x]").replace("💡", "Tip:")
+            _write_stderr(text)
 
     def show_bird_auth_help(self):
         """Show Bird authentication help."""
         if IS_TTY:
-            sys.stderr.write(BIRD_AUTH_HELP)
+            _write_stderr(BIRD_AUTH_HELP)
         else:
-            sys.stderr.write(BIRD_AUTH_HELP_PLAIN)
-        sys.stderr.flush()
+            _write_stderr(BIRD_AUTH_HELP_PLAIN)
 
 
 def show_diagnostic_banner(diag: dict):
@@ -524,98 +560,106 @@ def show_diagnostic_banner(diag: dict):
         return
 
     lines = []
+    utf8 = _stderr_supports_utf8()
+    ok_mark = "✅" if utf8 else "[ok]"
+    err_mark = "❌" if utf8 else "[x]"
+    warn_mark = "⚡" if utf8 else "[!]"
+    dash = "—" if utf8 else "-"
+    branch = "└─" if utf8 else "->"
+    top = "┌─────────────────────────────────────────────────────┐" if utf8 else "+-----------------------------------------------------+"
+    bot = "└─────────────────────────────────────────────────────┘" if utf8 else "+-----------------------------------------------------+"
+    bar = "│" if utf8 else "|"
 
     if IS_TTY:
-        lines.append(f"{Colors.DIM}┌─────────────────────────────────────────────────────┐{Colors.RESET}")
+        lines.append(f"{Colors.DIM}{top}{Colors.RESET}")
         _header = f"/last30days v{_skill_version()} - Source Status"
-        lines.append(f"{Colors.DIM}│{Colors.RESET} {Colors.BOLD}{_header}{Colors.RESET}{' ' * (52 - len(_header))}{Colors.DIM}│{Colors.RESET}")
-        lines.append(f"{Colors.DIM}│{Colors.RESET}                                                     {Colors.DIM}│{Colors.RESET}")
+        lines.append(f"{Colors.DIM}{bar}{Colors.RESET} {Colors.BOLD}{_header}{Colors.RESET}{' ' * (52 - len(_header))}{Colors.DIM}{bar}{Colors.RESET}")
+        lines.append(f"{Colors.DIM}{bar}{Colors.RESET}                                                     {Colors.DIM}{bar}{Colors.RESET}")
 
         # Reddit
         if has_reddit and has_scrapecreators:
-            lines.append(f"{Colors.DIM}│{Colors.RESET}  {Colors.GREEN}✅ Reddit{Colors.RESET}    — full threads with comments          {Colors.DIM}│{Colors.RESET}")
+            lines.append(f"{Colors.DIM}{bar}{Colors.RESET}  {Colors.GREEN}{ok_mark} Reddit{Colors.RESET}    {dash} full threads with comments          {Colors.DIM}{bar}{Colors.RESET}")
         elif has_reddit:
-            lines.append(f"{Colors.DIM}│{Colors.RESET}  {Colors.GREEN}✅ Reddit{Colors.RESET}    — public threads (titles + scores)   {Colors.DIM}│{Colors.RESET}")
+            lines.append(f"{Colors.DIM}{bar}{Colors.RESET}  {Colors.GREEN}{ok_mark} Reddit{Colors.RESET}    {dash} public threads (titles + scores)   {Colors.DIM}{bar}{Colors.RESET}")
         else:
-            lines.append(f"{Colors.DIM}│{Colors.RESET}  {Colors.RED}❌ Reddit{Colors.RESET}    — unavailable                         {Colors.DIM}│{Colors.RESET}")
+            lines.append(f"{Colors.DIM}{bar}{Colors.RESET}  {Colors.RED}{err_mark} Reddit{Colors.RESET}    {dash} unavailable                         {Colors.DIM}{bar}{Colors.RESET}")
 
         # X/Twitter
         if has_x:
             username = diag.get("bird_username", "")
             label = f"Bird ({username})" if x_backend == "bird" and username else str(x_backend or "xai").upper()
-            lines.append(f"{Colors.DIM}│{Colors.RESET}  {Colors.GREEN}✅ X/Twitter{Colors.RESET} — {label}                          {Colors.DIM}│{Colors.RESET}")
+            lines.append(f"{Colors.DIM}{bar}{Colors.RESET}  {Colors.GREEN}{ok_mark} X/Twitter{Colors.RESET} {dash} {label}                          {Colors.DIM}{bar}{Colors.RESET}")
         else:
-            lines.append(f"{Colors.DIM}│{Colors.RESET}  {Colors.RED}❌ X/Twitter{Colors.RESET} — No X auth or fallback key        {Colors.DIM}│{Colors.RESET}")
+            lines.append(f"{Colors.DIM}{bar}{Colors.RESET}  {Colors.RED}{err_mark} X/Twitter{Colors.RESET} {dash} No X auth or fallback key        {Colors.DIM}{bar}{Colors.RESET}")
             if diag.get("bird_installed"):
-                lines.append(f"{Colors.DIM}│{Colors.RESET}     └─ Add AUTH_TOKEN/CT0 or XAI_API_KEY      {Colors.DIM}│{Colors.RESET}")
+                lines.append(f"{Colors.DIM}{bar}{Colors.RESET}     {branch} Add AUTH_TOKEN/CT0 or XAI_API_KEY      {Colors.DIM}{bar}{Colors.RESET}")
             else:
-                lines.append(f"{Colors.DIM}│{Colors.RESET}     └─ Needs Node.js 22+ (Bird is bundled)           {Colors.DIM}│{Colors.RESET}")
+                lines.append(f"{Colors.DIM}{bar}{Colors.RESET}     {branch} Needs Node.js 22+ (Bird is bundled)           {Colors.DIM}{bar}{Colors.RESET}")
 
         # YouTube
         if has_youtube:
-            lines.append(f"{Colors.DIM}│{Colors.RESET}  {Colors.GREEN}✅ YouTube{Colors.RESET}   — yt-dlp found                      {Colors.DIM}│{Colors.RESET}")
+            lines.append(f"{Colors.DIM}{bar}{Colors.RESET}  {Colors.GREEN}{ok_mark} YouTube{Colors.RESET}   {dash} yt-dlp found                      {Colors.DIM}{bar}{Colors.RESET}")
         else:
-            lines.append(f"{Colors.DIM}│{Colors.RESET}  {Colors.RED}❌ YouTube{Colors.RESET}   — yt-dlp not installed                {Colors.DIM}│{Colors.RESET}")
-            lines.append(f"{Colors.DIM}│{Colors.RESET}     └─ Fix: brew install yt-dlp (free)                {Colors.DIM}│{Colors.RESET}")
+            lines.append(f"{Colors.DIM}{bar}{Colors.RESET}  {Colors.RED}{err_mark} YouTube{Colors.RESET}   {dash} yt-dlp not installed                {Colors.DIM}{bar}{Colors.RESET}")
+            lines.append(f"{Colors.DIM}{bar}{Colors.RESET}     {branch} Fix: brew install yt-dlp (free)                {Colors.DIM}{bar}{Colors.RESET}")
 
         # Xiaohongshu (only show when configured)
         if has_xiaohongshu:
-            lines.append(f"{Colors.DIM}│{Colors.RESET}  {Colors.GREEN}✅ Xiaohongshu{Colors.RESET} — API connected + logged in         {Colors.DIM}│{Colors.RESET}")
+            lines.append(f"{Colors.DIM}{bar}{Colors.RESET}  {Colors.GREEN}{ok_mark} Xiaohongshu{Colors.RESET} {dash} API connected + logged in         {Colors.DIM}{bar}{Colors.RESET}")
 
         # Web
         if has_web:
             backend = native_web_backend or "native"
-            lines.append(f"{Colors.DIM}│{Colors.RESET}  {Colors.GREEN}✅ Web{Colors.RESET}       — {backend} API                       {Colors.DIM}│{Colors.RESET}")
+            lines.append(f"{Colors.DIM}{bar}{Colors.RESET}  {Colors.GREEN}{ok_mark} Web{Colors.RESET}       {dash} {backend} API                       {Colors.DIM}{bar}{Colors.RESET}")
         else:
-            lines.append(f"{Colors.DIM}│{Colors.RESET}  {Colors.YELLOW}⚡ Web{Colors.RESET}       — Add BRAVE_API_KEY or SERPER_API_KEY {Colors.DIM}│{Colors.RESET}")
+            lines.append(f"{Colors.DIM}{bar}{Colors.RESET}  {Colors.YELLOW}{warn_mark} Web{Colors.RESET}       {dash} Add BRAVE_API_KEY or SERPER_API_KEY {Colors.DIM}{bar}{Colors.RESET}")
 
-        lines.append(f"{Colors.DIM}│{Colors.RESET}                                                     {Colors.DIM}│{Colors.RESET}")
-        lines.append(f"{Colors.DIM}│{Colors.RESET}  Config: {Colors.BOLD}~/.config/last30days/.env{Colors.RESET}                  {Colors.DIM}│{Colors.RESET}")
-        lines.append(f"{Colors.DIM}└─────────────────────────────────────────────────────┘{Colors.RESET}")
+        lines.append(f"{Colors.DIM}{bar}{Colors.RESET}                                                     {Colors.DIM}{bar}{Colors.RESET}")
+        lines.append(f"{Colors.DIM}{bar}{Colors.RESET}  Config: {Colors.BOLD}~/.config/last30days/.env{Colors.RESET}                  {Colors.DIM}{bar}{Colors.RESET}")
+        lines.append(f"{Colors.DIM}{bot}{Colors.RESET}")
     else:
         # Plain text for non-TTY (Claude Code / Codex)
-        lines.append("┌─────────────────────────────────────────────────────┐")
+        lines.append(top)
         _header_plain = f"/last30days v{_skill_version()} - Source Status"
-        lines.append(f"│ {_header_plain}{' ' * (52 - len(_header_plain))}│")
-        lines.append("│                                                     │")
+        lines.append(f"{bar} {_header_plain}{' ' * (52 - len(_header_plain))}{bar}")
+        lines.append(f"{bar}                                                     {bar}")
 
         if has_reddit and has_scrapecreators:
-            lines.append("│  ✅ Reddit    — full threads with comments          │")
+            lines.append(f"{bar}  {ok_mark} Reddit    {dash} full threads with comments          {bar}")
         elif has_reddit:
-            lines.append("│  ✅ Reddit    — public threads (titles + scores)   │")
+            lines.append(f"{bar}  {ok_mark} Reddit    {dash} public threads (titles + scores)   {bar}")
         else:
-            lines.append("│  ❌ Reddit    — unavailable                         │")
+            lines.append(f"{bar}  {err_mark} Reddit    {dash} unavailable                         {bar}")
 
         if has_x:
-            lines.append("│  ✅ X/Twitter — available                            │")
+            lines.append(f"{bar}  {ok_mark} X/Twitter {dash} available                            {bar}")
         else:
-            lines.append("│  ❌ X/Twitter — No X auth or fallback key          │")
+            lines.append(f"{bar}  {err_mark} X/Twitter {dash} No X auth or fallback key          {bar}")
             if diag.get("bird_installed"):
-                lines.append("│     └─ Add AUTH_TOKEN/CT0 or XAI_API_KEY           │")
+                lines.append(f"{bar}     {branch} Add AUTH_TOKEN/CT0 or XAI_API_KEY           {bar}")
             else:
-                lines.append("│     └─ Needs Node.js 22+ (Bird is bundled)           │")
+                lines.append(f"{bar}     {branch} Needs Node.js 22+ (Bird is bundled)           {bar}")
 
         if has_youtube:
-            lines.append("│  ✅ YouTube   — yt-dlp found                        │")
+            lines.append(f"{bar}  {ok_mark} YouTube   {dash} yt-dlp found                        {bar}")
         else:
-            lines.append("│  ❌ YouTube   — yt-dlp not installed                │")
-            lines.append("│     └─ Fix: brew install yt-dlp (free)                │")
+            lines.append(f"{bar}  {err_mark} YouTube   {dash} yt-dlp not installed                {bar}")
+            lines.append(f"{bar}     {branch} Fix: brew install yt-dlp (free)                {bar}")
 
         if has_xiaohongshu:
-            lines.append("│  ✅ Xiaohongshu — API connected + logged in         │")
+            lines.append(f"{bar}  {ok_mark} Xiaohongshu {dash} API connected + logged in         {bar}")
 
         if has_web:
             backend = native_web_backend or "native"
-            lines.append(f"│  ✅ Web       — {backend} API available{' ' * max(0, 13 - len(backend))}│")
+            lines.append(f"{bar}  {ok_mark} Web       {dash} {backend} API available{' ' * max(0, 13 - len(backend))}{bar}")
         else:
-            lines.append("│  ⚡ Web       — Add BRAVE_API_KEY or SERPER_API_KEY │")
+            lines.append(f"{bar}  {warn_mark} Web       {dash} Add BRAVE_API_KEY or SERPER_API_KEY {bar}")
 
-        lines.append("│                                                     │")
-        lines.append("│  Config: ~/.config/last30days/.env                  │")
-        lines.append("└─────────────────────────────────────────────────────┘")
+        lines.append(f"{bar}                                                     {bar}")
+        lines.append(f"{bar}  Config: ~/.config/last30days/.env                  {bar}")
+        lines.append(bot)
 
-    sys.stderr.write("\n".join(lines) + "\n\n")
-    sys.stderr.flush()
+    _write_stderr("\n".join(lines) + "\n\n")
 
 
 def print_phase(phase: str, message: str):
@@ -628,5 +672,5 @@ def print_phase(phase: str, message: str):
         "error": Colors.RED,
     }
     color = colors.get(phase, Colors.RESET)
-    sys.stderr.write(f"{color}▸{Colors.RESET} {message}\n")
-    sys.stderr.flush()
+    arrow = "▸" if _stderr_supports_utf8() else "->"
+    _write_stderr(f"{color}{arrow}{Colors.RESET} {message}\n")

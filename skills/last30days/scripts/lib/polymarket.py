@@ -190,14 +190,23 @@ def _domain_word_fallback_allows(core_words: list[str], informative: list[str],
     return False
 
 
-def _acronym_credit(core_words: list[str], title_words: set[str]) -> int:
+_UPPERCASE_ACRONYM_RE = re.compile(r"(?<!\w)[A-Z]{3,}(?!\w)")
+
+
+def _uppercase_acronyms(text: Any) -> frozenset[str]:
+    """Extract original-case all-caps 3+ letter acronym tokens before casefolding."""
+    return frozenset(_UPPERCASE_ACRONYM_RE.findall(str(text or "")))
+
+
+def _acronym_credit(core_words: list[str], title_acronyms: set[str] | frozenset[str]) -> int:
     """Credit matches when the title abbreviates a phrase the topic spells out.
 
     Prediction-market titles use shorthand ("AGI by 2030?") while topics arrive
     spelled out ("artificial general intelligence"), so word overlap scores zero
     on a title that is squarely on topic. For each run of 3+ consecutive
-    informative words, build its initialism and, if the title carries it as a
-    whole word, credit one match per abbreviated word. Requiring at least three
+    informative words, build its initialism and, if the original-case title
+    carries it as an all-caps whole word (excluding noise words even in all-caps
+    titles), credit one match per abbreviated word. Requiring at least three
     letters avoids treating ambiguous tokens such as "ML" as expanded phrases.
     """
     informative_set = set(_informative_words(core_words))
@@ -209,7 +218,11 @@ def _acronym_credit(core_words: list[str], title_words: set[str]) -> int:
             continue
         if len(run) >= 3:
             acronym = "".join(w[0] for w in run)
-            if len(acronym) >= 3 and acronym in title_words:
+            if (
+                len(acronym) >= 3
+                and acronym not in _NOISE_WORDS
+                and acronym.upper() in title_acronyms
+            ):
                 credit = max(credit, len(run))
         run = []
     return credit
@@ -298,18 +311,24 @@ class _Term:
         self.words = [word for word in self.phrase.split() if len(word) > 1]
         self.informative = _informative_words(self.words)
 
-    def found_in(self, text: str) -> bool:
+    def found_in(
+        self,
+        text: str,
+        *,
+        acronyms: Optional[frozenset[str] | set[str]] = None,
+    ) -> bool:
         """Whether ``text`` (already through ``_match_text``) names this term:
-        the whole phrase at word boundaries, an initialism of a spelled-out
-        phrase ("AGI"), every informative word of a descriptive topic in any
-        order ("Nvidia earnings"), or, for a soft domain sweep ("AI frontier
-        developments"), its domain word."""
+        the whole phrase at word boundaries, an all-caps initialism of a
+        spelled-out phrase ("AGI"), every informative word of a descriptive
+        topic in any order ("Nvidia earnings"), or, for a soft domain sweep
+        ("AI frontier developments"), its domain word."""
         if self.pattern is None:
             return False
         if self.pattern.search(text):
             return True
         words = set(text.split())
-        if _acronym_credit(self.words, words):
+        title_acronyms = _uppercase_acronyms(text) if acronyms is None else acronyms
+        if title_acronyms and _acronym_credit(self.words, title_acronyms):
             return True
         if len(self.informative) >= 2 and all(_has_word(word, words) for word in self.informative):
             return True
@@ -321,9 +340,25 @@ def _topic_sides(topic: str) -> List[str]:
     return re.split(r"\s+(?:vs\.?|versus)\s+", _extract_core_subject(topic), flags=re.IGNORECASE)
 
 
-def _names_any(terms: List[_Term], texts: List[str]) -> bool:
+def _prepare_match_text(raw: Any) -> Tuple[str, frozenset[str]]:
+    return (_match_text(raw), _uppercase_acronyms(raw))
+
+
+def _names_any(
+    terms: List[_Term],
+    texts: List[str | Tuple[str, frozenset[str]]],
+) -> bool:
     """Whether any of ``terms`` is found in any non-empty text of ``texts``."""
-    return any(term.found_in(text) for term in terms for text in texts if text)
+    for entry in texts:
+        if isinstance(entry, tuple):
+            text, acronyms = entry
+        else:
+            text, acronyms = entry, None
+        if not text:
+            continue
+        if any(term.found_in(text, acronyms=acronyms) for term in terms):
+            return True
+    return False
 
 
 def _entity_terms(topic: str, aliases: Tuple[str, ...] = ()) -> List[str]:
@@ -389,17 +424,24 @@ class EntityMatcher:
         self.related = [(entry, _Term(entry.name)) for entry in self.hints.related]
 
     def match(
-        self, market: Dict[str, Any], event_title: str = "", *, title_text: Optional[str] = None,
+        self,
+        market: Dict[str, Any],
+        event_title: str = "",
+        *,
+        title_text: Optional[str] = None,
+        title_acronyms: Optional[frozenset[str]] = None,
     ) -> Optional[EntityMatch]:
         """``title_text``, when given, is ``event_title`` already through
         ``_match_text``, so a caller matching many markets of one event
         normalizes the title once."""
-        own = [_match_text(text) for text in _market_texts(market)]
+        own = [_prepare_match_text(text) for text in _market_texts(market)]
         if _names_any(self.terms, own):
             return EntityMatch("market")
-        if title_text is None:
-            title_text = _match_text(event_title)
-        if _names_any(self.terms, [title_text]):
+        title_pair = (
+            _match_text(event_title) if title_text is None else title_text,
+            _uppercase_acronyms(event_title) if title_acronyms is None else title_acronyms,
+        )
+        if _names_any(self.terms, [title_pair]):
             return EntityMatch("title")
         for entry, term in self.related:
             if _names_any([term], own):
@@ -407,8 +449,13 @@ class EntityMatcher:
         return None
 
     def outcome_kind(
-        self, market: Dict[str, Any], match: EntityMatch, event_title: str = "",
-        *, title_text: Optional[str] = None,
+        self,
+        market: Dict[str, Any],
+        match: EntityMatch,
+        event_title: str = "",
+        *,
+        title_text: Optional[str] = None,
+        title_acronyms: Optional[frozenset[str]] = None,
     ) -> Optional[str]:
         """How the subject (or the related name) is an outcome of the event:
         "label" when the market's ``groupItemTitle`` names it and, for the
@@ -417,17 +464,19 @@ class EntityMatcher:
         subject without the subject being one of the event's outcomes (a
         bracket of "OpenAI IPO Closing Market Cap"). ``title_text`` is as for
         ``match``."""
-        label = _match_text(market.get("groupItemTitle"))
+        label = _prepare_match_text(market.get("groupItemTitle"))
         if match.related:
             terms = [term for entry, term in self.related if entry.name == match.related]
-            return "label" if label and _names_any(terms, [label]) else None
-        if title_text is None:
-            title_text = _match_text(event_title)
-        if _names_any(self.terms, [title_text]):
+            return "label" if label[0] and _names_any(terms, [label]) else None
+        title_pair = (
+            _match_text(event_title) if title_text is None else title_text,
+            _uppercase_acronyms(event_title) if title_acronyms is None else title_acronyms,
+        )
+        if _names_any(self.terms, [title_pair]):
             return None
-        if label and _names_any(self.terms, [label]):
+        if label[0] and _names_any(self.terms, [label]):
             return "label"
-        if _names_any(self.terms, [_match_text(market.get("question"))]):
+        if _names_any(self.terms, [_prepare_match_text(market.get("question"))]):
             return None
         return "outcome" if self.matched_outcome(market, match) is not None else None
 
@@ -442,7 +491,7 @@ class EntityMatcher:
             name = str(outcome)
             if name.strip().casefold() in ("yes", "no"):
                 continue
-            if _names_any(terms, [_match_text(name)]):
+            if _names_any(terms, [_prepare_match_text(name)]):
                 return name
         return None
 
@@ -617,7 +666,7 @@ def search_polymarket(
     for event in events.values():
         live = _live_markets(event)
         if _is_race(event, live):
-            race_labels += [_match_text(market.get("groupItemTitle")) for market in live]
+            race_labels += [_prepare_match_text(market.get("groupItemTitle")) for market in live]
     related_terms = [
         entry.name for entry in hints.related[:HINT_CAP]
         if not _names_any([_Term(entry.name)], race_labels)
@@ -698,6 +747,19 @@ _BOOK_FIELDS = ("bestBid", "bestAsk", "spread")
 _MAX_EXCLUSIVE_YES_TOTAL = 1.10
 
 
+def _optional_float(val: Any) -> Optional[float]:
+    """Parse a finite non-bool float, returning None when absent or malformed."""
+    if val is None or isinstance(val, bool):
+        return None
+    if isinstance(val, str) and not val.strip():
+        return None
+    try:
+        parsed = float(val)
+    except (ValueError, TypeError, OverflowError):
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
 def _quoted_price(market: Dict[str, Any], midpoint: float) -> Optional[float]:
     """The price Polymarket would display for a market's first (Yes) outcome.
 
@@ -709,18 +771,16 @@ def _quoted_price(market: Dict[str, Any], midpoint: float) -> Optional[float]:
     """
     if market.get("closed") or all(market.get(field) is None for field in _BOOK_FIELDS):
         return midpoint
-    bid = _safe_float(market.get("bestBid"))
-    ask = _safe_float(market.get("bestAsk"))
-    spread = (
-        _safe_float(market.get("spread"))
-        if market.get("spread") is not None
-        else ask - bid
-    )
-    # Float noise: an ask of 0.13 over a bid of 0.03 is a 0.10 spread.
-    if bid > 0 and ask > 0 and round(spread, 6) <= _MAX_MIDPOINT_SPREAD:
-        return midpoint
-    last = _safe_float(market.get("lastTradePrice"))
-    if 0 < last < 1:
+    bid = _optional_float(market.get("bestBid"))
+    ask = _optional_float(market.get("bestAsk"))
+    raw_spread = _optional_float(market.get("spread"))
+    if bid is not None and ask is not None and bid > 0 and ask >= bid:
+        spread = raw_spread if (raw_spread is not None and raw_spread >= 0) else ask - bid
+        # Float noise: an ask of 0.13 over a bid of 0.03 is a 0.10 spread.
+        if round(spread, 6) <= _MAX_MIDPOINT_SPREAD:
+            return midpoint
+    last = _optional_float(market.get("lastTradePrice"))
+    if last is not None and 0 < last < 1:
         return last
     return None
 
@@ -733,45 +793,38 @@ def _parse_outcome_prices(market: Dict[str, Any], *, book_aware: bool = True) ->
     two-outcome market quoted from its last trade prices its second outcome
     as the complement.
     """
-    outcomes_raw = market.get("outcomes") or []
-    prices_raw = market.get("outcomePrices")
+    outcomes = _json_list(market.get("outcomes"))
+    prices = _json_list(market.get("outcomePrices"))
 
-    if not prices_raw:
-        return []
-
-    # Both outcomes and outcomePrices can be JSON-encoded strings
-    try:
-        if isinstance(outcomes_raw, str):
-            outcomes = json.loads(outcomes_raw)
-        else:
-            outcomes = outcomes_raw
-    except (json.JSONDecodeError, TypeError):
-        outcomes = []
-
-    try:
-        if isinstance(prices_raw, str):
-            prices = json.loads(prices_raw)
-        else:
-            prices = prices_raw
-    except (json.JSONDecodeError, TypeError):
+    if not prices:
         return []
 
     result = []
+    has_first = False
     for i, price in enumerate(prices):
+        if isinstance(price, bool):
+            continue
         try:
             p = float(price)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, OverflowError):
             continue
-        name = outcomes[i] if i < len(outcomes) else f"Outcome {i+1}"
+        if not math.isfinite(p) or p < 0.0 or p > 1.0:
+            continue
+        if i == 0:
+            has_first = True
+        raw_name = outcomes[i] if i < len(outcomes) else None
+        name = str(raw_name) if raw_name is not None else f"Outcome {i+1}"
         result.append((name, p))
 
     if book_aware and result:
+        if not has_first:
+            return []
         quoted = _quoted_price(market, result[0][1])
         if quoted is None:
             return []
         if quoted != result[0][1]:
             result[0] = (result[0][0], quoted)
-            if len(result) == 2:
+            if len(prices) == 2 and len(result) == 2:
                 result[1] = (result[1][0], round(1 - quoted, 4))
 
     return result
@@ -827,11 +880,68 @@ def _whole_question_name(q: str) -> str:
 _ARTICLES = frozenset({"a", "an", "the"})
 
 
+def _sibling_outcome_labels(sibling_markets: List[Dict[str, Any]]) -> Dict[int, str]:
+    """Compute unambiguous per-market labels across all child markets in an event.
+
+    Running label disambiguation across the entire event before price filtering
+    guarantees that a market keeps the same label during display parsing
+    (``include_all_outcomes=False``) and verification (``include_all_outcomes=True``),
+    even when a sub-floor sibling shares its ``groupItemTitle`` or another
+    market's ``groupItemTitle`` collides with its question subject.
+    """
+    questions = [str(market["question"]) for market in sibling_markets]
+    names = [_shorten_question(q) for q in questions]
+    subjects = [_question_subject(q.strip().rstrip("?")) is not None for q in questions]
+    repeats: Dict[str, int] = {}
+    for name in names:
+        repeats[name.casefold()] = repeats.get(name.casefold(), 0) + 1
+    relabel = [
+        is_subject and (repeats.get(name.casefold(), 0) > 1 or name.casefold() in _ARTICLES)
+        for name, is_subject in zip(names, subjects)
+    ]
+    group_titles = [
+        " ".join(str(market.get("groupItemTitle") or "").split()) for market in sibling_markets
+    ]
+    title_counts: Dict[str, int] = {}
+    for title in group_titles:
+        if title:
+            title_counts[title.casefold()] = title_counts.get(title.casefold(), 0) + 1
+    labels = [
+        title
+        if change or (is_subject and title and title_counts.get(title.casefold(), 0) == 1)
+        else name
+        for name, change, is_subject, title in zip(names, relabel, subjects, group_titles)
+    ]
+    taken: Dict[str, int] = {}
+    for label in labels:
+        if label:
+            taken[label.casefold()] = taken.get(label.casefold(), 0) + 1
+    resolved: Dict[int, str] = {}
+    for market, label, change, question in zip(sibling_markets, labels, relabel, questions):
+        if (
+            not label
+            or taken.get(label.casefold(), 0) > 1
+            or (change and title_counts.get(label.casefold(), 0) > 1)
+        ):
+            resolved[id(market)] = _whole_question_name(question)
+        else:
+            resolved[id(market)] = label
+    final_counts: Dict[str, int] = {}
+    for label in resolved.values():
+        if label:
+            final_counts[label.casefold()] = final_counts.get(label.casefold(), 0) + 1
+    for market, question in zip(sibling_markets, questions):
+        label = resolved[id(market)]
+        if final_counts.get(label.casefold(), 0) > 1:
+            resolved[id(market)] = _whole_question_name(question)
+    return resolved
+
+
 def _own_outcome_labels(
     outcome_prices: List[tuple],
     outcome_questions: List[Optional[str]],
     outcome_markets: List[Dict[str, Any]],
-    sibling_names: Optional[List[str]] = None,
+    sibling_markets: Optional[List[Dict[str, Any]]] = None,
 ) -> List[tuple]:
     """Give each sub-market of an event a label of its own.
 
@@ -840,54 +950,41 @@ def _own_outcome_labels(
     or prices of one subject: every "Will Waymo operate in N cities ..."
     market came out as "Waymo". A subject name is replaced by the label
     Polymarket gives that sub-market (``groupItemTitle``: "San Francisco
-    49ers", "12-15", "Denver, CO") when that label is its own. A subject that
-    repeats within the event, or is a bare article, is replaced by that label
-    even so, or by the whole question when it has none or the label repeats.
+    49ers", "12-15", "Denver, CO") when that label is its own across the
+    event's child markets. Any collision across all child markets—whether
+    from repeated subjects, repeated ``groupItemTitle``s, or a subject
+    colliding with another market's ``groupItemTitle``—falls back to
+    ``_whole_question_name``.
 
-    ``sibling_names`` are the names of every sub-market of the event, priced
-    or not, so a subject still counts as repeated when the book check leaves
-    only one of its brackets.
+    ``sibling_markets`` covers every child market of the event, priced or
+    above-floor or not, so labels never shift when filtering or verification
+    changes which markets are kept.
 
     Only subject names are replaced, and the order is kept, so every name an
     older build saved still reads its own market through
     ``_legacy_shorten_question``.
     """
-    names = [str(name) for name, _price in outcome_prices]
-    subjects = [
-        question is not None and _question_subject(question.strip().rstrip("?")) is not None
-        for question in outcome_questions
-    ]
-    repeats: Dict[str, int] = {}
-    for name in names if sibling_names is None else sibling_names:
-        repeats[name.casefold()] = repeats.get(name.casefold(), 0) + 1
-    relabel = [
-        is_subject and (repeats.get(name.casefold(), 0) > 1 or name.casefold() in _ARTICLES)
-        for name, is_subject in zip(names, subjects)
-    ]
-    group_titles = [
-        " ".join(str(market.get("groupItemTitle") or "").split()) for market in outcome_markets
-    ]
-    title_counts: Dict[str, int] = {}
-    for title in group_titles:
-        title_counts[title.casefold()] = title_counts.get(title.casefold(), 0) + 1
-    labels = [
-        title
-        if change or (is_subject and title and title_counts[title.casefold()] == 1)
-        else name
-        for name, change, is_subject, title in zip(names, relabel, subjects, group_titles)
-    ]
-    taken: Dict[str, int] = {}
-    for label in labels:
-        taken[label.casefold()] = taken.get(label.casefold(), 0) + 1
+    if not any(question is not None for question in outcome_questions):
+        return list(outcome_prices)
+    pool = (
+        sibling_markets
+        if sibling_markets is not None
+        else [
+            market
+            for market, question in zip(outcome_markets, outcome_questions)
+            if question is not None and market.get("question")
+        ]
+    )
+    resolved = _sibling_outcome_labels(pool)
     return [
         (
-            _whole_question_name(question)
-            if change and (not label or taken[label.casefold()] > 1)
-            else label,
+            resolved[id(market)]
+            if question is not None and id(market) in resolved
+            else name,
             price,
         )
-        for label, change, question, (_name, price) in zip(
-            labels, relabel, outcome_questions, outcome_prices,
+        for (name, price), question, market in zip(
+            outcome_prices, outcome_questions, outcome_markets,
         )
     ]
 
@@ -970,6 +1067,53 @@ def _ladder_ends(
 ODDS_LINE_OUTCOMES = 3
 
 
+def _market_id(market: Dict[str, Any]) -> str:
+    for key in ("id", "conditionId", "slug"):
+        value = str(market.get(key) or "").strip()
+        if value:
+            return value
+    question = " ".join(str(market.get("question") or "").split())
+    group = " ".join(str(market.get("groupItemTitle") or "").split())
+    if question and group:
+        return f"{question}\x1f{group}"
+    return question or group
+
+
+def _parse_clob_token_ids(market: Dict[str, Any]) -> List[str]:
+    raw = market.get("clobTokenIds")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return []
+    if not isinstance(raw, list):
+        return []
+    return [str(tok).strip() for tok in raw if tok is not None and str(tok).strip()]
+
+
+def _outcome_id(market: Dict[str, Any], outcome_name: Optional[str]) -> str:
+    """Stable identifier for one outcome within ``market``.
+
+    Uses the matching ``clobTokenIds`` entry when aligned with the market's
+    ``outcomes`` list; otherwise falls back to the normalized outcome name.
+    """
+    raw_outcomes = market.get("outcomes")
+    if isinstance(raw_outcomes, str):
+        try:
+            raw_outcomes = json.loads(raw_outcomes)
+        except (json.JSONDecodeError, TypeError):
+            raw_outcomes = []
+    outcomes = [str(name) for name in raw_outcomes] if isinstance(raw_outcomes, list) else []
+    target = outcome_name if outcome_name is not None else (outcomes[0] if outcomes else "")
+    tokens = _parse_clob_token_ids(market)
+    if target and outcomes and len(tokens) == len(outcomes):
+        target_cf = target.casefold()
+        for idx, name in enumerate(outcomes):
+            if name.casefold() == target_cf:
+                return tokens[idx]
+    return " ".join(str(target or "").split())
+
+
 def _odds_summary(
     title: str,
     top_market: Dict[str, Any],
@@ -990,12 +1134,24 @@ def _odds_summary(
     if not outcome_prices:
         return None
 
+    def _part_ids(market: Dict[str, Any], outcome_name: Optional[str]) -> Dict[str, Any]:
+        extra_ids: Dict[str, Any] = {}
+        mid = _market_id(market)
+        if mid:
+            extra_ids["market_id"] = mid
+        oid = _outcome_id(market, outcome_name)
+        if oid:
+            extra_ids["outcome_id"] = oid
+        return extra_ids
+
     def part(index: int, **extra: Any) -> Dict[str, Any]:
         market = outcome_markets[index]
         priced_alone = outcome_questions[index] is not None
+        outcome_name = "Yes" if priced_alone else str(outcome_prices[index][0])
         return {
             "price": outcome_prices[index][1],
             "move": _price_movement_points(market) if priced_alone else None,
+            **_part_ids(market, outcome_name),
             **extra,
         }
 
@@ -1024,16 +1180,31 @@ def _odds_summary(
     question = str(top_market.get("question") or title)
     by_name = {str(name).casefold(): price for name, price in outcome_prices}
     if set(by_name) == {"yes", "no"}:
+        yes_label = next(
+            (str(name) for name, _price in outcome_prices if str(name).casefold() == "yes"),
+            "Yes",
+        )
         return {
             "kind": "single",
             "subject": question,
-            "parts": [{"price": by_name["yes"], "move": _price_movement_points(top_market)}],
+            "parts": [
+                {
+                    "price": by_name["yes"],
+                    "move": _price_movement_points(top_market),
+                    **_part_ids(top_market, yes_label),
+                }
+            ],
         }
     return {
         "kind": "outcomes",
         "subject": question,
         "parts": [
-            {"label": str(name), "price": price, "move": None}
+            {
+                "label": str(name),
+                "price": price,
+                "move": None,
+                **_part_ids(top_market, str(name)),
+            }
             for name, price in outcome_prices[:ODDS_LINE_OUTCOMES]
         ],
     }
@@ -1174,10 +1345,13 @@ def _legacy_shorten_question(question: str) -> str:
 
 def _safe_float(val, default=0.0) -> float:
     """Safely convert a value to float."""
-    try:
-        return float(val or default)
-    except (ValueError, TypeError):
+    if isinstance(val, bool):
         return default
+    try:
+        parsed = float(val or default)
+    except (ValueError, TypeError, OverflowError):
+        return default
+    return parsed if math.isfinite(parsed) else default
 
 
 def _market_volume(market: Dict[str, Any]) -> float:
@@ -1226,6 +1400,7 @@ class _EntityMarket:
     race_outcome: bool = False
     in_band: bool = False
     contender: bool = False
+    priced_outcome: Optional[str] = None
 
     @property
     def label(self) -> str:
@@ -1275,11 +1450,13 @@ def _event_entities(
     price among the live outcomes.
     """
     title = str(event.get("title") or "")
-    title_text = _match_text(title)
+    title_text, title_acronyms = _prepare_match_text(title)
     yes_prices = [_yes_price(market) for market in active_markets]
     found = _EventEntities(race=race, live_count=len(active_markets), named_by_market=False)
     for market in active_markets:
-        match = matcher.match(market, title, title_text=title_text)
+        match = matcher.match(
+            market, title, title_text=title_text, title_acronyms=title_acronyms,
+        )
         if match is None:
             continue
         if match.field == "market" and not match.related:
@@ -1290,13 +1467,21 @@ def _event_entities(
         pairs = _parse_outcome_prices(market)
         if outcome is not None:
             price = next((p for name, p in pairs if str(name) == outcome), None)
+            priced_outcome = outcome
         else:
             price = pairs[0][1] if pairs else None
+            priced_outcome = str(pairs[0][0]) if pairs else None
         entity = _EntityMarket(
             market=market, match=match, outcome=outcome, price=price,
             volume=_market_volume(market), days=_days_to_close(market, event, today),
+            priced_outcome=priced_outcome,
         )
-        kind = matcher.outcome_kind(market, match, title, title_text=title_text) if race else None
+        kind = (
+            matcher.outcome_kind(
+                market, match, title, title_text=title_text, title_acronyms=title_acronyms,
+            )
+            if race else None
+        )
         entity.race_outcome = kind is not None
         if kind == "label" and price is not None:
             entity.rank = 1 + sum(1 for other in yes_prices if other is not None and other > price)
@@ -1498,28 +1683,32 @@ def parse_polymarket_response(
         outcome_questions: List[Optional[str]] = [None] * len(outcome_prices)
         # The market each outcome is priced in.
         outcome_markets: List[Dict[str, Any]] = [shown_market] * len(outcome_prices)
-        # Whether the sub-markets are Yes/No is read from the served outcomes,
-        # so an unpriced top market still leads to its priced siblings.
-        top_labels = _parse_outcome_prices(shown_market, book_aware=False)
+        # Whether the sub-markets are Yes/No is read from the raw outcome
+        # labels, so a malformed or unpriced top market still leads to its
+        # priced siblings.
+        raw_top_outcomes = [
+            str(name).strip().lower()
+            for name in _json_list(shown_market.get("outcomes"))
+            if name is not None and str(name).strip()
+        ]
         top_outcomes_are_binary = (
-            len(top_labels) == 2
-            and {n.lower() for n, _ in top_labels} == {"yes", "no"}
+            len(raw_top_outcomes) == 2 and set(raw_top_outcomes) == {"yes", "no"}
         )
         impossible_set = False
-        sibling_names: Optional[List[str]] = None
+        sibling_markets: Optional[List[Dict[str, Any]]] = None
         if top_outcomes_are_binary and len(active_markets) > 1:
+            sibling_markets = [m for m in active_markets if m.get("question")]
             synth_outcomes = []
-            for m in active_markets:
-                q = m.get("question", "")
-                if not q:
-                    continue
+            for m in sibling_markets:
+                q = m["question"]
                 pairs = _parse_outcome_prices(m)
-                yes_price = next((p for name, p in pairs if name.lower() == "yes"), None)
-                if yes_price is not None and (yes_price > 0.005 or id(m) in chosen_ids):
+                yes_price = next((p for name, p in pairs if name.strip().lower() == "yes"), None)
+                if yes_price is not None and (
+                    include_all_outcomes
+                    or yes_price >= RACE_PRICE_FLOOR
+                    or id(m) in chosen_ids
+                ):
                     synth_outcomes.append((q, yes_price, m))
-            sibling_names = [
-                _shorten_question(m["question"]) for m in active_markets if m.get("question")
-            ]
             if synth_outcomes:
                 synth_outcomes.sort(key=lambda x: x[1], reverse=True)
                 outcome_prices = [(_shorten_question(q), p) for q, p, _m in synth_outcomes]
@@ -1615,7 +1804,10 @@ def parse_polymarket_response(
 
         # After the ordering above, which reads the subject names.
         outcome_prices = _own_outcome_labels(
-            outcome_prices, outcome_questions, outcome_markets, sibling_names,
+            outcome_prices,
+            outcome_questions,
+            outcome_markets,
+            sibling_markets,
         )
         if entity is not None and entity.price is None:
             headline = None
@@ -1652,6 +1844,11 @@ def parse_polymarket_response(
             if not include_all_outcomes:
                 top_outcomes = []
 
+        outcome_market_ids = (
+            [_market_id(m) for m in outcome_markets[: len(top_outcomes)]]
+            if top_outcomes and outcome_questions and outcome_questions[0] is not None
+            else []
+        )
         item = {
             "event_id": event_id,
             "title": title,
@@ -1659,6 +1856,7 @@ def parse_polymarket_response(
             "url": url,
             "outcome_prices": top_outcomes,
             "outcome_questions": outcome_questions[: len(top_outcomes)],
+            **({"outcome_market_ids": outcome_market_ids} if outcome_market_ids else {}),
             "outcomes_remaining": remaining,
             "headline": headline,
             "odds": odds,
@@ -1674,7 +1872,7 @@ def parse_polymarket_response(
         if entity is not None:
             item["selection_score"] = score
             item["selection_tier"] = tier
-            item["matched_market"] = {
+            matched_payload = {
                 "label": entity.label,
                 "question": str(entity.market.get("question") or ""),
                 "price": entity.price,
@@ -1688,6 +1886,13 @@ def parse_polymarket_response(
                 "related_name": entity.match.related,
                 "relation": entity.match.relation or None,
             }
+            matched_mid = _market_id(entity.market)
+            if matched_mid:
+                matched_payload["market_id"] = matched_mid
+            matched_oid = _outcome_id(entity.market, entity.priced_outcome or entity.outcome)
+            if matched_oid:
+                matched_payload["outcome_id"] = matched_oid
+            item["matched_market"] = matched_payload
         items.append(item)
 
     if filtered_count:
@@ -1701,6 +1906,230 @@ def parse_polymarket_response(
 
     cap = response.get("_cap", len(items))
     return items[:cap]
+
+
+def _normalize_snapshot_key(key: str) -> str:
+    if "\x1f" in key:
+        name, occurrence = key.rsplit("\x1f", 1)
+        return f"{name.strip().casefold()}\x1f{occurrence.strip()}"
+    return key.strip().casefold()
+
+
+def _has_base_in_map(normalized_values: Dict[str, Any], base: str) -> bool:
+    if base in normalized_values:
+        return True
+    prefix = f"{base}\x1f"
+    return any(key.startswith(prefix) for key in normalized_values)
+
+
+def _resolve_value_in_map(
+    values: Dict[str, Any],
+    datum_key: str,
+    *,
+    blocked_repeats: frozenset[str] = frozenset(),
+    allow_occurrence_zero: bool = True,
+) -> Any:
+    if not values:
+        return None
+    if datum_key == "end_date" or not allow_occurrence_zero:
+        if datum_key in values:
+            return values[datum_key]
+        target = datum_key.strip().casefold()
+        for raw_key, raw_value in values.items():
+            if str(raw_key).strip().casefold() == target:
+                return raw_value
+        return None
+
+    has_suffix = "\x1f" in datum_key
+    if has_suffix:
+        outcome_name, raw_occurrence = datum_key.rsplit("\x1f", 1)
+        raw_occ_stripped = raw_occurrence.strip()
+        if not (raw_occ_stripped.isascii() and raw_occ_stripped.isdigit()):
+            return None
+        try:
+            occurrence = int(raw_occ_stripped)
+        except ValueError:
+            return None
+        base = outcome_name.strip().casefold()
+        if base in blocked_repeats:
+            return None
+        target = f"{base}\x1f{occurrence}"
+    else:
+        base = datum_key.strip().casefold()
+        occurrence = 0
+        target = base
+
+    if datum_key in values:
+        return values[datum_key]
+
+    normalized_values: Dict[str, Any] = {}
+    for raw_key, raw_value in values.items():
+        normalized_values.setdefault(_normalize_snapshot_key(str(raw_key)), raw_value)
+
+    if target in normalized_values:
+        return normalized_values[target]
+    if not has_suffix and base not in blocked_repeats:
+        # Resolve an unsuffixed name against \x1f0 only when no sibling
+        # occurrence exists; when multiple occurrences share the label, an
+        # unsuffixed name cannot identify which market it came from.
+        prefix = f"{base}\x1f"
+        occ_keys = [key for key in normalized_values if key.startswith(prefix)]
+        if occ_keys == [f"{base}\x1f0"]:
+            return normalized_values[occ_keys[0]]
+    elif has_suffix and occurrence == 0 and base in normalized_values:
+        return normalized_values[base]
+    return None
+
+
+def resolve_snapshot_value(
+    values: Dict[str, Any],
+    datum_key: str,
+    *,
+    legacy_values: Optional[Dict[str, Any]] = None,
+    blocked_repeats: frozenset[str] = frozenset(),
+    legacy_blocked_repeats: Optional[frozenset[str]] = None,
+    allow_occurrence_zero: bool = True,
+) -> Any:
+    """Resolve ``datum_key`` against current ``values`` first, then ``legacy_values``.
+
+    Shared by both ``refetch_datum`` (direct fetch) and ``freshness._lookup_cached_datum``
+    (cached hit) so direct and cached verification always produce identical results
+    and legacy cut names never shadow or leak into a current outcome name.
+    """
+    value = _resolve_value_in_map(
+        values,
+        datum_key,
+        blocked_repeats=blocked_repeats,
+        allow_occurrence_zero=allow_occurrence_zero,
+    )
+    if value is not None:
+        return value
+    if legacy_values and datum_key != "end_date" and allow_occurrence_zero:
+        base = (
+            datum_key.rsplit("\x1f", 1)[0].strip().casefold()
+            if "\x1f" in datum_key
+            else datum_key.strip().casefold()
+        )
+        normalized_current = {
+            _normalize_snapshot_key(str(k)): v for k, v in values.items()
+        }
+        if _has_base_in_map(normalized_current, base):
+            return None
+        return _resolve_value_in_map(
+            legacy_values,
+            datum_key,
+            blocked_repeats=(
+                blocked_repeats
+                if legacy_blocked_repeats is None
+                else legacy_blocked_repeats
+            ),
+            allow_occurrence_zero=allow_occurrence_zero,
+        )
+    return None
+
+
+def _record_outcome_values(
+    values: Dict[str, Any],
+    pairs: List[tuple],
+    *,
+    overwrite: bool,
+) -> None:
+    totals: Dict[str, int] = {}
+    for name, _price in pairs:
+        normalized = str(name).strip().casefold()
+        totals[normalized] = totals.get(normalized, 0) + 1
+    existing_norm = {_normalize_snapshot_key(k) for k in values}
+    counts: Dict[str, int] = {}
+    for name, price in pairs:
+        clean_name = str(name).strip()
+        normalized = clean_name.casefold()
+        occurrence = counts.get(normalized, 0)
+        counts[normalized] = occurrence + 1
+        key = f"{clean_name}\x1f{occurrence}" if totals[normalized] > 1 else clean_name
+        norm_key = _normalize_snapshot_key(key)
+        if overwrite:
+            values[key] = price
+            existing_norm.add(norm_key)
+        elif norm_key not in existing_norm:
+            values[key] = price
+            existing_norm.add(norm_key)
+
+
+def _saved_outcome_market_id(item: Any, datum_key: str) -> Optional[str]:
+    """Return the saved sub-market ID aligned with ``datum_key`` on ``item``, if present."""
+    if datum_key == "end_date":
+        return None
+    metadata = getattr(item, "metadata", None)
+    if not isinstance(metadata, dict):
+        return None
+    outcome_pairs = metadata.get("outcome_prices")
+    outcome_market_ids = metadata.get("outcome_market_ids")
+    if (
+        not isinstance(outcome_pairs, (list, tuple))
+        or not isinstance(outcome_market_ids, (list, tuple))
+        or len(outcome_pairs) != len(outcome_market_ids)
+    ):
+        return None
+    valid: List[Tuple[str, str]] = []
+    for pair, raw_mid in zip(outcome_pairs, outcome_market_ids):
+        if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+            continue
+        name, value = pair
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        try:
+            numeric = float(value)
+        except OverflowError:
+            continue
+        if not math.isfinite(numeric):
+            continue
+        key = str(name).strip()
+        if not key:
+            continue
+        valid.append((key, str(raw_mid or "").strip()))
+    counts: Dict[str, int] = {}
+    for key, _mid in valid:
+        norm = key.casefold()
+        counts[norm] = counts.get(norm, 0) + 1
+    seen: Dict[str, int] = {}
+    key_to_mid: Dict[str, str] = {}
+    for key, mid in valid:
+        norm = key.casefold()
+        occ = seen.get(norm, 0)
+        seen[norm] = occ + 1
+        full_key = f"{norm}\x1f{occ}" if counts[norm] > 1 else norm
+        if mid:
+            key_to_mid[full_key] = mid
+    return key_to_mid.get(_normalize_snapshot_key(datum_key))
+
+
+def _is_settled_closed_market(
+    market: Dict[str, Any],
+    pairs: List[tuple],
+) -> bool:
+    """Return True only when a closed market carries a finalized 0/1 settlement.
+
+    A market that stopped trading before oracle settlement can still report its
+    last pre-close odds (e.g. 60%/40%) while ``closed`` is True. Accepting
+    those prices would falsely mark stale saved odds ``current``.
+    """
+    if not market.get("closed", False):
+        return False
+    uma_status = str(market.get("umaResolutionStatus") or "").strip().lower()
+    if uma_status and uma_status != "resolved":
+        return False
+    if len(pairs) < 2:
+        return False
+    raw_outcomes = [
+        name for name in _json_list(market.get("outcomes"))
+        if name is not None and str(name).strip()
+    ]
+    if raw_outcomes and len(pairs) != len(raw_outcomes):
+        return False
+    prices = [price for _name, price in pairs]
+    return all(price in (0.0, 1.0) for price in prices) and sum(
+        1 for price in prices if price == 1.0
+    ) == 1
 
 
 class DatumNotFound(KeyError):
@@ -1800,53 +2229,99 @@ def refetch_datum(item: Any, datum_key: str) -> dict[str, Any]:
         isinstance(m, dict) and m.get("active", True) and not m.get("closed", False)
         for m in markets
     )
+    live_event_markets = _live_markets(event, include_closed=not has_active)
+    # Build market_values directly from eligible child markets before checking
+    # whether parse_polymarket_response produced display rows: if one market
+    # resolves while the only open sibling has zero liquidity, or a two-market
+    # event drops to one active Yes/No market without outcome_market_ids,
+    # saved market_id claims must still verify using the same Yes extraction
+    # rule parse_polymarket_response applies when saving multi-market outcomes.
+    event_open = event.get("active", True) and not event.get("closed", False)
+    all_dict_markets = [m for m in markets if isinstance(m, dict)]
+    all_mid_counts: dict[str, int] = {}
+    for m in all_dict_markets:
+        clean_mid = _market_id(m)
+        if clean_mid:
+            all_mid_counts[clean_mid] = all_mid_counts.get(clean_mid, 0) + 1
+    market_values: dict[str, Any] = {}
+    for m in all_dict_markets:
+        is_live_open = (
+            event_open
+            and m.get("active", True)
+            and not m.get("closed", False)
+            and _safe_float(m.get("liquidity")) > 0
+        )
+        if not is_live_open and not m.get("closed", False):
+            continue
+        clean_mid = _market_id(m)
+        if not clean_mid or all_mid_counts.get(clean_mid) != 1:
+            continue
+        pairs = _parse_outcome_prices(m)
+        if not is_live_open and not _is_settled_closed_market(m, pairs):
+            continue
+        yes_price = next((p for name, p in pairs if name.strip().lower() == "yes"), None)
+        if yes_price is not None:
+            market_values[clean_mid] = yes_price
+
     parsed = parse_polymarket_response(
         {"events": [event]},
         include_all_outcomes=True,
         include_closed=not has_active,
     )
+    saved_market_id = (
+        None if datum_key == "end_date" else _saved_outcome_market_id(item, datum_key)
+    )
     if not parsed:
-        raise KeyError("Polymarket event is closed, unavailable, or malformed")
+        if not market_values:
+            raise KeyError("Polymarket event is closed, unavailable, or malformed")
+        snapshot = {
+            "values": {},
+            "legacy_values": {},
+            "market_values": market_values,
+            "blocked_repeats": [],
+            "legacy_blocked_repeats": [],
+            "url": str(getattr(item, "url", "")),
+            "timestamp": event.get("updatedAt"),
+        }
+        value = market_values.get(saved_market_id) if saved_market_id else None
+        if value is None:
+            missing = DatumNotFound(f"Polymarket datum {datum_key!r} was not found")
+            missing.snapshot = snapshot
+            raise missing
+        return {"value": value, **snapshot}
     refreshed = parsed[0]
     values: dict[str, Any] = {}
     outcome_pairs = refreshed.get("outcome_prices") or []
-    outcome_totals: dict[str, int] = {}
-    for name, _price in outcome_pairs:
-        normalized = str(name).casefold()
-        outcome_totals[normalized] = outcome_totals.get(normalized, 0) + 1
-    outcome_counts: dict[str, int] = {}
-    for name, price in outcome_pairs:
-        normalized = str(name).casefold()
-        occurrence = outcome_counts.get(normalized, 0)
-        outcome_counts[normalized] = occurrence + 1
-        key = f"{name}\x1f{occurrence}" if outcome_totals[normalized] > 1 else str(name)
-        values[key] = price
+    _record_outcome_values(values, outcome_pairs, overwrite=True)
     # Reports saved by older builds hold each market under its old cut name.
-    # The same snapshot answers later claims on this event, so it carries
-    # those names too, numbered the way the old names repeated.
+    # Keep them in a separate map so legacy cut names are tried only after
+    # current names (including occurrence-0 collapse on current names).
     questions = refreshed.get("outcome_questions") or []
     legacy_pairs = [
         (
-            _legacy_shorten_question(question).strip() if question else str(name),
+            _legacy_shorten_question(question).strip() if question else str(name).strip(),
             price,
         )
         for (name, price), question in zip(outcome_pairs, questions)
     ]
-    legacy_totals: dict[str, int] = {}
-    for name, _price in legacy_pairs:
-        legacy_totals[name.casefold()] = legacy_totals.get(name.casefold(), 0) + 1
-    legacy_counts: dict[str, int] = {}
-    for name, price in legacy_pairs:
-        normalized = name.casefold()
-        occurrence = legacy_counts.get(normalized, 0)
-        legacy_counts[normalized] = occurrence + 1
-        key = f"{name}\x1f{occurrence}" if legacy_totals[normalized] > 1 else name
-        values.setdefault(key, price)
+    legacy_values: dict[str, Any] = {}
+    _record_outcome_values(legacy_values, legacy_pairs, overwrite=True)
     # A repeated name is told apart by its rank among the priced markets. When
     # the book check drops one market carrying that name, the ranks shift and a
     # saved occurrence could read a sibling's price, so repeated names of a
-    # dropped market are not answered at all.
-    dropped_names: set[str] = set()
+    # dropped market are not answered at all. Track current and legacy dropped
+    # labels separately so a dropped market's legacy cut cannot block an
+    # unrelated current outcome name.
+    sibling_event_markets = [
+        m for m in live_event_markets if isinstance(m, dict) and m.get("question")
+    ]
+    sibling_labels = (
+        _sibling_outcome_labels(sibling_event_markets)
+        if len(sibling_event_markets) > 1
+        else {}
+    )
+    dropped_current: set[str] = set()
+    dropped_legacy: set[str] = set()
     for market in markets:
         if not isinstance(market, dict) or not market.get("question"):
             continue
@@ -1855,37 +2330,109 @@ def refetch_datum(item: Any, datum_key: str) -> dict[str, Any]:
         if _parse_outcome_prices(market) or not _parse_outcome_prices(market, book_aware=False):
             continue
         question = str(market["question"])
-        dropped_names.add(_shorten_question(question).strip().casefold())
-        dropped_names.add(_legacy_shorten_question(question).strip().casefold())
-    for key in [k for k in values if "\x1f" in k]:
-        if key.rsplit("\x1f", 1)[0].casefold() in dropped_names:
+        is_subject = _question_subject(question.strip().rstrip("?")) is not None
+        full_label = sibling_labels.get(id(market))
+        if full_label:
+            dropped_current.add(full_label.strip().casefold())
+        else:
+            dropped_current.add(_shorten_question(question).strip().casefold())
+        if is_subject:
+            group_title = " ".join(str(market.get("groupItemTitle") or "").split())
+            if group_title:
+                dropped_current.add(group_title.casefold())
+        dropped_legacy.add(_legacy_shorten_question(question).strip().casefold())
+    # If another child market could have claimed a label via its current label,
+    # shortened subject, legacy cut, or groupItemTitle (only when it has a
+    # question subject), an older report without outcome_market_ids could have
+    # saved that other market under that label. Purge such cross-market
+    # ambiguous labels from both values and legacy_values so label-only
+    # verification returns unsupported instead of switching markets.
+    active_question_markets = [
+        m
+        for m in markets
+        if isinstance(m, dict)
+        and m.get("question")
+        and (not has_active or (m.get("active", True) and not m.get("closed", False)))
+    ]
+
+    ambiguous_current: set[str] = set()
+    ambiguous_legacy: set[str] = set()
+    if len(active_question_markets) > 1:
+        current_owners: dict[str, set[int]] = {}
+        legacy_owners: dict[str, set[int]] = {}
+        possible_owners: dict[str, set[int]] = {}
+        for idx, market in enumerate(active_question_markets):
+            question = str(market["question"])
+            current_name = (sibling_labels.get(id(market)) or "").strip().casefold()
+            if current_name:
+                current_owners.setdefault(current_name, set()).add(idx)
+            legacy_name = _legacy_shorten_question(question).strip().casefold()
+            if legacy_name:
+                legacy_owners.setdefault(legacy_name, set()).add(idx)
+            possible_names = {
+                current_name,
+                legacy_name,
+                _shorten_question(question).strip().casefold(),
+            }
+            if _question_subject(question.strip().rstrip("?")) is not None:
+                possible_names.add(
+                    " ".join(str(market.get("groupItemTitle") or "").split()).casefold()
+                )
+            possible_names.discard("")
+            for name in possible_names:
+                possible_owners.setdefault(name, set()).add(idx)
+        ambiguous_current = {
+            name
+            for name, owners in current_owners.items()
+            if possible_owners.get(name, set()) - owners
+        }
+        ambiguous_legacy = {
+            name
+            for name, owners in legacy_owners.items()
+            if possible_owners.get(name, set()) - owners
+        }
+    for key in list(values):
+        if key == "end_date":
+            continue
+        base = (
+            key.rsplit("\x1f", 1)[0].strip().casefold()
+            if "\x1f" in key
+            else key.strip().casefold()
+        )
+        if base in ambiguous_current or ("\x1f" in key and base in dropped_current):
             del values[key]
+    dropped_current.update(ambiguous_current)
+    for key in list(legacy_values):
+        base = (
+            key.rsplit("\x1f", 1)[0].strip().casefold()
+            if "\x1f" in key
+            else key.strip().casefold()
+        )
+        if base in ambiguous_legacy or ("\x1f" in key and base in dropped_legacy):
+            del legacy_values[key]
+    dropped_legacy.update(ambiguous_legacy)
     if refreshed.get("end_date") is not None:
         values["end_date"] = refreshed["end_date"]
 
-    if datum_key == "end_date":
-        value = values.get("end_date")
+    blocked_current = frozenset(dropped_current)
+    blocked_legacy = frozenset(dropped_legacy)
+    if saved_market_id:
+        value = market_values.get(saved_market_id)
     else:
-        if "\x1f" in datum_key:
-            outcome_name, raw_occurrence = datum_key.rsplit("\x1f", 1)
-            occurrence = int(raw_occurrence)
-        else:
-            outcome_name, occurrence = datum_key, 0
-        wanted = outcome_name.casefold()
-        matches = [
-            price for name, price in outcome_pairs if str(name).casefold() == wanted
-        ]
-        if occurrence >= len(matches):
-            # An old cut name; the nth repeat of it is the nth market it was
-            # cut from.
-            matches = [
-                price for name, price in legacy_pairs if name.casefold() == wanted
-            ]
-        value = matches[occurrence] if occurrence < len(matches) else None
-        if "\x1f" in datum_key and wanted in dropped_names:
-            value = None
+        value = resolve_snapshot_value(
+            values,
+            datum_key,
+            legacy_values=legacy_values,
+            blocked_repeats=blocked_current,
+            legacy_blocked_repeats=blocked_legacy,
+            allow_occurrence_zero=(datum_key != "end_date"),
+        )
     snapshot = {
         "values": values,
+        "legacy_values": legacy_values,
+        "market_values": market_values,
+        "blocked_repeats": sorted(blocked_current),
+        "legacy_blocked_repeats": sorted(blocked_legacy),
         "url": str(getattr(item, "url", "")),
         "timestamp": event.get("updatedAt"),
     }

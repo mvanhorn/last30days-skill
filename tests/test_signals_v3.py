@@ -164,7 +164,7 @@ class SignalsV3Tests(unittest.TestCase):
             url="https://example.com",
             engagement={"shares": 10, "reads": 100},
         )
-        expected = (math.log1p(10) + math.log1p(100)) / 2
+        expected = math.log1p(100) + 0.1 * math.log1p(10)
         self.assertAlmostEqual(expected, signals.engagement_raw(item))
 
     def test_annotate_stream_sorts_by_source_specific_reddit_engagement(self):

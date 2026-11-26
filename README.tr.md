@@ -1,6 +1,6 @@
 # /last30days
 
-[English](README.md) | [Français](README.fr.md) | [Deutsch](README.de.md) | [Español](README.es.md) | [Português (Brasil)](README.pt-BR.md) | [日本語](README.ja.md) | [简体中文](README.zh-CN.md) | [العربية](README.ar.md) | [فارسی](README.fa.md) | Türkçe
+[English](README.md) | [Français](README.fr.md) | [Deutsch](README.de.md) | [Español](README.es.md) | [Português (Brasil)](README.pt-BR.md) | [日本語](README.ja.md) | [简体中文](README.zh-CN.md) | [العربية](README.ar.md) | [فارسی](README.fa.md) | Türkçe | [Tiếng Việt](README.vi.md)
 
 <p align="center">
   <img src="media/pr-assets/last30days-ad.gif" width="720" alt="last30days - an AI agent-led search engine that searches people, not editors" />
@@ -224,6 +224,10 @@ npx skills update -g
 
 Listelemek ve kaldırmak için `npx skills list -g` ve `npx skills remove last30days -g` kullanın.
 
+### DeepSeek Harness
+
+[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH), skill'leri `~/.agents/skills` dizininden (ayarlıysa `$DSH_AGENTS_HOME/skills`) yükler. `npx skills add mvanhorn/last30days-skill -g` ile yapılan global kurulum last30days'i tam olarak buraya koyar, bu yüzden DSH onu ek bir ayar gerekmeden bulur. Kurulumdan sonra DSH'yi yeniden başlatın.
+
 ### claude.ai (web)
 
 1. Son sürümden [`last30days.skill` indirin](https://github.com/mvanhorn/last30days-skill/releases/latest/download/last30days.skill)
@@ -373,11 +377,11 @@ Beceri varsayılan olarak tamamen bilgisayarınızda çalışır; çağırdığ�
 
 ## Yıldız geçmişi
 
-<a href="https://star-history.dera.page/#mvanhorn/last30days-skill&Date">
+<a href="https://github.com/mvanhorn/last30days-skill/stargazers">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://star-history.dera.page/svg?repos=mvanhorn/last30days-skill&type=Date&theme=dark" />
-    <source media="(prefers-color-scheme: light)" srcset="https://star-history.dera.page/svg?repos=mvanhorn/last30days-skill&type=Date" />
-    <img alt="Star History Chart" src="https://star-history.dera.page/svg?repos=mvanhorn/last30days-skill&type=Date" />
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/mvanhorn/last30days-skill/star-history-assets/star-history-dark.svg" />
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/mvanhorn/last30days-skill/star-history-assets/star-history-light.svg" />
+    <img alt="Star History Chart" src="https://raw.githubusercontent.com/mvanhorn/last30days-skill/star-history-assets/star-history-light.svg" />
   </picture>
 </a>
 

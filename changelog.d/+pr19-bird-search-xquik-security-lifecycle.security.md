@@ -1,0 +1,1 @@
+Harden vendored `bird-search`, `bird_x`, and `xquik` against query/handle injection, unvalidated discovery redirects and unbounded bundle fetches, response body timeout and 404 stream leaks, non-atomic/symlink cache writes, infinite cursor pagination loops, browser-cookie consent bypass and stale failover callbacks, and uncancelled Node subprocesses.

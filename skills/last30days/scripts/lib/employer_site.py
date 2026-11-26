@@ -358,7 +358,7 @@ def _fetch(url: str, host: str, deadline: float) -> tuple[str | None, bool]:
             text = http.get_text(
                 url, timeout=PAGE_TIMEOUT_SECONDS, retries=1, accept="text/html", retry_dns=False,
                 deadline_monotonic=time.monotonic() + min(remaining, PAGE_TIMEOUT_SECONDS),
-                landed=landed, redirect_guard=public_host.redirect_guard(url),
+                landed=landed, redirect_guard=public_host.redirect_guard(url), public_only=True,
             )
         except UnicodeDecodeError:
             text = None

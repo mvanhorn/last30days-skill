@@ -4,6 +4,47 @@ import os
 import sys
 
 
+def _sanitize_for_stream(text: str, stream) -> str:
+    """Pre-sanitize text for streams with an explicit narrow encoding.
+
+    Buffered ``io.TextIOWrapper`` streams (e.g. non-TTY pipes on Windows cp1252
+    or POSIX ASCII locales) may defer encoding until ``flush()``, so sanitizing
+    before ``write()`` prevents poisoning the stream's pending text buffer.
+    """
+    encoding = getattr(stream, "encoding", None)
+    if not isinstance(encoding, str) or not encoding:
+        return text
+    try:
+        text.encode(encoding)
+        return text
+    except UnicodeEncodeError:
+        return text.encode(encoding, errors="replace").decode(encoding, errors="replace")
+    except LookupError:
+        return text.encode("ascii", errors="replace").decode("ascii")
+
+
+def safe_stderr_write(text: str, stream=None, *, flush: bool = True) -> None:
+    """Write text to stderr without crashing on narrow encodings or broken pipes."""
+    target = sys.stderr if stream is None else stream
+    if target is None:
+        return
+    sanitized = _sanitize_for_stream(text, target)
+    try:
+        target.write(sanitized)
+    except UnicodeEncodeError:
+        try:
+            target.write(text.encode("ascii", errors="replace").decode("ascii"))
+        except (UnicodeEncodeError, BrokenPipeError, OSError):
+            return
+    except (BrokenPipeError, OSError):
+        return
+    if flush:
+        try:
+            target.flush()
+        except (UnicodeEncodeError, BrokenPipeError, OSError):
+            pass
+
+
 def is_debug() -> bool:
     val = os.environ.get("LAST30DAYS_DEBUG", "")
     return val.lower() in ("1", "true", "yes", "on")
@@ -12,8 +53,7 @@ def is_debug() -> bool:
 def debug(msg: str) -> None:
     """Log debug message to stderr (only when LAST30DAYS_DEBUG is set)."""
     if is_debug():
-        sys.stderr.write(f"[DEBUG] {msg}\n")
-        sys.stderr.flush()
+        safe_stderr_write(f"[DEBUG] {msg}\n")
 
 
 def source_log(prefix: str, msg: str, *, tty_only: bool = True) -> None:
@@ -32,7 +72,10 @@ def source_log(prefix: str, msg: str, *, tty_only: bool = True) -> None:
     the user and the synthesis LLM. The convention is enforced by
     `tests/test_source_log_visibility.py`.
     """
-    if tty_only and not sys.stderr.isatty():
-        return
-    sys.stderr.write(f"[{prefix}] {msg}\n")
-    sys.stderr.flush()
+    if tty_only:
+        try:
+            if sys.stderr is None or not sys.stderr.isatty():
+                return
+        except OSError:
+            return
+    safe_stderr_write(f"[{prefix}] {msg}\n")

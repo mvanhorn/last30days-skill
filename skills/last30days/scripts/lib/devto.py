@@ -333,10 +333,12 @@ def _strip_html(text: str) -> str:
     return html.unescape(text).strip()
 
 
-def _fetch_comments(article_id: str) -> list[dict[str, Any]]:
+def _fetch_comments(article_id: str, deadline: float | None = None) -> list[dict[str, Any]]:
+    if deadline is not None and time.monotonic() >= deadline:
+        return []
     url = f"{COMMENTS_URL}?{urllib.parse.urlencode({'a_id': article_id})}"
     try:
-        rows = _get_list(url)
+        rows = _get_list(url, deadline=deadline)
     except Exception as exc:
         _log(f"comments failed for article {article_id}: {exc}")
         return []
@@ -360,7 +362,11 @@ def _fetch_comments(article_id: str) -> list[dict[str, Any]]:
     return comments[:MAX_COMMENTS]
 
 
-def enrich_source_items(items: list[Any], top_k: int = ENRICH_LIMIT) -> list[Any]:
+def enrich_source_items(
+    items: list[Any],
+    top_k: int = ENRICH_LIMIT,
+    deadline: float | None = None,
+) -> list[Any]:
     """Attach top comments to the first ``top_k`` ranked SourceItems with comments.
 
     Runs from ``_finalize_items_by_source`` so the comment calls land on the
@@ -382,10 +388,24 @@ def enrich_source_items(items: list[Any], top_k: int = ENRICH_LIMIT) -> list[Any
         targets.append(item)
     if not targets:
         return items
+    wait_budget = ENRICH_WAIT_SECONDS
+    if deadline is not None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            _log("comment enrichment skipped: no time left")
+            return items
+        wait_budget = min(wait_budget, remaining)
     executor = ThreadPoolExecutor(max_workers=len(targets))
-    futures = {http.submit_with_context(executor, _fetch_comments, item.item_id): item for item in targets}
+    futures = {
+        (
+            http.submit_with_context(executor, _fetch_comments, item.item_id, deadline)
+            if deadline is not None
+            else http.submit_with_context(executor, _fetch_comments, item.item_id)
+        ): item
+        for item in targets
+    }
     try:
-        for future in as_completed(futures, timeout=ENRICH_WAIT_SECONDS):
+        for future in as_completed(futures, timeout=wait_budget):
             item = futures[future]
             item.metadata["top_comments"] = _remap_comments(
                 future.result(),

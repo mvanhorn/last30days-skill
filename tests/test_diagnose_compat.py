@@ -104,18 +104,26 @@ PREFLIGHT_TOP_KEYS = {
     "network",
     "action_items",
 }
-PREFLIGHT_LOCAL_READS_KEYS = {"config_source", "project_config", "browser_cookies"}
+PREFLIGHT_LOCAL_READS_KEYS = {
+    "config_source",
+    "secret_stores",
+    "corpus_dirs",
+    "project_config",
+    "browser_cookies",
+}
 PREFLIGHT_PROJECT_CONFIG_KEYS = {"status", "trusted", "ignored_path", "ignored_keys"}
 PREFLIGHT_BROWSER_COOKIES_KEYS = {"status", "mode", "browsers", "reads_values"}
 PREFLIGHT_CREDENTIALS_KEYS = {
     "google", "openai", "xai", "openrouter", "perplexity", "scrapecreators", "github",
-    # X API bearer (X_BEARER_TOKEN): computed inside permission_preflight from
-    # config, never surfaced through diagnose.providers (whose key set above
-    # stays frozen).
-    "x_bearer",
+    # Computed inside permission_preflight from config, never surfaced through
+    # diagnose.providers (whose key set above stays frozen).
+    "x_bearer", "x_cookies", "brave", "exa", "serper", "parallel", "bluesky",
+    "truthsocial", "apify", "xquik", "brightdata", "groq", "deepline",
+    "hosted_api", "publish_password",
 }
 PREFLIGHT_NETWORK_KEYS = {
-    "available_sources", "native_search", "endpoint_overrides", "ignored_endpoint_overrides",
+    "available_sources", "hosted_mode", "native_search", "endpoint_overrides",
+    "ignored_endpoint_overrides",
 }
 
 
@@ -306,7 +314,7 @@ class DiagnoseXurlAuthWiring(unittest.TestCase):
         return json.loads(out)
 
     def test_new_layout_auth_yml_makes_xurl_the_reported_backend(self):
-        payload = self._diagnose_with_store("access_token: dummy-not-real\n")
+        payload = self._diagnose_with_store("bearer_token:\n  bearer: dummy-not-real\n")
         self.assertEqual("xurl", payload["x_backend"])
         self.assertIn("x", payload["available_sources"])
 

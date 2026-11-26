@@ -10,6 +10,7 @@ from typing import Any, Callable
 from urllib.parse import quote
 
 from .. import http, jobs
+from . import detect
 from .detect import PROVIDER_JIBE
 
 PAGE_SIZE = 100
@@ -29,6 +30,15 @@ def parse_listing(payload: Any, entry: dict[str, Any]) -> tuple[list[dict[str, A
     if not isinstance(rows, list):
         raise jobs.BoardShapeError("no jobs list")
     board = entry["board"]
+    raw_jobs_path = str(entry.get("jobs_path") or "/jobs").strip()
+    if (
+        not raw_jobs_path.startswith("/")
+        or raw_jobs_path.startswith("//")
+        or "\\" in raw_jobs_path
+        or any(ch.isspace() or ord(ch) < 0x20 or ord(ch) == 0x7F for ch in raw_jobs_path)
+    ):
+        raw_jobs_path = "/jobs"
+    jobs_path = raw_jobs_path.rstrip("/")
     items: list[dict[str, Any]] = []
     for row in rows:
         data = row.get("data") if isinstance(row, dict) else None
@@ -46,12 +56,13 @@ def parse_listing(payload: Any, entry: dict[str, Any]) -> tuple[list[dict[str, A
             str(category.get("name") or "").strip()
             for category in data.get("categories") or [] if isinstance(category, dict)
         ]
+        role_slug = quote(str(data.get("slug") or ident).strip(), safe="")
         items.append(jobs._ats_item(
             provider=PROVIDER_JIBE,
             slug=board,
             ident=ident,
             title=str(data["title"]).strip(),
-            url=f"https://{board}{entry.get('jobs_path') or '/jobs'}/{data.get('slug') or ident}",
+            url=f"https://{board}{jobs_path}/{role_slug}",
             description=jobs._clean_html(html),
             description_blocks=jobs._block_text(html),
             date=posted,
@@ -73,10 +84,17 @@ def read_board(
 
     def page(offset: int) -> Callable[[float], Any]:
         url = listing_url(entry, offset // PAGE_SIZE + 1)
-        return lambda http_deadline: http.get(
-            url, headers={"Accept": "application/json"},
-            timeout=jobs.API_TIMEOUT_SECONDS, retries=2, deadline_monotonic=http_deadline,
-        )
+
+        def fetch(http_deadline: float) -> Any:
+            if not detect.is_safe_public_url(url):
+                raise http.HTTPError("Refused non-public URL")
+            return http.get(
+                url, headers={"Accept": "application/json"},
+                timeout=jobs.API_TIMEOUT_SECONDS, retries=2, deadline_monotonic=http_deadline,
+                public_only=True, redirect_guard=detect.same_site_redirect_guard(url),
+            )
+
+        return fetch
 
     return jobs._read_newest_first(
         page, lambda payload: parse_listing(payload, entry), page_size=PAGE_SIZE,
@@ -89,8 +107,12 @@ def search_story(
     entry: dict[str, Any], term: str, *, deadline_monotonic: float,
 ) -> list[dict[str, Any]]:
     """The board's roles the site's own search finds for a story term."""
+    url = listing_url(entry, 1, term)
+    if not detect.is_safe_public_url(url):
+        raise http.HTTPError("Refused non-public URL")
     payload = http.get(
-        listing_url(entry, 1, term), headers={"Accept": "application/json"},
+        url, headers={"Accept": "application/json"},
         timeout=jobs.STORY_TIMEOUT_SECONDS, retries=1, deadline_monotonic=deadline_monotonic,
+        public_only=True, redirect_guard=detect.same_site_redirect_guard(url),
     )
     return parse_listing(payload, entry)[0]

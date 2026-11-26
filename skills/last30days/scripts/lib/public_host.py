@@ -17,7 +17,146 @@ import socket
 from typing import Callable
 from urllib.parse import urlparse
 
-from . import jobs
+
+def _host_of(url: str) -> str:
+    try:
+        parsed = urlparse(url if "://" in url else f"https://{url}")
+    except ValueError:
+        return ""
+    if parsed.username is not None or parsed.password is not None:
+        return ""
+    return (parsed.hostname or "").rstrip(".").lower()
+
+
+def _parse_ip_literal(name: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    bare = name.split("%", 1)[0]
+    try:
+        return ipaddress.ip_address(bare)
+    except ValueError:
+        pass
+    try:
+        packed = socket.inet_aton(bare)
+    except OSError:
+        return None
+    return ipaddress.IPv4Address(packed)
+
+
+def _same_site(host: str, site_host: str) -> bool:
+    base = site_host.rstrip(".").lower().removeprefix("www.")
+    cand = host.rstrip(".").lower().removeprefix("www.")
+    if not base or not cand:
+        return False
+    if _parse_ip_literal(base) is not None or _parse_ip_literal(cand) is not None:
+        return cand == base
+    return cand == base or cand.endswith("." + base)
+
+
+_NAT64_WELL_KNOWN = ipaddress.IPv6Network("64:ff9b::/96")
+_NAT64_LOCAL = ipaddress.IPv6Network("64:ff9b:1::/48")
+
+
+def _is_public_ip(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    if (
+        not address.is_global
+        or address.is_multicast
+        or address.is_private
+        or address.is_loopback
+        or address.is_link_local
+        or address.is_reserved
+        or address.is_unspecified
+    ):
+        return False
+    if isinstance(address, ipaddress.IPv6Address):
+        for embedded in (
+            address.ipv4_mapped,
+            address.sixtofour,
+            address.teredo[1] if address.teredo else None,
+        ):
+            if embedded is not None and not _is_public_ip(embedded):
+                return False
+        if address in _NAT64_WELL_KNOWN or address in _NAT64_LOCAL:
+            embedded = ipaddress.IPv4Address(int(address) & 0xFFFFFFFF)
+            if not _is_public_ip(embedded):
+                return False
+    return True
+
+
+def is_public_address_syntax(url: str) -> bool:
+    """Zero-DNS check: ``url`` is http(s) with no userinfo, not localhost, and
+    not a non-public IP literal."""
+    if not isinstance(url, str) or not url or url != url.strip():
+        return False
+    if any(ch.isspace() or ord(ch) < 0x20 or ord(ch) == 0x7F for ch in url):
+        return False
+    try:
+        parsed = urlparse(url)
+        _ = parsed.port
+    except ValueError:
+        return False
+    if parsed.scheme.lower() not in ("http", "https"):
+        return False
+    if parsed.username is not None or parsed.password is not None:
+        return False
+    name = (parsed.hostname or "").rstrip(".").lower()
+    if not name or name == "localhost" or name.endswith(".localhost"):
+        return False
+    ip = _parse_ip_literal(name)
+    if ip is not None:
+        return _is_public_ip(ip)
+    return True
+
+
+class NonPublicAddressError(OSError):
+    """Raised when a host resolves to (or is) a non-public IP address."""
+
+
+def resolve_public_addresses(host: str, port: int) -> list[tuple]:
+    """Resolve ``host`` fresh (never cached) and return TCP addrinfo tuples
+    only if every resolved address is public; otherwise raise
+    :class:`NonPublicAddressError`."""
+    bare = (host or "").strip()
+    if bare.startswith("[") and bare.endswith("]"):
+        bare = bare[1:-1]
+    bare = bare.rstrip(".").lower()
+    if not bare or bare == "localhost" or bare.endswith(".localhost"):
+        raise NonPublicAddressError("refused non-public address")
+    literal = _parse_ip_literal(bare)
+    if literal is not None:
+        if not _is_public_ip(literal):
+            raise NonPublicAddressError("refused non-public address")
+        family = socket.AF_INET6 if isinstance(literal, ipaddress.IPv6Address) else socket.AF_INET
+        sockaddr = (str(literal), port, 0, 0) if family == socket.AF_INET6 else (str(literal), port)
+        return [(family, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", sockaddr)]
+    answers = socket.getaddrinfo(bare, port, 0, socket.SOCK_STREAM)
+    if not answers:
+        raise NonPublicAddressError("refused non-public address")
+    verified: list[tuple] = []
+    for family, socktype, proto, canonname, sockaddr in answers:
+        try:
+            ip = ipaddress.ip_address(sockaddr[0].split("%", 1)[0])
+        except ValueError as exc:
+            raise NonPublicAddressError("refused non-public address") from exc
+        if not _is_public_ip(ip):
+            raise NonPublicAddressError("refused non-public address")
+        verified.append((family, socktype, proto, canonname, sockaddr))
+    return verified
+
+
+def public_any_url(url: str, *, resolves: Callable[[str], bool] | None = None) -> bool:
+    """Whether ``url`` is an http(s) address with no userinfo whose host is a
+    public IP or resolves exclusively to public IPs (any site, uncached)."""
+    if not is_public_address_syntax(url):
+        return False
+    name = (urlparse(url).hostname or "").rstrip(".").lower()
+    ip = _parse_ip_literal(name)
+    if ip is not None:
+        return _is_public_ip(ip)
+    if resolves is not None:
+        return resolves(name)
+    try:
+        return bool(resolve_public_addresses(name, 80))
+    except (OSError, UnicodeError):
+        return False
 
 
 def public_url(url: str, host: str, *, resolves: Callable[[str], bool] | None = None) -> bool:
@@ -27,16 +166,15 @@ def public_url(url: str, host: str, *, resolves: Callable[[str], bool] | None = 
     ``resolves`` decides whether a name resolves only to public addresses;
     it defaults to ``resolves_public``.
     """
-    parsed = urlparse(url)
-    name = (parsed.hostname or "").lower()
-    if parsed.scheme not in ("http", "https") or not name or name == "localhost" or name.endswith(".localhost"):
+    if not is_public_address_syntax(url):
         return False
-    if not jobs._same_site(name, host):
+    name = (urlparse(url).hostname or "").rstrip(".").lower()
+    if not _same_site(name, host):
         return False
-    try:
-        return ipaddress.ip_address(name).is_global
-    except ValueError:
-        return (resolves or resolves_public)(name)
+    ip = _parse_ip_literal(name)
+    if ip is not None:
+        return _is_public_ip(ip)
+    return (resolves or resolves_public)(name)
 
 
 @functools.lru_cache(maxsize=256)
@@ -45,7 +183,7 @@ def resolves_public(name: str) -> bool:
     points at a private network (an internal subdomain) is not fetched; a
     name that does not resolve is not either."""
     try:
-        answers = socket.getaddrinfo(name, None, proto=socket.IPPROTO_TCP)
+        answers = socket.getaddrinfo(name, None, type=socket.SOCK_STREAM)
     except (OSError, UnicodeError):
         return False
     addresses = set()
@@ -54,11 +192,11 @@ def resolves_public(name: str) -> bool:
             addresses.add(ipaddress.ip_address(answer[4][0].split("%", 1)[0]))
         except ValueError:
             return False
-    return bool(addresses) and all(address.is_global for address in addresses)
+    return bool(addresses) and all(_is_public_ip(address) for address in addresses)
 
 
 def redirect_guard(url: str, *, resolves: Callable[[str], bool] | None = None) -> Callable[[str], bool]:
     """The redirect check for a fetch of ``url``: it may be redirected only to
     an address on the same site that is not on a private network."""
-    host = jobs._host(url)
+    host = _host_of(url)
     return lambda target: public_url(target, host, resolves=resolves)

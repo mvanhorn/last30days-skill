@@ -1,31 +1,92 @@
 import { randomBytes, randomUUID } from 'node:crypto';
-import { runtimeQueryIds } from './runtime-query-ids.js';
-import { QUERY_IDS, TARGET_QUERY_ID_OPERATIONS } from './twitter-client-constants.js';
+import { isValidCookieValue, isValidHeaderValue, redactSecrets } from './cookies.js';
+import {
+    createAbortError,
+    raceWithAbort,
+    readResponseTextBounded,
+    runtimeQueryIds,
+} from './runtime-query-ids.js';
+import { QUERY_IDS, SEARCH_QUERY_ID_OPERATIONS } from './twitter-client-constants.js';
 import { normalizeQuoteDepth } from './twitter-client-utils.js';
+const DEFAULT_MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
+const ERROR_BODY_MAX_BYTES = 256 * 1024;
+function createComposedSignal(callerSignal, timeoutMs) {
+    const hasTimeout = typeof timeoutMs === 'number' && Number.isFinite(timeoutMs) && timeoutMs > 0;
+    if (!callerSignal && !hasTimeout) {
+        return { signal: undefined, cleanup: () => {} };
+    }
+    const controller = new AbortController();
+    let timeoutId = null;
+    const onCallerAbort = () => controller.abort(callerSignal.reason);
+    if (callerSignal) {
+        if (callerSignal.aborted) {
+            controller.abort(callerSignal.reason);
+        }
+        else {
+            callerSignal.addEventListener('abort', onCallerAbort, { once: true });
+        }
+    }
+    if (hasTimeout && !controller.signal.aborted) {
+        timeoutId = setTimeout(() => {
+            controller.abort(createAbortError(`Request timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+    }
+    return {
+        signal: controller.signal,
+        cleanup() {
+            if (timeoutId !== null) {
+                clearTimeout(timeoutId);
+                timeoutId = null;
+            }
+            if (callerSignal) {
+                callerSignal.removeEventListener('abort', onCallerAbort);
+            }
+        },
+    };
+}
 export class TwitterClientBase {
     authToken;
     ct0;
     cookieHeader;
     userAgent;
     timeoutMs;
+    maxResponseBytes;
     quoteDepth;
     clientUuid;
     clientDeviceId;
     clientUserId;
     constructor(options) {
-        if (!options.cookies.authToken || !options.cookies.ct0) {
+        const cookies = options?.cookies;
+        if (!cookies?.authToken || !cookies?.ct0) {
             throw new Error('Both authToken and ct0 cookies are required');
         }
-        this.authToken = options.cookies.authToken;
-        this.ct0 = options.cookies.ct0;
-        this.cookieHeader = options.cookies.cookieHeader || `auth_token=${this.authToken}; ct0=${this.ct0}`;
+        if (!isValidCookieValue(cookies.authToken) || !isValidCookieValue(cookies.ct0)) {
+            throw new Error('Invalid auth_token/ct0 format');
+        }
+        if (cookies.cookieHeader !== undefined && cookies.cookieHeader !== null && cookies.cookieHeader !== '') {
+            if (!isValidHeaderValue(cookies.cookieHeader)) {
+                throw new Error('Invalid auth_token/ct0 format');
+            }
+        }
+        this.authToken = cookies.authToken;
+        this.ct0 = cookies.ct0;
+        this.cookieHeader = cookies.cookieHeader || `auth_token=${this.authToken}; ct0=${this.ct0}`;
         this.userAgent =
             options.userAgent ||
                 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
         this.timeoutMs = options.timeoutMs;
+        this.maxResponseBytes =
+            typeof options.maxResponseBytes === 'number' &&
+                Number.isFinite(options.maxResponseBytes) &&
+                options.maxResponseBytes > 0
+                ? options.maxResponseBytes
+                : DEFAULT_MAX_RESPONSE_BYTES;
         this.quoteDepth = normalizeQuoteDepth(options.quoteDepth);
         this.clientUuid = randomUUID();
         this.clientDeviceId = randomUUID();
+    }
+    redactError(message) {
+        return redactSecrets(message, [this.authToken, this.ct0, this.cookieHeader]);
     }
     async sleep(ms) {
         await new Promise((resolve) => setTimeout(resolve, ms));
@@ -34,12 +95,24 @@ export class TwitterClientBase {
         const cached = await runtimeQueryIds.getQueryId(operationName);
         return cached ?? QUERY_IDS[operationName];
     }
-    async refreshQueryIds() {
+    async refreshQueryIds(opts = {}) {
         if (process.env.NODE_ENV === 'test') {
             return;
         }
         try {
-            await runtimeQueryIds.refresh(TARGET_QUERY_ID_OPERATIONS, { force: true });
+            const budgetMs =
+                typeof opts.timeoutMs === 'number' && Number.isFinite(opts.timeoutMs)
+                    ? opts.timeoutMs
+                    : this.timeoutMs;
+            if (typeof budgetMs === 'number' && Number.isFinite(budgetMs) && budgetMs <= 0) {
+                return;
+            }
+            const refreshOpts = { force: true };
+            if (typeof budgetMs === 'number' && Number.isFinite(budgetMs) && budgetMs > 0) {
+                refreshOpts.refreshTimeoutMs = Math.min(15_000, budgetMs);
+                refreshOpts.fetchTimeoutMs = Math.min(10_000, budgetMs);
+            }
+            await runtimeQueryIds.refresh(SEARCH_QUERY_ID_OPERATIONS, refreshOpts);
         }
         catch {
             // ignore refresh failures; callers will fall back to baked-in IDs
@@ -63,16 +136,41 @@ export class TwitterClientBase {
         return Array.from(new Set([primary, 'M1jEez78PEfVfbQLvlWMvQ', '5h0kNbk3ii97rmfY6CdgAA', 'Tp1sewRU1AsZpBWhqCZicQ']));
     }
     async fetchWithTimeout(url, init) {
-        if (!this.timeoutMs || this.timeoutMs <= 0) {
-            return fetch(url, init);
-        }
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
+        const { signal, cleanup } = createComposedSignal(init?.signal, this.timeoutMs);
         try {
-            return await fetch(url, { ...init, signal: controller.signal });
+            const fetchInit = signal ? { ...init, signal } : init;
+            return await raceWithAbort(fetch(url, fetchInit), signal);
         }
         finally {
-            clearTimeout(timeoutId);
+            cleanup();
+        }
+    }
+    async fetchTextWithTimeout(url, init = {}, opts = {}) {
+        const maxBytes = opts.maxBytes ?? this.maxResponseBytes;
+        const skipBodyStatuses = opts.skipBodyStatuses;
+        const effectiveTimeoutMs =
+            typeof opts.timeoutMs === 'number' && Number.isFinite(opts.timeoutMs)
+                ? opts.timeoutMs
+                : this.timeoutMs;
+        if (typeof effectiveTimeoutMs === 'number' && Number.isFinite(effectiveTimeoutMs) && effectiveTimeoutMs <= 0) {
+            throw createAbortError('Request timed out');
+        }
+        const { signal, cleanup } = createComposedSignal(init?.signal, effectiveTimeoutMs);
+        try {
+            const fetchInit = signal ? { ...init, signal } : init;
+            const response = await raceWithAbort(fetch(url, fetchInit), signal);
+            if (skipBodyStatuses?.has(response.status)) {
+                await response.body?.cancel().catch(() => {});
+                return { ok: response.ok, status: response.status, text: '' };
+            }
+            const limit = response.ok ? maxBytes : Math.min(maxBytes, ERROR_BODY_MAX_BYTES);
+            const text = await readResponseTextBounded(response, limit, signal, {
+                truncateOnLimit: !response.ok,
+            });
+            return { ok: response.ok, status: response.status, text };
+        }
+        finally {
+            cleanup();
         }
     }
     getHeaders() {

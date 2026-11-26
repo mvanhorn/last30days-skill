@@ -21,16 +21,40 @@ Read for a follow-up on existing research. Preserve the root's consent, source h
 - If they say **"register exec"**, **"register dev"**, **"register creator"**, or **"register default"** after a run → Re-synthesize the current research in that register immediately; do not fetch sources again and do not treat the phrase as a new topic. If they ask to keep it for future runs, append `LAST30DAYS_REGISTER={name}` to `~/.config/last30days/.env` (never overwrite the file).
 - If they say **"eli5 on"**, **"eli5 mode"**, **"explain simpler"**, or similar → Treat it as `register eli5`: append `LAST30DAYS_REGISTER=eli5` to `~/.config/last30days/.env`, then re-synthesize the current research immediately using the ELI5 guidance without fetching again. Confirm: "ELI5 mode on. All future runs will explain things like you're 5."
 - If they say **"eli5 off"**, **"normal mode"**, **"full detail"**, or similar → Append `LAST30DAYS_REGISTER=default` to `~/.config/last30days/.env`. Confirm: "ELI5 mode off. Back to full detail."
-- If they say **"drill into 3"**, **"go deeper on cluster 3"**, **"drill into the OpenClaw API ban discussion"**, or similar after a run → invoke the engine with `"${LAST30DAYS_PYTHON}" "${SKILL_DIR}/scripts/last30days.py" --drill "<their target>" --followup-topic="$ORIGINAL_TOPIC" --followup-run="$FOLLOWUP_CACHE_ID"`. The engine resolves a 1-based cluster number or fuzzy title/entity description from the matching `last-report.json` cache, re-researches only that cluster's contributing sources at deep depth, and merges and deduplicates the evidence. Relay the rendered **Original / Deeper** brief and use the cache ID from this drill for the next follow-up. If the drill emits no ID, clear the previous ID.
-- If they say **"verify freshness"**, **"check whether those facts are still current"**, or ask to gate action on current claims after a run → invoke `"${LAST30DAYS_PYTHON}" "${SKILL_DIR}/scripts/last30days.py" --verify-freshness --followup-topic="$ORIGINAL_TOPIC" --followup-run="$FOLLOWUP_CACHE_ID"`. It loads the matching report cache, point-refetches only supported grounded data, updates the cached verdicts, and renders the compact Freshness Verification table. For a first-pass request, translate the intent into the normal engine invocation plus `--verify-freshness`. `LAST30DAYS_VERIFY_FRESHNESS=on` makes verification the default for topic runs.
-- If they say **"mark <topic> as covered"**, **"I covered X on the podcast"**, **"we published that article"**, or similar → invoke the engine with `"${LAST30DAYS_PYTHON}" "${SKILL_DIR}/scripts/last30days.py" queue cover "<topic name>" --save-dir="${LAST30DAYS_MEMORY_DIR}"` (same `--save-dir` scoping as discovery runs - queue rows live in that directory's research.db). Covering requires the exact queued topic name; on an unknown name the engine exits 2 and points at `queue list` - relay that, run `queue list`, and offer the queued names instead of retrying with guesses.
+- If they say **"drill into 3"**, **"go deeper on cluster 3"**, **"drill into the OpenClaw API ban discussion"**, or similar after a run → capture `<their target>` and `ORIGINAL_TOPIC` via single-quoted heredocs (never interpolate untrusted text inside double quotes; choose delimiters absent from the text and strip the trailing newline, matching `research-runbook.md`), then invoke:
+
+```bash
+IFS= read -r -d '' DRILL_TARGET <<'TARGET_EOF' || true
+<their target>
+TARGET_EOF
+DRILL_TARGET=${DRILL_TARGET%$'\n'}
+IFS= read -r -d '' ORIGINAL_TOPIC <<'TOPIC_EOF' || true
+<original topic>
+TOPIC_EOF
+ORIGINAL_TOPIC=${ORIGINAL_TOPIC%$'\n'}
+"${LAST30DAYS_PYTHON}" "${SKILL_DIR}/scripts/last30days.py" --drill="$DRILL_TARGET" --followup-topic="$ORIGINAL_TOPIC" --followup-run="$FOLLOWUP_CACHE_ID"
+```
+
+  The engine resolves a 1-based cluster number or fuzzy title/entity description from the matching `last-report.json` cache, re-researches only that cluster's contributing sources at deep depth, and merges and deduplicates the evidence. Relay the rendered **Original / Deeper** brief and use the cache ID from this drill for the next follow-up. If the drill emits no ID, clear the previous ID.
+- If they say **"verify freshness"**, **"check whether those facts are still current"**, or ask to gate action on current claims after a run → capture `ORIGINAL_TOPIC` via the same single-quoted heredoc pattern above and invoke `"${LAST30DAYS_PYTHON}" "${SKILL_DIR}/scripts/last30days.py" --verify-freshness --followup-topic="$ORIGINAL_TOPIC" --followup-run="$FOLLOWUP_CACHE_ID"`. It loads the matching report cache, point-refetches only supported grounded data, updates the cached verdicts, and renders the compact Freshness Verification table. For a first-pass request, translate the intent into the normal engine invocation plus `--verify-freshness`. `LAST30DAYS_VERIFY_FRESHNESS=on` makes verification the default for topic runs.
+- If they say **"mark <topic> as covered"**, **"I covered X on the podcast"**, **"we published that article"**, or similar → capture `<topic name>` via a single-quoted heredoc (never interpolate untrusted topic names inside double quotes; choose a delimiter absent from the topic and strip the trailing newline) and place `--save-dir` before `--` so a leading `-` in the topic cannot be parsed as a flag:
+
+```bash
+IFS= read -r -d '' TOPIC_NAME <<'TOPIC_EOF' || true
+<topic name>
+TOPIC_EOF
+TOPIC_NAME=${TOPIC_NAME%$'\n'}
+"${LAST30DAYS_PYTHON}" "${SKILL_DIR}/scripts/last30days.py" --save-dir="${LAST30DAYS_MEMORY_DIR}" -- queue cover "$TOPIC_NAME"
+```
+
+  (same `--save-dir` scoping as discovery runs - queue rows live in that directory's research.db). Covering requires the exact queued topic name; on an unknown name the engine exits 2 and points at `queue list` - relay that, run `queue list`, and offer the queued names instead of retrying with guesses.
 - If they say **"what's in my topic queue"**, **"what should I talk about next"**, **"show my content pipeline"**, or similar → invoke `"${LAST30DAYS_PYTHON}" "${SKILL_DIR}/scripts/last30days.py" queue list --save-dir="${LAST30DAYS_MEMORY_DIR}"` and relay the rendered list (uncovered surfaced topics with domain, surface count, and last-surfaced date). An empty queue is a valid answer - suggest a `/last30days trending` or domain discovery run to populate it. (These two bullets cover the in-session case, after a run is already in context. The same asks arriving cold - with no research run yet this session - are handled by the root-gated library/queue fast path, which runs the identical commands directly instead of falling into topic research.)
 
 A drill that matches only local files stays local. For mixed clusters, remote queries use public evidence, and private drill context stays in local output.
 
 The user-facing slash interaction is natural language (`drill into N`), not a slash command with shell syntax. `--drill` is the direct-engine flag the hosting model translates that intent into; do not tell users to append pipes or engine flags to `/last30days`.
 
-For a cached drill or freshness check, set `ORIGINAL_TOPIC` to the exact topic from the original engine invocation, including the full topic for a comparison. Set `FOLLOWUP_CACHE_ID` from the `[last30days] Follow-up cache ID: <ID>` line the engine emitted on stderr for that research or its latest drill. Pass both as literal data. These follow-ups use the saved evidence, including host-supplied X posts or Reddit threads. If the original topic or ID is unavailable, or the cache is missing, expired, or belongs to another run, tell the user to run `/last30days <topic>` with local sources first. Hosted research has no local cache ID. To run locally, leave `LAST30DAYS_API_BASE` unset for the engine invocation.
+For a cached drill or freshness check, set `ORIGINAL_TOPIC` via a single-quoted heredoc (`IFS= read -r -d '' ORIGINAL_TOPIC <<'TOPIC_EOF' || true`, stripping the trailing newline) to the exact topic from the original engine invocation, including the full topic for a comparison. Run the heredoc block directly in the shell tool; never wrap it in `bash -lc '...'`. Set `FOLLOWUP_CACHE_ID` from the `[last30days] Follow-up cache ID: <ID>` line the engine emitted on stderr for that research or its latest drill. Pass both as literal data. These follow-ups use the saved evidence, including host-supplied X posts or Reddit threads. If the original topic or ID is unavailable, or the cache is missing, expired, or belongs to another run, tell the user to run `/last30days <topic>` with local sources first. Hosted research has no local cache ID. To run locally, leave `LAST30DAYS_API_BASE` unset for the engine invocation.
 
 **Only write a prompt when the user wants one.** Don't force a prompt on someone who asked "what could happen next with Iran."
 

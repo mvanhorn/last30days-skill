@@ -87,7 +87,7 @@ class TestFetchViaYtdlp(unittest.TestCase):
         joined = " ".join(cmd)
         self.assertIn("--write-comments", cmd)
         self.assertIn("comment_sort=top", joined)
-        self.assertIn("max_comments=4", joined)
+        self.assertIn("max_comments=6,6,0,0", joined)
         self.assertIn("player_client=android", joined)
         self.assertEqual(cmd.count("--extractor-args"), 1)
         self.assertTrue(any("watch?v=abc123" in a for a in cmd))

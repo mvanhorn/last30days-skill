@@ -12,11 +12,13 @@ Database location: ~/.local/share/last30days/research.db
 
 import argparse
 import json
+import math
 import re
 import sqlite3
 import sys
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
@@ -571,6 +573,9 @@ def get_latest_completed_runs(topic_id: int, limit: int = 2) -> List[Dict[str, A
 # --- Findings ---
 
 
+_SUPPORTS_RETURNING = sqlite3.sqlite_version_info >= (3, 35, 0)
+
+
 def _merge_finding_scores(target: Dict[str, Any], incoming: Dict[str, Any]) -> None:
     """Keep the higher engagement and relevance scores when collapsing duplicate URLs."""
     prev_eng = target.get("engagement_score") or 0
@@ -587,8 +592,13 @@ def store_findings(
     run_id: int,
     topic_id: int,
     findings: List[Dict[str, Any]],
+    *,
+    count_by_topic: bool = False,
 ) -> Dict[str, int]:
-    """Store findings with URL-based dedup. Returns counts of new/updated."""
+    """Store deduplicated findings and count new/updated URLs.
+
+    Watchlist runs classify a URL by whether the topic has seen it before.
+    """
     # Collect findings that have a URL, preserving first-seen order while
     # collapsing same-batch duplicate URLs so one run never self-conflicts on
     # source_url or double-increments sighting_count.
@@ -618,99 +628,114 @@ def store_findings(
 
     conn = _connect()
     try:
-        # Single batch SELECT to find existing findings by URL.
-        urls = [url for url, _ in with_urls]
-        placeholders = ",".join("?" for _ in urls)
-        rows = conn.execute(
-            f"SELECT id, source_url, engagement_score FROM findings WHERE source_url IN ({placeholders})",
-            urls,
-        ).fetchall()
-        existing_by_url = {row["source_url"]: row for row in rows}
-
-        update_rows: List[tuple] = []
-        insert_rows: List[tuple] = []
-
-        for url, f in with_urls:
-            existing = existing_by_url.get(url)
-            new_engagement = f.get("engagement_score") or 0
-            if existing:
-                update_rows.append((
-                    new_engagement,
-                    run_id,
-                    existing["id"],
-                ))
-            else:
-                insert_rows.append((
-                    run_id,
-                    topic_id,
-                    f.get("source", "unknown"),
-                    url,
-                    f.get("source_title") or f.get("title", ""),
-                    f.get("author", ""),
-                    f.get("content") or f.get("text", ""),
-                    f.get("summary", ""),
-                    new_engagement,
-                    f.get("relevance_score", 0),
-                ))
-
-        if update_rows:
-            conn.executemany(
-                """UPDATE findings SET
-                       last_seen = datetime('now'),
-                       sighting_count = sighting_count + 1,
-                       engagement_score = max(coalesce(engagement_score, 0), ?),
-                       run_id = ?
-                   WHERE id = ?""",
-                update_rows,
-            )
-        if insert_rows:
-            # source_url is UNIQUE. The SELECT above is not atomic with this
-            # write, so a concurrent run (cron + user) can insert the same URL
-            # between our read and write. Upsert on conflict instead of letting
-            # IntegrityError abort the whole batch and lose every finding.
-            conn.executemany(
-                """INSERT INTO findings
-                   (run_id, topic_id, source, source_url, source_title,
-                    author, content, summary, engagement_score, relevance_score)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(source_url) DO UPDATE SET
-                       last_seen = datetime('now'),
-                       sighting_count = sighting_count + 1,
-                       engagement_score = max(
-                           coalesce(engagement_score, 0), excluded.engagement_score),
-                       run_id = excluded.run_id""",
-                insert_rows,
-            )
-
-        new_count = len(insert_rows)
-        updated_count = len(update_rows)
-        if insert_rows:
-            # A row whose URL was inserted by a concurrent run between our SELECT
-            # and the upsert resolves via ON CONFLICT (an update, not a new row),
-            # bumping its sighting_count above 1. Re-derive the split so
-            # research_runs.findings_new isn't inflated by conflict-resolved rows
-            # (source_url is field index 3 in each insert tuple).
-            inserted_urls = [row[3] for row in insert_rows]
-            placeholders = ",".join("?" for _ in inserted_urls)
-            conflicted = conn.execute(
-                f"SELECT COUNT(*) FROM findings "
-                f"WHERE source_url IN ({placeholders}) AND sighting_count > 1",
-                inserted_urls,
+        conn.execute("BEGIN IMMEDIATE")
+        topic_updated_count = None
+        if count_by_topic:
+            # Check the same membership sources as _FINDING_TOPICS_SQL for
+            # this batch, before the upsert advances the latest run pointer.
+            urls = list(by_url)
+            placeholders = ",".join("?" for _ in urls)
+            topic_updated_count = conn.execute(
+                f"""SELECT COUNT(*) FROM findings f
+                    LEFT JOIN research_runs r ON r.id = f.run_id
+                    WHERE f.source_url IN ({placeholders})
+                      AND (f.topic_id = ? OR r.topic_id = ? OR f.id IN (
+                          SELECT finding_id FROM finding_sightings WHERE topic_id = ?
+                      ))""",
+                (*urls, topic_id, topic_id, topic_id),
             ).fetchone()[0]
-            new_count -= conflicted
-            updated_count += conflicted
-        _record_sightings(conn, run_id, topic_id, with_urls, existing_by_url)
+        # A legacy latest-run link can be the only record of a topic's
+        # observation. Save it as a historical sighting before the upsert.
+        conn.executemany(
+            """INSERT INTO finding_sightings
+               (finding_id, topic_id, source, source_url, source_title,
+                engagement_score, relevance_score, seen_at)
+               SELECT f.id, r.topic_id, f.source, f.source_url, f.source_title,
+                      f.engagement_score, f.relevance_score, r.run_date
+               FROM findings f
+               JOIN research_runs r ON r.id = f.run_id
+               JOIN topics t ON t.id = r.topic_id
+               WHERE f.source_url = ? AND f.topic_id IS NOT r.topic_id
+                 AND NOT EXISTS (
+                     SELECT 1 FROM finding_sightings s
+                     WHERE s.finding_id = f.id AND s.topic_id = r.topic_id
+                 )""",
+            ((url,) for url in by_url),
+        )
+        upsert_sql = """INSERT INTO findings
+               (run_id, topic_id, source, source_url, source_title,
+                author, content, summary, engagement_score, relevance_score)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(source_url) DO UPDATE SET
+                   last_seen = datetime('now'),
+                   sighting_count = max(coalesce(sighting_count, 1), 1) + 1,
+                   engagement_score = max(
+                       coalesce(engagement_score, 0), excluded.engagement_score),
+                   run_id = excluded.run_id"""
+        upsert_rows = [
+            (
+                run_id,
+                topic_id,
+                f.get("source", "unknown"),
+                url,
+                f.get("source_title") or f.get("title", ""),
+                f.get("author", ""),
+                f.get("content") or f.get("text", ""),
+                f.get("summary", ""),
+                f.get("engagement_score") or 0,
+                f.get("relevance_score", 0),
+            )
+            for url, f in with_urls
+        ]
+        if _SUPPORTS_RETURNING:
+            new_count = 0
+            updated_count = 0
+            rows_by_url: Dict[str, sqlite3.Row] = {}
+            returning_sql = f"{upsert_sql} RETURNING id, source_url, sighting_count"
+            for params in upsert_rows:
+                row = conn.execute(returning_sql, params).fetchone()
+                rows_by_url[params[3]] = row
+                if row["sighting_count"] == 1:
+                    new_count += 1
+                else:
+                    updated_count += 1
+            _record_sightings(conn, run_id, topic_id, with_urls, rows_by_url)
+        else:
+            # SQLite < 3.35 fallback: BEGIN IMMEDIATE prevents concurrent
+            # inserts or deletes between this lookup and the upsert.
+            urls = [url for url, _ in with_urls]
+            placeholders = ",".join("?" for _ in urls)
+            existing_urls = {
+                row["source_url"]
+                for row in conn.execute(
+                    f"SELECT source_url FROM findings WHERE source_url IN ({placeholders})",
+                    urls,
+                ).fetchall()
+            }
+            unique_new = len(set(urls) - existing_urls)
+            new_count = unique_new
+            updated_count = len(with_urls) - unique_new
+            conn.executemany(upsert_sql, upsert_rows)
+            _record_sightings(conn, run_id, topic_id, with_urls)
+        if topic_updated_count is not None:
+            updated_count = topic_updated_count
+            new_count = len(with_urls) - updated_count
         conn.execute(
             "UPDATE research_runs SET findings_new = ?, findings_updated = ? WHERE id = ?",
             (new_count, updated_count, run_id),
         )
         conn.commit()
     except sqlite3.IntegrityError as exc:
+        if conn.in_transaction:
+            conn.rollback()
         if exc.sqlite_errorcode != sqlite3.SQLITE_CONSTRAINT_FOREIGNKEY:
             raise
-        conn.rollback()
         if conn.execute("SELECT 1 FROM removed_run_usage WHERE run_id = ?", (run_id,)).fetchone():
             return {"new": 0, "updated": 0}
+        raise
+    except BaseException:
+        if conn.in_transaction:
+            conn.rollback()
         raise
     finally:
         conn.close()
@@ -910,8 +935,22 @@ def get_new_findings(
         conn.close()
 
 
+_FTS_TOKEN = re.compile(r"[^\W_]+", re.UNICODE)
+
+
+def _fts_query_expression(query: str) -> str:
+    """Build a literal FTS5 AND-query expression from arbitrary user text."""
+    if not isinstance(query, str):
+        return ""
+    tokens = _FTS_TOKEN.findall(query)
+    return " AND ".join(f'"{token.replace(chr(34), chr(34) * 2)}"' for token in tokens)
+
+
 def search_findings(query: str, limit: int = 20) -> List[Dict[str, Any]]:
     """FTS5 search across all findings with BM25 ranking."""
+    expression = _fts_query_expression(query)
+    if not expression or limit <= 0:
+        return []
     conn = _connect()
     try:
         rows = conn.execute(
@@ -919,12 +958,14 @@ def search_findings(query: str, limit: int = 20) -> List[Dict[str, Any]]:
                FROM findings_fts
                JOIN findings f ON f.id = findings_fts.rowid
                LEFT JOIN topics t ON t.id = f.topic_id
-               WHERE findings_fts MATCH ?
+               WHERE findings_fts MATCH ? AND f.dismissed = 0
                ORDER BY rank
                LIMIT ?""",
-            (query, limit),
+            (expression, limit),
         ).fetchall()
         return [dict(r) for r in rows]
+    except sqlite3.OperationalError:
+        return []
     finally:
         conn.close()
 
@@ -1227,6 +1268,44 @@ def set_setting(key: str, value: str):
         conn.commit()
     finally:
         conn.close()
+
+
+def parse_budget(raw: object) -> float:
+    """Parse and validate a finite non-negative daily budget value."""
+    if isinstance(raw, bool) or raw is None:
+        raise ValueError(f"Invalid daily_budget value: {raw!r}")
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            raise ValueError("Invalid daily_budget value: empty")
+        try:
+            dec = Decimal(text)
+        except InvalidOperation as exc:
+            raise ValueError(f"Invalid daily_budget value: {raw!r}") from exc
+        if not dec.is_finite() or dec < 0:
+            raise ValueError(
+                f"Invalid daily_budget value: {raw!r} (must be a finite number >= 0)"
+            )
+        try:
+            value = float(dec)
+        except OverflowError as exc:
+            raise ValueError(f"Invalid daily_budget value: {raw!r} (overflow)") from exc
+    elif isinstance(raw, (int, float)):
+        if raw < 0:
+            raise ValueError(
+                f"Invalid daily_budget value: {raw!r} (must be a finite number >= 0)"
+            )
+        try:
+            value = float(raw)
+        except OverflowError as exc:
+            raise ValueError(f"Invalid daily_budget value: {raw!r} (overflow)") from exc
+    else:
+        raise ValueError(f"Invalid daily_budget value: {raw!r}")
+    if not math.isfinite(value) or value < 0:
+        raise ValueError(
+            f"Invalid daily_budget value: {raw!r} (must be a finite number >= 0)"
+        )
+    return 0.0 if value == 0 else value
 
 
 # --- Stats ---

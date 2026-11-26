@@ -288,7 +288,7 @@ class TestLaneReturnsWhatItHasInsideItsBudget:
     def test_enrichment_wait_is_capped_by_the_lane_deadline(self):
         release = threading.Event()
 
-        def slow_comments(_url, deadline=None):
+        def slow_comments(_url, deadline=None, post_author=None):
             release.wait(5)
             return {"top_comments": [], "comment_insights": [], "num_comments": None}
 
@@ -319,8 +319,10 @@ class TestLaneReturnsWhatItHasInsideItsBudget:
 
 
 def test_lane_that_starts_with_no_budget_is_a_timeout_not_no_results():
+    # Under proportional return-margin scaling, < ~2.35s remaining leaves
+    # under MIN_STAGE_SECONDS (2s) for the free lane.
     with mock.patch("lib.reddit_public.search_reddit_public", return_value=[]):
-        items, artifact = _stream({"_research_deadline": time.monotonic() + 5})
+        items, artifact = _stream({"_research_deadline": time.monotonic() + 1.5})
 
     assert items == []
     assert artifact["_source_outcome"]["state"] == health.TIMEOUT
@@ -467,12 +469,23 @@ class TestBackfillRunsWhenFreeResultIsThin:
             - pipeline.REDDIT_SC_BACKFILL_RESERVE_SECONDS
         ]
 
-    def test_free_path_that_timed_out_with_nothing_is_backfilled(self, capsys):
-        # 60s left: past the free lane's deadline (65s before the end), with
-        # room for the backfill.
-        config = {**KEY, "_research_deadline": time.monotonic() + 60}
+    def test_free_path_that_timed_out_with_nothing_is_backfilled(self, capsys, monkeypatch):
+        # 60s left gives the free lane 30s and reserves 21s+9s for backfill;
+        # simulate the free lane spending its 30s share without finding threads,
+        # leaving room for ScrapeCreators backfill before the research deadline.
+        now = [1000.0]
+        monkeypatch.setattr(pipeline.time, "monotonic", lambda: now[0])
+        monkeypatch.setattr(reddit_keyless.time, "monotonic", lambda: now[0])
 
-        items, _artifact, sc = self._run(config, [], sc_items=[_sc_item("z")])
+        def exhausted_free(*_args, **_kwargs):
+            now[0] += 30.0
+            return []
+
+        config = {**KEY, "_research_deadline": now[0] + 60.0}
+        with mock.patch("lib.reddit_public.search_reddit_public", side_effect=exhausted_free), \
+             mock.patch("lib.reddit.search_and_enrich", return_value={"raw": 1}) as sc, \
+             mock.patch("lib.reddit.parse_reddit_response", return_value=[_sc_item("z")]):
+            items, _artifact = _stream(config)
 
         sc.assert_called_once()
         assert [item["title"] for item in items] == ["Elon Musk z"]
@@ -520,7 +533,7 @@ def _kept(pid, num_comments=9, top_comments=None):
     )
 
 
-def _comments_for(url, deadline=None):
+def _comments_for(url, deadline=None, post_author=None):
     pid = url.rstrip("/").split("/")[-2]
     return {
         "top_comments": [{
@@ -578,7 +591,7 @@ class TestKeptThreadsGetTheirTopComments:
         release = threading.Event()
         monkeypatch.setattr(reddit_keyless, "FINAL_ENRICH_BUDGET", 2.2)
 
-        def fetch(url, deadline=None):
+        def fetch(url, deadline=None, post_author=None):
             if url.endswith("/slow/x/"):
                 release.wait(5)
             return _comments_for(url)
@@ -732,7 +745,7 @@ class TestStagesReturnPartialResultsBeforeTheWait:
     def test_site_search_with_a_targeted_sub_returns_its_posts(self):
         release = threading.Event()
 
-        def stream(query, time_filter, pages, subreddit=None):
+        def stream(query, time_filter, pages, subreddit=None, deadline=None, collector=None):
             if subreddit is None:
                 release.wait(10)
                 return []

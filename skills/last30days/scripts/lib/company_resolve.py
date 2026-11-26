@@ -54,9 +54,9 @@ from __future__ import annotations
 
 import re
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urlsplit
 
-from . import grounding, http, log
+from . import grounding, http, log, public_host
 from .company_names import name_key
 
 WIKIDATA_API = "https://www.wikidata.org/w/api.php"
@@ -250,15 +250,15 @@ def _registrable_label(host: str) -> str:
 
     ``stripe.com`` → ``stripe``; ``foo.co.uk`` → ``foo``;
     ``stripeco.example.org`` → ``example``. Two-label ccSLDs in the last
-    two labels are ``co`` / ``com`` only; that is the repo's existing
-    conservative heuristic, not a public-suffix list.
+    two labels are ``co`` / ``com`` under a 2-letter ccTLD only; that is
+    the repo's existing conservative heuristic, not a public-suffix list.
     """
     labels = [part for part in host.split(".") if part]
     if len(labels) < 2:
         return ""
     name = (
         labels[-3]
-        if labels[-2] in {"co", "com"} and len(labels) >= 3
+        if labels[-2] in {"co", "com"} and len(labels[-1]) == 2 and len(labels) >= 3
         else labels[-2]
     )
     return _compact_name(name)
@@ -315,12 +315,10 @@ def _exa_site_matches_topic(topic: str, url: str) -> bool:
 
 def _exa_homepage(url: str) -> str:
     """The site root when the path is a homepage, else ''."""
-    parsed = urlparse(str(url).strip())
-    if parsed.scheme not in {"http", "https"}:
-        return ""
     host = _site_host(url)
     if not host:
         return ""
+    parsed = urlsplit(str(url).strip())
     path = (parsed.path or "").rstrip("/").lower()
     if path not in _EXA_HOMEPAGE_PATHS:
         return ""
@@ -542,9 +540,47 @@ def _company_led_by(person_id: str) -> dict[str, Any] | None:
     return led[0]
 
 
+_RESERVED_HOST_SUFFIXES = frozenset({"localhost", "local", "internal", "localdomain", "arpa"})
+_VALID_HOST_RE = re.compile(
+    r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+"
+)
+_VALID_TLD_RE = re.compile(r"[a-z]{2,63}|xn--[a-z0-9-]{2,59}")
+
+
 def _site_host(url: str) -> str:
-    host = re.sub(r"^[a-z][a-z0-9+.-]*://", "", str(url).strip().casefold()).split("/", 1)[0]
-    return host.split(":", 1)[0].removeprefix("www.")
+    raw = str(url).strip() if url is not None else ""
+    if not raw or "\\" in raw or any(ch.isspace() or ord(ch) < 0x20 or ord(ch) == 0x7F for ch in raw):
+        return ""
+    try:
+        parsed = urlsplit(raw)
+        port = parsed.port
+    except ValueError:
+        return ""
+    scheme = parsed.scheme.lower()
+    if scheme not in {"http", "https"}:
+        return ""
+    if parsed.username is not None or parsed.password is not None:
+        return ""
+    if not parsed.netloc.isascii() or "%" in parsed.netloc:
+        return ""
+    if port is not None and not (
+        (scheme == "https" and port == 443) or (scheme == "http" and port == 80)
+    ):
+        return ""
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if not host or not _VALID_HOST_RE.fullmatch(host):
+        return ""
+    if public_host._parse_ip_literal(host) is not None:
+        return ""
+    labels = host.split(".")
+    if host == "localhost" or labels[-1] in _RESERVED_HOST_SUFFIXES:
+        return ""
+    if not _VALID_TLD_RE.fullmatch(labels[-1]):
+        return ""
+    bare = host.removeprefix("www.")
+    if "." not in bare:
+        return ""
+    return bare
 
 
 def _official_site(sites: list[dict[str, Any]]) -> str:
@@ -556,7 +592,13 @@ def _official_site(sites: list[dict[str, Any]]) -> str:
     is that host's root.
     """
     if len(sites) == 1:
-        return _value(sites[0])
+        raw = _value(sites[0])
+        if not isinstance(raw, str):
+            return ""
+        candidate = raw.strip()
+        if not _site_host(candidate) or not public_host.is_public_address_syntax(candidate):
+            return ""
+        return candidate
     hosts = [_site_host(_value(site)) for site in sites]
     if not hosts:
         return ""

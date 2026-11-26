@@ -6,10 +6,17 @@ from lib import dedupe
 from lib.schema import SourceItem
 
 
-def _item(title: str, body: str = "", source: str = "reddit", item_id: str = "t1") -> SourceItem:
+def _item(
+    title: str,
+    body: str = "",
+    source: str = "reddit",
+    item_id: str = "t1",
+    url: str | None = None,
+) -> SourceItem:
     return SourceItem(
         item_id=item_id, source=source, title=title, body=body,
-        url="https://example.com", engagement={}, metadata={},
+        url=f"https://example.com/{item_id}" if url is None else url,
+        engagement={}, metadata={},
     )
 
 # ---------------------------------------------------------------------------

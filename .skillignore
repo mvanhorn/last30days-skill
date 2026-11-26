@@ -1,9 +1,19 @@
 # Hermes install-time scanner/package exclusions for repository-root scans.
 # Keep the public bundle focused on the runtime skill under skills/last30days/.
 
-# VCS, local envs, caches, and generated outputs
+# Local secrets, credentials, VCS, local envs, caches, and generated outputs
+.env
+.env.*
+.claude/
+*.pem
+*.key
 .git/
 .venv/
+.entire/
+.context/
+.memsearch/
+.pytest_cache/
+.worktrees/
 __pycache__/
 *.pyc
 *.log
@@ -26,11 +36,15 @@ print/
 .github/
 .agents/
 .claude-plugin/
+.codex-plugin/
+.grok-plugin/
 hooks/
 mcp/
+changelog.d/
 gemini-extension.json
 greptile.json
 pyproject.toml
+uv.lock
 
 # Non-runtime docs, plans, release notes, fixtures, and tests
 docs/
@@ -38,16 +52,20 @@ fixtures/
 tests/
 plans/
 agents/
+skills/last30days/agents/
 variants/
 media/
 README.md
+README.*.md
 CHANGELOG.md
 AGENTS.md
 CLAUDE.md
 CONCEPTS.md
 CONFIGURATION.md
+CONTRIBUTING.md
 CONTRIBUTORS.md
 HERMES_SETUP.md
+SECURITY.md
 release-notes.md
 SKILL-original.md
 SPEC.md
@@ -57,11 +75,13 @@ TASKS.md
 skills/last30days/scripts/build-skill.sh
 skills/last30days/scripts/compare.sh
 skills/last30days/scripts/evaluate_search_quality.py
+skills/last30days/scripts/reddit_canary.py
 skills/last30days/scripts/setup-keychain.sh
 skills/last30days/scripts/setup-pass.sh
 skills/last30days/scripts/test_device_auth.py
 skills/last30days/scripts/test-v1-vs-v2.sh
 skills/last30days/scripts/verify_v3.py
+skills/last30days/scripts/x_lane_parity.py
 
 # Keep visible: optional runtime watchlist/store/briefing feature scripts
 # (`watchlist.py`, `store.py`, and `briefing.py`).

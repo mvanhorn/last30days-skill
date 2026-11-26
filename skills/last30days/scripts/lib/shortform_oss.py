@@ -510,7 +510,7 @@ def _item_from_ytdlp(kind: str, raw: Dict[str, Any], core_topic: str) -> Optiona
         )
         label = "TikTok"
         engagement = {
-            "views": raw.get("view_count") or 0,
+            "views": raw.get("view_count"),
             "likes": raw.get("like_count") or 0,
             "comments": raw.get("comment_count") or 0,
             "shares": raw.get("repost_count") or 0,
@@ -521,7 +521,7 @@ def _item_from_ytdlp(kind: str, raw: Dict[str, Any], core_topic: str) -> Optiona
         )
         label = "Instagram"
         engagement = {
-            "views": raw.get("view_count") or 0,
+            "views": raw.get("view_count"),
             "likes": raw.get("like_count") or 0,
             "comments": raw.get("comment_count") or 0,
         }
@@ -609,7 +609,10 @@ def enrich_urls(
     else:
         workers = min(_ENRICH_WORKERS, len(batches))
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-            futures = [pool.submit(_enrich_batch, kind, b, deadline, cancel) for b in batches]
+            futures = [
+                http.submit_with_context(pool, _enrich_batch, kind, b, deadline, cancel)
+                for b in batches
+            ]
             outputs = [f.result() for f in futures]
     items: List[Dict[str, Any]] = []
     seen: set[str] = set()

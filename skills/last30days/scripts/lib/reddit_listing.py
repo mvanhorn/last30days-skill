@@ -20,8 +20,9 @@ import sys
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from typing import Any, Dict, List, Optional, Set
+from urllib.parse import quote, urlencode
 
-from . import http
+from . import http, reddit_refs
 from .relevance import token_overlap_relevance, tokenize
 
 # Generic domain terms that are excluded from the keyword gate — matches
@@ -41,7 +42,13 @@ TIMEFRAME = "month"
 MAX_WORKERS = 4
 LISTING_TIMEOUT = 15
 
-_POST_CARD = re.compile(r"<shreddit-post(?=[\s>])[^>]*>")
+_TAG_BODY = r'(?:"[^"]*"|\'[^\']*\'|[^>"\'])*'
+_POST_CARD = re.compile(rf"<shreddit-post(?=[\s>]){_TAG_BODY}>", re.IGNORECASE)
+_TAG_HEAD = re.compile(r"^<\s*[^\s>/]+")
+_TAG_ATTR = re.compile(
+    r'(?<![A-Za-z0-9_.:-])([A-Za-z_:][A-Za-z0-9_.:-]*)'
+    r'(?:\s*=\s*(?:"([^"]*)"|\'([^\']*)\'|([^\s"\'=<>`]+)))?'
+)
 _BLOCK_MARKERS = (
     "verify you are human",
     "confirm you are a human",
@@ -83,8 +90,25 @@ def _matches_discovery_domain(domain: str, text: str) -> bool:
 
 
 def _attr(tag: str, name: str) -> Optional[str]:
-    m = re.search(rf'\b{name}="([^"]*)"', tag)
-    return _html.unescape(m.group(1)) if m else None
+    if not tag or not name:
+        return None
+    wanted = name.lower()
+    body = _TAG_HEAD.sub("", tag.strip())
+    if body.endswith(">"):
+        body = body[:-1].rstrip()
+        if body.endswith("/"):
+            body = body[:-1]
+    for m in _TAG_ATTR.finditer(body):
+        if m.group(1).lower() != wanted:
+            continue
+        raw = (
+            m.group(2)
+            if m.group(2) is not None
+            else (m.group(3) if m.group(3) is not None else m.group(4))
+        )
+        if raw is not None:
+            return _html.unescape(raw)
+    return None
 
 
 def _to_date(value: Optional[str]) -> Optional[str]:
@@ -136,8 +160,11 @@ def parse_cards(html_text: str, query: str = "") -> List[Dict[str, Any]]:
         permalink = _attr(tag, "permalink") or ""
         if "/comments/" not in permalink:
             continue
+        score_raw = _attr(tag, "score")
+        has_live_score = False
         try:
-            score = int(_attr(tag, "score") or 0)
+            score = int(score_raw or 0)
+            has_live_score = score_raw is not None and score_raw.strip() != ""
         except ValueError:
             score = 0
         try:
@@ -150,7 +177,7 @@ def parse_cards(html_text: str, query: str = "") -> List[Dict[str, Any]]:
         created = _attr(tag, "created-timestamp")
         url = f"https://www.reddit.com{permalink}"
 
-        posts.append({
+        card: Dict[str, Any] = {
             "id": "",
             "title": title,
             "url": url,
@@ -169,27 +196,57 @@ def parse_cards(html_text: str, query: str = "") -> List[Dict[str, Any]]:
             "relevance": round(token_overlap_relevance(query, title), 3) if query else 0.0,
             "why_relevant": "Reddit listing",
             "metadata": {"post_id": _post_id(permalink)},
-        })
+        }
+        card["engagement_source"] = (
+            reddit_refs.LIVE if has_live_score else reddit_refs.UNKNOWN
+        )
+        posts.append(card)
     return posts
 
 
+_VALID_SORTS = frozenset({"top", "hot", "new", "rising", "controversial", "best"})
+_VALID_TIMEFRAMES = frozenset({"hour", "day", "week", "month", "year", "all"})
+
+
+def _valid_subreddits(subreddits: List[str]) -> List[str]:
+    valid: List[str] = []
+    seen: Set[str] = set()
+    for raw in subreddits or []:
+        sub = reddit_refs.normalize_subreddit(raw, allow_all=True)
+        if sub and sub.lower() not in seen:
+            seen.add(sub.lower())
+            valid.append(sub)
+    return valid
+
+
 def _listing_url(subreddit: str, sort: str, timeframe: str = TIMEFRAME) -> str:
-    sub = subreddit.removeprefix("r/").strip()
+    sub = reddit_refs.normalize_subreddit(subreddit, allow_all=True)
+    if not sub:
+        raise ValueError(f"Invalid subreddit for listing URL: {subreddit!r}")
+    clean_sort = str(sort or "").strip().lower()
+    if clean_sort not in _VALID_SORTS:
+        raise ValueError(f"Invalid sort for listing URL: {sort!r}")
+    clean_tf = str(timeframe or TIMEFRAME).strip().lower()
+    if clean_sort == "top" and clean_tf not in _VALID_TIMEFRAMES:
+        raise ValueError(f"Invalid timeframe for listing URL: {timeframe!r}")
     if sub.lower() == "all":
-        url = f"https://www.reddit.com/r/all/{sort}/"
-        if sort == "top":
-            url += f"?t={timeframe}"
+        url = f"https://www.reddit.com/r/all/{quote(clean_sort, safe='')}/"
+        if clean_sort == "top":
+            url += f"?{urlencode({'t': clean_tf})}"
         return url
-    url = f"https://www.reddit.com/svc/shreddit/community-more-posts/{sort}/?name={sub}"
-    if sort == "top":
-        url += f"&t={timeframe}"
-    return url
+    params = [("name", sub)]
+    if clean_sort == "top":
+        params.append(("t", clean_tf))
+    return (
+        f"https://www.reddit.com/svc/shreddit/community-more-posts/"
+        f"{quote(clean_sort, safe='')}/?{urlencode(params)}"
+    )
 
 
 def _listing_body_problem(subreddit: str, body: str) -> Optional[str]:
     lower = body.lower()
     is_blocked = any(marker in lower for marker in _BLOCK_MARKERS)
-    is_all = subreddit.removeprefix("r/").strip().lower() == "all"
+    is_all = (reddit_refs.normalize_subreddit(subreddit, allow_all=True) or "").lower() == "all"
     if not is_all and not is_blocked:
         return None
     if parse_cards(body):
@@ -219,16 +276,20 @@ def _fetch_one_with_status(
         # retry_429 records a terminal miss into the pipeline sink (issue #899)
         # and retries a 429 once through the limiter (issue #985). Empty
         # dedicated-subreddit fragments can be valid; r/all cannot be empty.
-        text, error = http.reddit_keyless_get_text_retry_429(
-            _listing_url(subreddit, sort, timeframe),
-            timeout=LISTING_TIMEOUT,
-            accept="text/html",
-            validate=lambda body: _listing_body_problem(subreddit, body),
-        )
+        with http.tee_failures() as local_failures:
+            text, error = http.reddit_keyless_get_text_retry_429(
+                _listing_url(subreddit, sort, timeframe),
+                timeout=LISTING_TIMEOUT,
+                accept="text/html",
+                validate=lambda body: _listing_body_problem(subreddit, body),
+            )
         if text is None:
+            if not local_failures:
+                http._record_failure(http.HTTPError(error or "no response"))
             return [], (error or "no response")
         return parse_cards(text, query), None
     except Exception as e:
+        http._record_failure(e if isinstance(e, http.HTTPError) else http.HTTPError(str(e)))
         _log(f"listing fetch failed r/{subreddit} {sort}: {e}")
         return [], str(e)
 
@@ -258,10 +319,11 @@ def fetch_listings(
     pass ``["top", "hot", "new"]`` so fresh threads (which the top-of-month
     listing misses) are caught with their scores regardless of depth.
     """
-    if not subreddits:
+    valid_subs = _valid_subreddits(subreddits)
+    if not valid_subs:
         return []
     sorts = sorts or LISTING_SORTS.get(depth, LISTING_SORTS["default"])
-    jobs = [(sub, sort) for sub in subreddits for sort in sorts]
+    jobs = [(sub, sort) for sub in valid_subs for sort in sorts]
     all_posts: List[Dict[str, Any]] = []
     executor = ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(jobs)) or 1)
     try:
@@ -275,7 +337,11 @@ def fetch_listings(
                 wait = max(0.0, min(wait, deadline - time.monotonic()))
             try:
                 all_posts.extend(future.result(timeout=wait))
-            except (Exception, FuturesTimeoutError) as e:
+            except FuturesTimeoutError as e:
+                http._record_failure(http.DeadlineExceeded())
+                _log(f"listing future failed: {e or 'still running at the deadline'}")
+            except Exception as e:
+                http._record_failure(e if isinstance(e, http.HTTPError) else http.HTTPError(str(e)))
                 _log(f"listing future failed: {e or 'still running at the deadline'}")
     finally:
         # Under a deadline a feed still queued or running is not waited for.
@@ -303,9 +369,10 @@ def fetch_discovery_listings(
     ``--discover`` with no domain), the gate is skipped and any arctic result
     counts as recovery.
     """
-    if not subreddits:
+    valid_subs = _valid_subreddits(subreddits)
+    if not valid_subs:
         return {"items": [], "errors": []}
-    jobs = [(subreddit, sort) for subreddit in subreddits for sort in ("rising", "top")]
+    jobs = [(subreddit, sort) for subreddit in valid_subs for sort in ("rising", "top")]
     items: List[Dict[str, Any]] = []
     errors: List[str] = []
     # Track which (sub, sort) pairs shreddit successfully delivered posts for.
@@ -350,7 +417,7 @@ def fetch_discovery_listings(
     # Deduplication ensures no redundant posts when shreddit fully succeeded.
     from . import reddit_arctic
     arctic_items = reddit_arctic.fetch_listings(
-        subreddits, depth=depth, query=query, sorts=("rising", "top")
+        valid_subs, depth=depth, query=query, sorts=("rising", "top")
     )
     if arctic_items:
         _log(f"discovery arctic supplement: {len(arctic_items)} posts")

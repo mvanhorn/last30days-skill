@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import html
 import re
+import secrets
 from collections import OrderedDict
 from collections.abc import Mapping, Sequence
 from datetime import date
+from urllib.parse import urlsplit
 
 from . import registers, render, schema
 from .library import LibraryEntry, public_markdown
@@ -24,7 +26,12 @@ INVITATION_PATTERN = re.compile(
     re.MULTILINE | re.DOTALL,
 )
 EVIDENCE_BLOCK_PATTERN = re.compile(r"<!-- EVIDENCE FOR SYNTHESIS.*?<!-- END EVIDENCE FOR SYNTHESIS -->", re.DOTALL)
-PASS_THROUGH_FOOTER_PATTERN = re.compile(r"<!-- PASS-THROUGH FOOTER.*?-->\n(.*?)<!-- END PASS-THROUGH FOOTER -->", re.DOTALL)
+PASS_THROUGH_FOOTER_PATTERN = re.compile(
+    r"^<!-- PASS-THROUGH FOOTER[^\n]*-->[ \t]*\n(.*?)^<!-- END PASS-THROUGH FOOTER -->[ \t]*$",
+    re.MULTILINE | re.DOTALL,
+)
+_PASS_THROUGH_FOOTER_START = re.compile(r"^<!-- PASS-THROUGH FOOTER[^\n]*-->[ \t]*$")
+_PASS_THROUGH_FOOTER_END = re.compile(r"^<!-- END PASS-THROUGH FOOTER -->[ \t]*$")
 # Line-by-line on purpose: no row inside the match may itself open or close a
 # fence, so an earlier ordinary ```text block cannot be stitched to the real
 # footer with the prose between them swallowed into the footer box.
@@ -40,8 +47,20 @@ FENCED_ENGINE_FOOTER_PATTERN = re.compile(
 CANONICAL_BOUNDARY_PATTERN = re.compile(r"\n?---\n# END OF last30days CANONICAL OUTPUT.*$", re.DOTALL)
 # render_for_html emits metadata as <!-- META: ... --> so it survives the
 # markdown converter (which escapes raw HTML inside paragraphs). Promoted to
-# a styled <div class="meta"> after conversion.
-META_MARKER_PATTERN = re.compile(r"<!--\s*META:\s*(.*?)\s*-->")
+# a styled <div class="meta"> at the block level.
+META_MARKER_PATTERN = re.compile(r"<!--\s*META:((?:(?!-->).)*?)-->")
+_STANDALONE_META_RAW_PATTERN = re.compile(r"<!--\s*META:((?:(?!-->).)*?)-->")
+_STANDALONE_META_PROMOTE_PATTERNS = (
+    re.compile(r"<p>\s*&lt;!--\s*META:((?:(?!--&gt;).)*?)--&gt;\s*</p>"),
+    re.compile(r"&lt;!--\s*META:((?:(?!--&gt;).)*?)--&gt;"),
+    re.compile(r"<p>\s*<!--\s*META:((?:(?!-->).)*?)-->\s*</p>"),
+    re.compile(r"<!--\s*META:((?:(?!-->).)*?)-->"),
+)
+_OPEN_PRE_RE = re.compile(r"<pre(?:\s[^>]*)?>", re.IGNORECASE)
+_CLOSE_PRE_RE = re.compile(r"</pre\s*>", re.IGNORECASE)
+_OPEN_CODE_RE = re.compile(r"<code(?:\s[^>]*)?>", re.IGNORECASE)
+_CLOSE_CODE_RE = re.compile(r"</code\s*>", re.IGNORECASE)
+_TEMPLATE_PLACEHOLDER_PATTERN = re.compile(r"__(?:TITLE|CSS|BODY|COLOPHON)__")
 
 CSS = """
 :root {
@@ -411,9 +430,10 @@ def render_html(
     synthesis_md: str | None = None,
     register: str = "default",
 ) -> str:
+    prepared_synthesis, synthesis_bounds = _wrap_untrusted_synthesis(synthesis_md)
     md = render.render_for_html(
         report,
-        synthesis_md=_strip_synthesis_invitation(synthesis_md),
+        synthesis_md=prepared_synthesis,
         save_path=save_path,
         fun_level=fun_level,
         register=register,
@@ -421,8 +441,7 @@ def render_html(
     md = _strip_evidence_block(md)
     md = _strip_canonical_boundary(md)
     md = _promote_prose_labels(md)
-    body = _markdown_to_html(md)
-    body = _wrap_engine_footer(body)
+    body = _markdown_to_html(md, untrusted_bounds=synthesis_bounds)
     body = _promote_meta_marker(body)
     colophon = _build_colophon(report)
     return _wrap_in_template(body, colophon, report.topic)
@@ -436,16 +455,16 @@ def render_html_comparison(
     synthesis_md: str | None = None,
 ) -> str:
     _ = fun_level
+    prepared_synthesis, synthesis_bounds = _wrap_untrusted_synthesis(synthesis_md)
     md = render.render_for_html_comparison(
         entity_reports,
-        synthesis_md=_strip_synthesis_invitation(synthesis_md),
+        synthesis_md=prepared_synthesis,
         save_path=save_path,
     )
     md = _strip_evidence_block(md)
     md = _strip_canonical_boundary(md)
     md = _promote_prose_labels(md)
-    body = _markdown_to_html(md)
-    body = _wrap_engine_footer(body)
+    body = _markdown_to_html(md, untrusted_bounds=synthesis_bounds)
     body = _promote_meta_marker(body)
     topic = " vs ".join(label for label, _ in entity_reports)
     colophon = _build_colophon(entity_reports[0][1], topic=topic)
@@ -463,7 +482,6 @@ def render_library_brief(entry: LibraryEntry, *, include_private: bool = True) -
     if entry.source_format == "finished-brief":
         md = _promote_prose_labels(md)
     body = _markdown_to_html(md)
-    body = _wrap_engine_footer(body)
     colophon = (
         '<footer class="colophon">'
         f"Saved research · {html.escape(entry.published_date.isoformat())} · "
@@ -475,7 +493,10 @@ def render_library_brief(entry: LibraryEntry, *, include_private: bool = True) -
     )
     # Ownership marker consumed by the library-feed prune: a generated-looking
     # filename alone must never be grounds for deletion.
-    return rendered.replace("</body>", f"{LIBRARY_BRIEF_MARKER}\n</body>", 1)
+    head, sep, tail = rendered.rpartition("</body>")
+    if sep:
+        return f"{head}{LIBRARY_BRIEF_MARKER}\n{sep}{tail}"
+    return rendered
 
 
 def render_library_index(
@@ -495,12 +516,13 @@ def render_library_index(
         '<span class="badge">RESEARCH LIBRARY</span>',
         '<h1>What the community is learning</h1>',
     ]
-    if feed_url is None:
+    safe_feed_url = _safe_library_href(feed_url) if feed_url is not None else None
+    if safe_feed_url is None:
         parts.append('<p>Saved last30days briefs, newest first.</p>')
     else:
         parts.extend([
             '<p>Saved last30days briefs, newest first. Follow the Atom feed to keep up.</p>',
-            f'<p><a class="subscribe" href="{html.escape(feed_url, quote=True)}">Subscribe via Atom</a></p>',
+            f'<p><a class="subscribe" href="{safe_feed_url}">Subscribe via Atom</a></p>',
         ])
     parts.append('</header>')
     if not entries:
@@ -508,19 +530,27 @@ def render_library_index(
     for topic, topic_entries in grouped.items():
         latest = topic_entries[0]
         latest_url = urls.get(latest.entry_id, f"briefs/{latest.output_name}")
+        safe_latest_url = _safe_library_href(latest_url)
         parts.extend([
             '<section class="library-topic">',
             '<div class="library-topic-heading">',
             f'<h2>{html.escape(topic)}</h2>',
-            f'<a href="{html.escape(latest_url, quote=True)}">Latest</a>',
-            '</div>',
         ])
+        if safe_latest_url is not None:
+            parts.append(f'<a href="{safe_latest_url}">Latest</a>')
+        parts.append('</div>')
         for entry in topic_entries:
             url = urls.get(entry.entry_id, f"briefs/{entry.output_name}")
+            safe_url = _safe_library_href(url)
+            headline_html = html.escape(entry.headline)
+            if safe_url is not None:
+                title_html = f'<h3><a href="{safe_url}">{headline_html}</a></h3>'
+            else:
+                title_html = f'<h3>{headline_html}</h3>'
             parts.extend([
                 '<article class="library-entry">',
                 f'<time datetime="{entry.published_date.isoformat()}">{entry.published_date.isoformat()}</time>',
-                f'<h3><a href="{html.escape(url, quote=True)}">{html.escape(entry.headline)}</a></h3>',
+                title_html,
                 f'<p>{html.escape(entry.summary)}</p>',
                 '</article>',
             ])
@@ -570,6 +600,25 @@ def _strip_synthesis_invitation(synthesis_md: str | None) -> str | None:
     return _strip_invitation(synthesis_md)
 
 
+def _prepare_synthesis_md(synthesis_md: str | None) -> str | None:
+    cleaned = _strip_synthesis_invitation(synthesis_md)
+    if cleaned is None:
+        return None
+    return _strip_canonical_boundary(cleaned)
+
+
+def _wrap_untrusted_synthesis(
+    synthesis_md: str | None,
+) -> tuple[str | None, tuple[str, str] | None]:
+    cleaned = _prepare_synthesis_md(synthesis_md)
+    if cleaned is None or not cleaned.strip():
+        return cleaned, None
+    nonce = secrets.token_hex(16)
+    start_marker = f"__LAST30DAYS_SYNTHESIS_START_{nonce}__"
+    end_marker = f"__LAST30DAYS_SYNTHESIS_END_{nonce}__"
+    return f"{start_marker}\n{cleaned.strip()}\n{end_marker}", (start_marker, end_marker)
+
+
 def _strip_canonical_boundary(md: str) -> str:
     return CANONICAL_BOUNDARY_PATTERN.sub("", md)
 
@@ -586,13 +635,68 @@ def _promote_prose_labels(md: str) -> str:
     return md
 
 
-def _markdown_to_html(md: str) -> str:
-    md, footers = _protect_engine_footers(md)
-    global _ENGINE_FOOTER_STORE
-    _ENGINE_FOOTER_STORE = footers
-    # Strip HTML comments EXCEPT preserved markers used for post-processing
-    # (META is promoted to <div class="meta"> after markdown conversion).
-    md = re.sub(r"<!--(?!\s*META:).*?-->", "", md, flags=re.DOTALL)
+def _strip_non_meta_comments(text: str) -> str:
+    """Strip HTML comments except ``META:`` markers in strict O(N) time."""
+    out: list[str] = []
+    pos = 0
+    while True:
+        start = text.find("<!--", pos)
+        if start == -1:
+            out.append(text[pos:])
+            break
+        end = text.find("-->", start + 4)
+        if end == -1:
+            out.append(text[pos:])
+            break
+        inner = text[start + 4 : end]
+        if inner.lstrip().startswith("META:"):
+            out.append(text[pos : end + 3])
+        else:
+            out.append(text[pos:start])
+        pos = end + 3
+    return "".join(out)
+
+
+def _strip_html_comments_outside_code(md: str) -> str:
+    lines = md.splitlines(keepends=True)
+    out: list[str] = []
+    prose_chunk: list[str] = []
+    in_code = False
+
+    def flush_prose() -> None:
+        if prose_chunk:
+            out.append(_strip_non_meta_comments("".join(prose_chunk)))
+            prose_chunk.clear()
+
+    for line in lines:
+        if line.strip().startswith("```"):
+            if not in_code:
+                flush_prose()
+                in_code = True
+                out.append(line)
+            else:
+                out.append(line)
+                in_code = False
+            continue
+        if in_code:
+            out.append(line)
+        else:
+            prose_chunk.append(line)
+    flush_prose()
+    return "".join(out)
+
+
+def _markdown_to_html(
+    md: str,
+    *,
+    untrusted_bounds: tuple[str, str] | None = None,
+    allow_engine_footers: bool = True,
+) -> str:
+    if allow_engine_footers:
+        md, footers = _protect_engine_footers(md, untrusted_bounds=untrusted_bounds)
+    else:
+        footers = {}
+    md = _strip_html_comments_outside_code(md)
     lines = md.splitlines()
     out: list[str] = []
     paragraph: list[str] = []
@@ -646,7 +750,17 @@ def _markdown_to_html(md: str) -> str:
         if stripped in footers:
             flush_paragraph()
             close_list()
-            out.append(stripped)
+            footer = html.escape(footers[stripped], quote=False)
+            out.append(f'<div class="engine-footer"><pre>{footer}</pre></div>')
+            index += 1
+            continue
+
+        meta_match = _STANDALONE_META_RAW_PATTERN.fullmatch(stripped)
+        if meta_match:
+            flush_paragraph()
+            close_list()
+            meta_text = html.escape(html.unescape(meta_match.group(1).strip()))
+            out.append(f'<div class="meta">{meta_text}</div>')
             index += 1
             continue
 
@@ -727,103 +841,164 @@ def _markdown_to_html(md: str) -> str:
     return "\n".join(out).strip()
 
 
-def _protect_engine_footers(md: str) -> tuple[str, dict[str, str]]:
+def _protect_engine_footers(
+    md: str,
+    *,
+    untrusted_bounds: tuple[str, str] | None = None,
+) -> tuple[str, dict[str, str]]:
     footers: dict[str, str] = {}
+    nonce = secrets.token_hex(16)
+    lines = md.splitlines()
+    out: list[str] = []
+    index = 0
+    in_code = False
+    in_untrusted = False
+    start_marker, end_marker = untrusted_bounds if untrusted_bounds is not None else (None, None)
 
-    def replace(match: re.Match[str]) -> str:
-        token = f"__LAST30DAYS_ENGINE_FOOTER_{len(footers)}__"
-        footers[token] = match.group(1).strip("\n")
-        return f"\n{token}\n"
+    def next_token(content: str) -> str:
+        token = f"__LAST30DAYS_ENGINE_FOOTER_{nonce}_{len(footers)}__"
+        footers[token] = content.strip("\n")
+        return token
 
-    md = PASS_THROUGH_FOOTER_PATTERN.sub(replace, md)
-    md = FENCED_ENGINE_FOOTER_PATTERN.sub(replace, md)
-    return md, footers
+    while index < len(lines):
+        line = lines[index]
+        stripped = line.strip()
+
+        if start_marker is not None and stripped == start_marker:
+            in_untrusted = True
+            index += 1
+            continue
+        if end_marker is not None and stripped == end_marker:
+            in_untrusted = False
+            if in_code:
+                # Close any unclosed code fence left inside untrusted synthesis
+                # so it cannot swallow the real engine footer appended after it.
+                out.append("```")
+                in_code = False
+            index += 1
+            continue
+
+        if in_untrusted:
+            if stripped.startswith("```"):
+                in_code = not in_code
+            out.append(line)
+            index += 1
+            continue
+
+        if in_code:
+            out.append(line)
+            if stripped.startswith("```"):
+                in_code = False
+            index += 1
+            continue
+
+        if stripped == "```text":
+            end_index = index + 1
+            while end_index < len(lines) and not lines[end_index].strip().startswith("```"):
+                end_index += 1
+            if end_index < len(lines) and lines[end_index].strip() == "```":
+                block = "\n".join(lines[index : end_index + 1])
+                match = FENCED_ENGINE_FOOTER_PATTERN.fullmatch(block)
+                if match:
+                    out.append("")
+                    out.append(next_token(match.group(1)))
+                    out.append("")
+                    index = end_index + 1
+                    continue
+            out.append(line)
+            in_code = True
+            index += 1
+            continue
+
+        if stripped.startswith("```"):
+            out.append(line)
+            in_code = True
+            index += 1
+            continue
+
+        if _PASS_THROUGH_FOOTER_START.fullmatch(line):
+            end_index = index + 1
+            while end_index < len(lines) and not _PASS_THROUGH_FOOTER_END.fullmatch(lines[end_index]):
+                end_index += 1
+            if end_index < len(lines):
+                body_text = "\n".join(lines[index + 1 : end_index])
+                if "All agents reported back!" in body_text:
+                    out.append("")
+                    out.append(next_token(body_text))
+                    out.append("")
+                    index = end_index + 1
+                    continue
+
+        out.append(line)
+        index += 1
+
+    return "\n".join(out), footers
+
+
+def _update_pre_code_depth(line: str, pre_depth: int, code_depth: int) -> tuple[int, int]:
+    pre_depth = max(0, pre_depth + len(_OPEN_PRE_RE.findall(line)) - len(_CLOSE_PRE_RE.findall(line)))
+    code_depth = max(0, code_depth + len(_OPEN_CODE_RE.findall(line)) - len(_CLOSE_CODE_RE.findall(line)))
+    return pre_depth, code_depth
 
 
 def _wrap_engine_footer(body: str) -> str:
-    def replace(match: re.Match[str]) -> str:
-        footer = html.escape(_ENGINE_FOOTER_STORE.get(match.group(0), ""), quote=False)
-        return f'<div class="engine-footer"><pre>{footer}</pre></div>'
-
-    return re.sub(
-        r"__LAST30DAYS_ENGINE_FOOTER_\d+__",
-        replace,
-        body,
-    )
-
-
-def _promote_meta_marker(body: str) -> str:
-    """Promote ``<!-- META: ... -->`` markers into a styled ``<div class="meta">``.
-
-    The marker is preserved through the comment-strip pass (see
-    _markdown_to_html exemption) but the markdown converter wraps it in
-    ``<p>`` and HTML-escapes the angle brackets. After conversion the body
-    contains shapes like:
-      <p>&lt;!-- META: TEXT --&gt;</p>
-      <p><!-- META: TEXT --></p>     (when not escaped)
-    Both collapse to ``<div class="meta">TEXT</div>``.
-    """
-    def replace(match: re.Match[str]) -> str:
-        # The marker survives the comment-strip pass, and the markdown reaching
-        # this point can include LLM-synthesized content derived from untrusted
-        # web/social bodies. The escaped-form branches below carry text the
-        # markdown pass already entity-escaped, while the raw-form fallbacks do
-        # not — so normalize with unescape, then escape exactly once. A crafted
-        # `<!-- META: <img src=x onerror=...> -->` thus cannot render as live
-        # markup in the saved, shareable HTML artifact, and legitimate
-        # date/source-name markers render unchanged.
-        text = html.escape(html.unescape(match.group(1).strip()))
-        return f'<div class="meta">{text}</div>'
-
-    # Escaped form (most common after markdown conversion)
-    body = re.sub(
-        r"<p>\s*&lt;!--\s*META:\s*(.*?)\s*--&gt;\s*</p>",
-        replace,
-        body,
-    )
-    body = re.sub(r"&lt;!--\s*META:\s*(.*?)\s*--&gt;", replace, body)
-    # Unescaped form (paranoid fallback)
-    body = re.sub(r"<p>\s*<!--\s*META:\s*(.*?)\s*-->\s*</p>", replace, body)
-    body = re.sub(r"<!--\s*META:\s*(.*?)\s*-->", replace, body)
+    """Compatibility shim: ``_markdown_to_html`` now renders protected footers inline."""
     return body
 
 
-_ENGINE_FOOTER_STORE: dict[str, str] = {}
+def _promote_meta_marker(body: str) -> str:
+    """Promote standalone ``<!-- META: ... -->`` markers into ``<div class="meta">``.
+
+    Only standalone block-level lines outside ``<pre>``/``<code>`` elements are
+    promoted so markers inside attributes (such as ``href="..."``), inline
+    text, or code blocks can never break out of their HTML context.
+    """
+    out: list[str] = []
+    pre_depth = 0
+    code_depth = 0
+    for line in body.splitlines():
+        if pre_depth == 0 and code_depth == 0:
+            stripped = line.strip()
+            promoted: str | None = None
+            for pattern in _STANDALONE_META_PROMOTE_PATTERNS:
+                match = pattern.fullmatch(stripped)
+                if match:
+                    text = html.escape(html.unescape(match.group(1).strip()))
+                    promoted = f'<div class="meta">{text}</div>'
+                    break
+            if promoted is not None:
+                out.append(promoted)
+                continue
+        out.append(line)
+        pre_depth, code_depth = _update_pre_code_depth(line, pre_depth, code_depth)
+    return "\n".join(out)
 
 # Schemes allowed in synthesized markdown links. The HTML artifact is opened in
 # a browser, so a permissive link parser exposes a stored-XSS vector: a
 # `[label](javascript:...)` or `[label](data:text/html,...)` link surviving the
 # LLM synthesis would render as a clickable script payload in the saved file.
 # Restrict link URLs to a small allowlist of schemes and accept relative URLs
-# (no scheme, no `:` before the first `/` or `?`). Anything else is rendered as
-# plain bracketed text so the label remains readable.
+# (no scheme, no `:` before the first `/` or `?`, and no protocol-relative `//`).
+# Anything else is rendered as plain bracketed text so the label remains readable.
 _SAFE_LINK_SCHEMES = frozenset({"http", "https", "mailto"})
+_SAFE_LIBRARY_LINK_SCHEMES = frozenset({"http", "https"})
+_INVALID_HOSTNAME_CHARS = frozenset(' "\'<>\\&;')
 
 
-def _is_safe_link_url(url: str) -> bool:
-    """Return True if a markdown link URL is safe to render as an `<a href>`.
-
-    A URL is safe if it either:
-    - has no scheme (relative URL, fragment, or path-only), or
-    - uses a scheme in the allowlist (http, https, mailto).
-
-    The scheme check is case-insensitive and tolerant of surrounding
-    whitespace per RFC 3986.
-
-    Precondition: ``url`` must already have been through ``html.escape`` (as it
-    is at the sole caller in ``_inline_markdown``). The safety of the no-scheme
-    branch relies on ``&`` having been escaped to ``&amp;`` so an entity-encoded
-    colon like ``&#58;`` cannot survive into the rendered ``href`` and be
-    decoded back to ``:`` by the browser. Passing a *raw* URL here (e.g.
-    ``javascript&#58;alert(1)``) would see no literal ``:``, return ``True``,
-    and emit a clickable payload — do not call this on un-escaped input.
-    """
+def _is_safe_url_candidate(
+    url: str,
+    allowed_schemes: frozenset[str],
+) -> bool:
+    # Reject any control characters (e.g. `java\x0Dscript:` or leading `\t`
+    # stripped by browser URL parsers before scheme detection).
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in url):
+        return False
     stripped = url.strip()
     if not stripped:
         return False
-    # Reject any control characters (e.g. `java\x0Dscript:` where a bare CR is
-    # smuggled into the scheme name and stripped by the browser's URL parser).
-    if any(ord(ch) < 0x20 for ch in stripped):
+    # Reject protocol-relative (`//evil.example`) and backslash-led URLs (`\\`,
+    # `\/`, `/\`) that browsers can resolve against an external host.
+    if stripped.startswith(("//", "\\", "/\\")):
         return False
     # No scheme — relative URL or fragment. Allow.
     colon = stripped.find(":")
@@ -838,15 +1013,79 @@ def _is_safe_link_url(url: str) -> bool:
     if earlier:
         return True
     scheme = stripped[:colon].lower()
-    return scheme in _SAFE_LINK_SCHEMES
+    if scheme not in allowed_schemes:
+        return False
+    if scheme in {"http", "https"}:
+        if stripped[colon : colon + 3] != "://":
+            return False
+        try:
+            parsed = urlsplit(stripped)
+            hostname = parsed.hostname
+            _ = parsed.port
+        except ValueError:
+            return False
+        if not hostname or any(ch in _INVALID_HOSTNAME_CHARS for ch in hostname):
+            return False
+    return True
+
+
+def _is_safe_link_url(
+    url: str,
+    *,
+    allowed_schemes: frozenset[str] = _SAFE_LINK_SCHEMES,
+) -> bool:
+    """Return True if a link URL is safe to render as an ``<a href>``.
+
+    A URL is safe if it either:
+    - has no scheme (relative URL, fragment, or path-only, excluding
+      protocol-relative ``//`` and backslash-led paths), or
+    - uses a scheme in ``allowed_schemes`` (default: http, https, mailto).
+
+    The scheme check is case-insensitive and tolerant of surrounding ASCII
+    spaces while rejecting all control characters.
+
+    Precondition: ``url`` must already have been through ``html.escape`` (as it
+    is in ``_inline_markdown`` and ``_safe_library_href``). Checks the escaped
+    string as well as up to two rounds of ``html.unescape`` so entity-encoded
+    schemes like ``javascript&#58;alert(1)`` or ``&#106;avascript:alert(1)``
+    are also rejected even if a downstream consumer decodes entities.
+    """
+    if not isinstance(url, str):
+        return False
+    candidate = url
+    for _ in range(3):
+        if not _is_safe_url_candidate(candidate, allowed_schemes):
+            return False
+        decoded = html.unescape(candidate)
+        if decoded == candidate:
+            break
+        candidate = decoded
+    return True
+
+
+def _safe_library_href(url: str) -> str | None:
+    """Validate and HTML-escape a library index URL, or return None if unsafe."""
+    if not isinstance(url, str):
+        return None
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in url):
+        return None
+    stripped = url.strip()
+    if not stripped:
+        return None
+    escaped = html.escape(stripped, quote=True)
+    if not _is_safe_link_url(escaped, allowed_schemes=_SAFE_LIBRARY_LINK_SCHEMES):
+        return None
+    return escaped
 
 
 def _inline_markdown(text: str) -> str:
     escaped = html.escape(text, quote=True)
+    nonce = secrets.token_hex(12)
+    code_prefix = f"__CODE_{nonce}_"
     code_tokens: dict[str, str] = {}
 
     def code_replace(match: re.Match[str]) -> str:
-        token = f"__CODE_{len(code_tokens)}__"
+        token = f"{code_prefix}{len(code_tokens)}__"
         code_tokens[token] = f"<code>{match.group(1)}</code>"
         return token
 
@@ -856,18 +1095,19 @@ def _inline_markdown(text: str) -> str:
     def link_replace(match: re.Match[str]) -> str:
         label = match.group(1)
         url = match.group(2)
-        # `url` is HTML-escaped (so `"` is `&quot;`, etc.) but
-        # `html.unescape` decoding before the scheme check would let a
-        # `javascript&#58;alert(1)` payload through. Inspect the literal
-        # bytes the regex captured instead — that matches what the browser
-        # ultimately sees in the href attribute.
-        if not _is_safe_link_url(url):
+        # Never allow an inline code span inside a link destination to expand
+        # into `<code>...</code>` inside `href="..."`.
+        if code_prefix in url or not _is_safe_link_url(url):
             return f"[{label}]({url})"
         return f'<a href="{url}" rel="noopener noreferrer">{label}</a>'
 
     escaped = re.sub(r"\[([^\]]+)\]\(([^)\s]+)\)", link_replace, escaped)
-    for token, value in code_tokens.items():
-        escaped = escaped.replace(token, value)
+    if code_tokens:
+        token_re = re.compile(rf"{re.escape(code_prefix)}\d+__")
+        escaped = token_re.sub(
+            lambda match: code_tokens.get(match.group(0), match.group(0)),
+            escaped,
+        )
     return escaped
 
 
@@ -881,7 +1121,35 @@ def _is_table_separator(line: str) -> bool:
 
 
 def _split_table_cells(line: str) -> list[str]:
-    return [cell.strip() for cell in line.strip().strip("|").split("|")]
+    """Split a Markdown table row on unescaped ``|`` and unescape ``\\|`` and ``\\\\``."""
+    stripped = line.strip()
+    if not stripped:
+        return []
+    if stripped.startswith("|"):
+        stripped = stripped[1:]
+    cells: list[str] = []
+    buf: list[str] = []
+    i = 0
+    n = len(stripped)
+    ended_with_delimiter = False
+    while i < n:
+        ch = stripped[i]
+        if ch == "\\" and i + 1 < n and stripped[i + 1] in ("|", "\\"):
+            buf.append(stripped[i + 1])
+            i += 2
+            ended_with_delimiter = False
+        elif ch == "|":
+            cells.append("".join(buf).strip())
+            buf = []
+            i += 1
+            ended_with_delimiter = True
+        else:
+            buf.append(ch)
+            i += 1
+            ended_with_delimiter = False
+    if not ended_with_delimiter:
+        cells.append("".join(buf).strip())
+    return cells
 
 
 def _render_table(rows: list[str]) -> str:
@@ -900,7 +1168,7 @@ def _render_table(rows: list[str]) -> str:
 
 def _build_colophon(report: schema.Report, *, topic: str | None = None) -> str:
     display_topic = topic or report.topic
-    generated = _generated_date(report)
+    generated = html.escape(_generated_date(report))
     version = render._skill_version()
     escaped_topic = html.escape(display_topic)
     rerun = html.escape(f"/last30days {display_topic}")
@@ -919,10 +1187,13 @@ def _generated_date(report: schema.Report) -> str:
 
 
 def _wrap_in_template(body: str, colophon: str, title: str) -> str:
-    return (
-        HTML_TEMPLATE
-        .replace("__TITLE__", html.escape(title))
-        .replace("__CSS__", CSS)
-        .replace("__BODY__", body)
-        .replace("__COLOPHON__", colophon)
+    replacements = {
+        "__TITLE__": html.escape(title),
+        "__CSS__": CSS,
+        "__BODY__": body,
+        "__COLOPHON__": colophon,
+    }
+    return _TEMPLATE_PLACEHOLDER_PATTERN.sub(
+        lambda match: replacements[match.group(0)],
+        HTML_TEMPLATE,
     )

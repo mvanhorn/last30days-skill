@@ -204,6 +204,21 @@ func TestBuildEnvDropsAllPreExistingPythonPath(t *testing.T) {
 	}
 }
 
+func TestBuildEnvDeduplicatesOverriddenExtraEnvKeys(t *testing.T) {
+	t.Setenv("LAST30DAYS_X_BACKEND", "${user_config.last30days_x_backend}")
+	out := buildEnv("/cache/dir", []string{"LAST30DAYS_X_BACKEND=xapi"})
+
+	var matches []string
+	for _, kv := range out {
+		if strings.HasPrefix(kv, "LAST30DAYS_X_BACKEND=") {
+			matches = append(matches, kv)
+		}
+	}
+	if len(matches) != 1 || matches[0] != "LAST30DAYS_X_BACKEND=xapi" {
+		t.Fatalf("LAST30DAYS_X_BACKEND entries = %#v, want single override LAST30DAYS_X_BACKEND=xapi", matches)
+	}
+}
+
 func TestRunSurfacesExitCode(t *testing.T) {
 	stub := makeStubPython(t)
 	cache := stageCache(t)

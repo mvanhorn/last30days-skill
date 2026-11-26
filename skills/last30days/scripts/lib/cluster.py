@@ -5,6 +5,27 @@ from __future__ import annotations
 from . import dedupe, entity_extract, schema
 
 
+def _cluster_score(group: list[schema.Candidate]) -> float:
+    """Highest score among in-window members, falling back to all members when all are stale."""
+    if not group:
+        return 0.0
+    in_window = [c for c in group if not schema.candidate_out_of_window(c)]
+    return max(c.final_score for c in (in_window or group))
+
+
+def _cluster_out_of_window(
+    cluster: schema.Cluster,
+    candidate_by_id: dict[str, schema.Candidate],
+) -> bool:
+    """True when every known member of the cluster is out of the requested window."""
+    members = [
+        candidate_by_id[cid]
+        for cid in cluster.candidate_ids
+        if cid in candidate_by_id
+    ]
+    return bool(members) and all(schema.candidate_out_of_window(c) for c in members)
+
+
 def _cluster_sort_key(candidate: schema.Candidate) -> tuple:
     """Sort key that partitions stale candidates below fresh ones.
 
@@ -117,7 +138,7 @@ def cluster_candidates(
                 candidate_ids=[candidate.candidate_id for candidate in group],
                 representative_ids=representatives,
                 sources=sorted({source for candidate in group for source in schema.candidate_sources(candidate)}),
-                score=max(candidate.final_score for candidate in group),
+                score=_cluster_score(group),
                 uncertainty=_cluster_uncertainty(group),
             )
         )
@@ -126,17 +147,27 @@ def cluster_candidates(
     clusters = _merge_entity_clusters(
         clusters,
         candidates,
-        min_shared_entities=2 if "discover-mode" in plan.notes else 1,
+        min_shared_entities=2,
+        topic_entities=entity_extract.extract_text_entities(plan.raw_topic),
     )
 
-    return sorted(clusters, key=lambda cluster: cluster.score, reverse=True)
+    candidate_by_id = {c.candidate_id: c for c in candidates}
+    return sorted(
+        clusters,
+        key=lambda cluster: (
+            1 if _cluster_out_of_window(cluster, candidate_by_id) else 0,
+            -cluster.score,
+        ),
+    )
 
 
 def _merge_entity_clusters(
     clusters: list[schema.Cluster],
     all_candidates: list[schema.Candidate],
     *,
-    min_shared_entities: int = 1,
+    min_shared_entities: int = 2,
+    topic_entities: set[str] | frozenset[str] = frozenset(),
+    max_cluster_size: int = 3,
 ) -> list[schema.Cluster]:
     """Merge small clusters that cover the same story across different sources.
 
@@ -161,16 +192,18 @@ def _merge_entity_clusters(
                 entities |= entity_extract.extract_text_entities(_candidate_text(cand))
         cluster_entities.append(entities)
 
-    # Only merge clusters with <= 3 items (don't merge already-large clusters)
+    # Track running merged cluster sizes so a small cluster cannot absorb
+    # unbounded unrelated stories past max_cluster_size.
     merged_into: dict[int, int] = {}  # index -> merge target index
+    cluster_sizes = [len(cl.candidate_ids) for cl in clusters]
     for i in range(len(clusters)):
-        if i in merged_into or len(clusters[i].candidate_ids) > 3:
+        if i in merged_into or cluster_sizes[i] >= max_cluster_size:
             continue
+        sources_i = set(clusters[i].sources)
         for j in range(i + 1, len(clusters)):
-            if j in merged_into or len(clusters[j].candidate_ids) > 3:
+            if j in merged_into or cluster_sizes[i] + cluster_sizes[j] > max_cluster_size:
                 continue
             # Require different sources to merge (same-source should already be grouped)
-            sources_i = set(clusters[i].sources)
             sources_j = set(clusters[j].sources)
             if sources_i == sources_j and len(sources_i) == 1:
                 continue
@@ -184,9 +217,20 @@ def _merge_entity_clusters(
                 continue
 
             shared_entities = cluster_entities[i] & cluster_entities[j]
+            if len(shared_entities) < min_shared_entities:
+                continue
+            if topic_entities:
+                non_topic_i = cluster_entities[i] - topic_entities
+                non_topic_j = cluster_entities[j] - topic_entities
+                if (non_topic_i or non_topic_j) and not (shared_entities - topic_entities):
+                    continue
             overlap = entity_extract.entity_overlap(cluster_entities[i], cluster_entities[j])
-            if len(shared_entities) >= min_shared_entities and overlap >= 0.45:
+            if overlap >= 0.45:
                 merged_into[j] = i
+                cluster_sizes[i] += cluster_sizes[j]
+                sources_i |= sources_j
+                if cluster_sizes[i] >= max_cluster_size:
+                    break
 
     if not merged_into:
         return clusters
@@ -214,6 +258,9 @@ def _merge_entity_clusters(
         # Pick representatives from combined pool
         combined_candidates = [candidate_map[cid] for cid in combined_cids if cid in candidate_map]
         combined_candidates.sort(key=_cluster_sort_key)
+        ordered_cids = [c.candidate_id for c in combined_candidates]
+        known_cids = set(ordered_cids)
+        ordered_cids.extend(cid for cid in combined_cids if cid not in known_cids)
         merge_text_cache = {
             c.candidate_id: dedupe._PreparedText(_candidate_text(c))
             for c in combined_candidates
@@ -229,10 +276,10 @@ def _merge_entity_clusters(
         result.append(schema.Cluster(
             cluster_id=cluster_id,
             title=combined_candidates[0].title if combined_candidates else cl.title,
-            candidate_ids=combined_cids,
+            candidate_ids=ordered_cids,
             representative_ids=reps,
             sources=sorted(combined_sources),
-            score=best_score,
+            score=_cluster_score(combined_candidates) if combined_candidates else best_score,
             uncertainty=_cluster_uncertainty(combined_candidates),
         ))
 
@@ -240,9 +287,11 @@ def _merge_entity_clusters(
 
 
 def _cluster_uncertainty(group: list[schema.Candidate]) -> str | None:
+    if not group:
+        return "thin-evidence"
     sources = {source for candidate in group for source in schema.candidate_sources(candidate)}
     if len(sources) == 1:
         return "single-source"
-    if max(candidate.final_score for candidate in group) < 55:
+    if _cluster_score(group) < 55:
         return "thin-evidence"
     return None

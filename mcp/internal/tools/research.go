@@ -5,8 +5,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"strings"
+	"unicode/utf8"
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -15,9 +17,18 @@ import (
 )
 
 // Config carries the version string used to namespace the per-user cache.
-// main passes its ldflags-stamped Version here.
+// main passes its ldflags-stamped Version here. EngineFS optionally overrides
+// the embedded Python engine tree (tests use it to inject stub scripts).
 type Config struct {
-	Version string
+	Version  string
+	EngineFS fs.FS
+}
+
+func (c Config) engineFS() (fs.FS, error) {
+	if c.EngineFS != nil {
+		return c.EngineFS, nil
+	}
+	return engine.EngineFS()
 }
 
 // BrowserCookiesEnvOverride is an explicit MCP-layer opt-in. It only removes
@@ -102,7 +113,7 @@ func makeResearchHandler(cfg Config) server.ToolHandlerFunc {
 			return mcplib.NewToolResultError(err.Error()), nil
 		}
 
-		src, err := engine.EngineFS()
+		src, err := cfg.engineFS()
 		if err != nil {
 			return mcplib.NewToolResultError(fmt.Sprintf("engine source unavailable: %v", err)), nil
 		}
@@ -145,7 +156,7 @@ func makeResearchHandler(cfg Config) server.ToolHandlerFunc {
 // The engine emits the strict-exit receipt only after rendering. Hosted
 // clarification uses the same exit code without producing a report.
 func isDegradedReport(res *engine.RunResult, runErr error, emit string) bool {
-	if res == nil || res.ExitCode != strictExitCode || res.TimedOut || errors.Is(runErr, context.Canceled) {
+	if res == nil || res.ExitCode != strictExitCode || res.TimedOut || res.StdoutTruncated || errors.Is(runErr, context.Canceled) {
 		return false
 	}
 	output := strings.TrimSpace(withoutReportChecklist(string(res.Stdout)))
@@ -230,8 +241,56 @@ func withBrowserCookiePolicy(args []string) []string {
 	return args
 }
 
+// xAPIOptInEnv tells the engine that X_BEARER_TOKEN was explicitly configured
+// in the MCP host environment, enabling xapi as a fallback without overriding
+// LAST30DAYS_X_BACKEND pins or higher-priority X credentials in .env/Keychain.
+const xAPIOptInEnv = "LAST30DAYS_X_API_OPT_IN=1"
+
 func researchExtraEnv() []string {
-	return []string{allowEnginePlanEnv, noJobsDigestEnv, noPatentDigestEnv, noReportChecklistEnv}
+	extra := []string{allowEnginePlanEnv, noJobsDigestEnv, noPatentDigestEnv, noReportChecklistEnv}
+	if shouldAutoEnableXAPI() {
+		extra = append(extra, xAPIOptInEnv)
+	}
+	return extra
+}
+
+// shouldAutoEnableXAPI opts into xapi as the tail fallback of Python's default
+// X chain when X_BEARER_TOKEN is explicitly provided in the MCP host
+// environment and LAST30DAYS_X_API_OPT_IN is not already set explicitly.
+// Python still honors explicit LAST30DAYS_X_BACKEND pins (while treating "auto"
+// as unpinned) and prefers usable higher-priority backends (bird when node and
+// cookies work, xai, xurl, xquik) ahead of xapi.
+func shouldAutoEnableXAPI() bool {
+	if !hasExplicitEnvValue("X_BEARER_TOKEN") {
+		return false
+	}
+	if hasExplicitEnvValue("LAST30DAYS_X_API_OPT_IN") {
+		return false
+	}
+	return true
+}
+
+func hasExplicitEnvValue(name string) bool {
+	value := strings.TrimSpace(os.Getenv(name))
+	return value != "" && !isUnsubstitutedUserConfig(value)
+}
+
+func isUnsubstitutedUserConfig(value string) bool {
+	const prefix = "${user_config."
+	if !strings.HasPrefix(value, prefix) || !strings.HasSuffix(value, "}") {
+		return false
+	}
+	inner := value[len(prefix) : len(value)-1]
+	if len(inner) == 0 {
+		return false
+	}
+	for i := 0; i < len(inner); i++ {
+		c := inner[i]
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') {
+			return false
+		}
+	}
+	return true
 }
 
 func browserCookiesAllowed() bool {
@@ -296,14 +355,38 @@ func boolArgument(args map[string]any, name string) (bool, error) {
 	return value, nil
 }
 
+// maxErrorStderrBytes caps the engine stderr excerpt included in an MCP tool
+// error payload so verbose diagnostics cannot produce oversized JSON-RPC frames.
+const maxErrorStderrBytes = 16 << 10
+
 // formatRunError flattens engine.Run's distinct error shapes into a single
-// user-facing message that includes the relevant stderr context.
+// user-facing message that includes the relevant bounded stderr context.
 func formatRunError(runErr error, res *engine.RunResult) string {
 	var msg strings.Builder
 	msg.WriteString(runErr.Error())
 	if res != nil && len(res.Stderr) > 0 {
-		msg.WriteString("\nengine stderr:\n")
-		msg.Write(res.Stderr)
+		stderr := res.Stderr
+		truncated := res.StderrTruncated
+		if len(stderr) > maxErrorStderrBytes {
+			stderr = stderr[len(stderr)-maxErrorStderrBytes:]
+			truncated = true
+		}
+		if truncated {
+			stderr = trimLeadingUTF8Continuation(stderr)
+			fmt.Fprintf(&msg, "\nengine stderr (truncated, showing last %d bytes):\n", len(stderr))
+		} else {
+			msg.WriteString("\nengine stderr:\n")
+		}
+		msg.Write(stderr)
 	}
 	return msg.String()
+}
+
+// trimLeadingUTF8Continuation drops up to three orphaned UTF-8 continuation
+// bytes after slicing a byte tail so valid UTF-8 output is not split mid-rune.
+func trimLeadingUTF8Continuation(b []byte) []byte {
+	for i := 0; i < 3 && len(b) > 0 && !utf8.RuneStart(b[0]); i++ {
+		b = b[1:]
+	}
+	return b
 }

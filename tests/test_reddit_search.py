@@ -122,7 +122,7 @@ class TestParse:
         first = posts[0]
         assert first["engagement"] == {"score": 1, "num_comments": 27, "upvote_ratio": None}
         assert first["created_utc"] == datetime(2026, 9, 4, 3, 26, 52, 161000, tzinfo=timezone.utc).timestamp()
-        assert first["author"] == ""
+        assert first["author"] == "grassyglassy"
         assert first["selftext"] == ""
         assert first["why_relevant"] == "Reddit search"
         assert first["relevance"] > 0

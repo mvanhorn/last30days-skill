@@ -45,6 +45,8 @@
       "Codex vs Cursor",
       "best travel credit cards"
     ],
-    "brandColor": "#6F42C1"
+    "brandColor": "#6F42C1",
+    "composerIcon": "./assets/icon.svg",
+    "logo": "./assets/icon.svg"
   }
 }

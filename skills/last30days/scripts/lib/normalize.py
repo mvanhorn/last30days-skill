@@ -2,11 +2,47 @@
 
 from __future__ import annotations
 
-import html
+import math
+from datetime import date, datetime, timezone
 from typing import Any
 from urllib.parse import urlparse
 
-from . import dates, schema
+from . import dates, schema, x_envelope
+
+
+def _parse_iso_day(value: str | None) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        if len(text) == 10:
+            return date.fromisoformat(text).isoformat()
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return (dt.astimezone(timezone.utc) if dt.tzinfo else dt).date().isoformat()
+    except ValueError:
+        return None
+
+
+def _matched_date_in_window(
+    date_str: str,
+    from_date: str | None,
+    to_date: str | None,
+) -> bool:
+    text = str(date_str or "").strip()
+    if not text:
+        return False
+    if not from_date and not to_date:
+        return True
+    iso = _parse_iso_day(text)
+    if not iso:
+        return False
+    start = _parse_iso_day(from_date) if from_date else None
+    end = _parse_iso_day(to_date) if to_date else None
+    if start and iso < start:
+        return False
+    if end and iso > end:
+        return False
+    return True
 
 
 def filter_by_date_range(
@@ -59,6 +95,7 @@ def normalize_source_items(
         ),
         "hackernews": _normalize_hackernews,
         "devto": _normalize_devto,
+        "v2ex": _normalize_v2ex,
         "stocktwits": _normalize_stocktwits,
         "dripstack": _normalize_dripstack,
         "bluesky": lambda s, i, idx, fd, td: _normalize_microblog(
@@ -333,6 +370,9 @@ def _normalize_reddit(
 ) -> schema.SourceItem:
     top_comments = item.get("top_comments") or []
     comment_text = _join_comment_excerpts(top_comments, "excerpt")
+    post_author = str(item.get("author") or "").strip()
+    if post_author.lower().removeprefix("/").removeprefix("u/") in ("", "[deleted]", "[removed]"):
+        post_author = ""
     body = "\n".join(
         part
         for part in [
@@ -359,6 +399,9 @@ def _normalize_reddit(
         metadata={
             "top_comments": top_comments,
             "comment_insights": item.get("comment_insights") or [],
+            # Preserve the OP username for post-normalization comment enrichment
+            # while keeping SourceItem.author = None on Reddit items.
+            **({"post_author": post_author} if post_author else {}),
             # Where the score and the comments came from (reddit_refs labels),
             # so a merge keeps the live score and render can say "score pending".
             **{
@@ -367,13 +410,18 @@ def _normalize_reddit(
                 if item.get(key)
             },
             # The comment a logged-in comment search matched: its date keeps
-            # an older thread in the window, and render labels it.
+            # an older thread in the window, and render labels it. Never attach
+            # a reply outside the requested [from_date, to_date] window (e.g.,
+            # post-cutoff replies in an --as-of run).
             **(
                 {
-                    "matched_comment_date": item["matched_comment"]["date"],
+                    "matched_comment_date": str(item["matched_comment"]["date"]).strip(),
                     "matched_comment_url": item["matched_comment"].get("url") or "",
                 }
-                if isinstance(item.get("matched_comment"), dict) and item["matched_comment"].get("date")
+                if isinstance(item.get("matched_comment"), dict)
+                and _matched_date_in_window(
+                    str(item["matched_comment"].get("date") or ""), from_date, to_date,
+                )
                 else {}
             ),
         },
@@ -387,9 +435,11 @@ def _normalize_x(
     from_date: str,
     to_date: str,
 ) -> schema.SourceItem:
-    # X returns post text HTML-escaped ("Tom &amp; Jerry"). Unescape it here so
-    # the title, the body, quotes copied from it and video titles read as written.
-    text = html.unescape(str(item.get("text") or "")).strip()
+    # X returns post text HTML-escaped ("Tom &amp; Jerry"). Use x_envelope's
+    # guarded unescape + control-char stripping + markup defanging so oversized
+    # numeric entities cannot crash normalization and encoded tokens cannot
+    # bypass sanitization.
+    text = x_envelope._clean_text(str(item.get("text") or "")).strip()
     mentioned = item.get("mentioned_handles") or []
     return _source_item(
         item_id=str(item.get("id") or f"X{index + 1}"),
@@ -602,6 +652,41 @@ def _normalize_devto(
         relevance_hint=item.get("relevance", 0.5),
         why_relevant=str(item.get("why_relevant") or ""),
         snippet=description or comment_text,
+        metadata={**(item.get("metadata") or {}), "top_comments": top_comments},
+    )
+
+
+def _normalize_v2ex(
+    source: str,
+    item: dict[str, Any],
+    index: int,
+    from_date: str,
+    to_date: str,
+) -> schema.SourceItem:
+    top_comments = _remap_comments(
+        item.get("top_comments") or [],
+        score_keys=("score",),
+        excerpt_keys=("text", "excerpt"),
+        preserve_absent_score=True,
+    )
+    comment_text = _join_comment_excerpts(top_comments, "excerpt")
+    title = str(item.get("title") or "").strip()
+    content = str(item.get("text") or "").strip()
+    body = "\n".join(part for part in [title, content, comment_text] if part)
+    return _source_item(
+        item_id=str(item.get("id") or f"V2EX{index + 1}"),
+        source=source,
+        title=title or f"V2EX topic {index + 1}",
+        body=body,
+        url=str(item.get("url") or ""),
+        author=str(item.get("author") or ""),
+        container="V2EX",
+        published_at=item.get("date"),
+        date_confidence=_date_confidence(item, from_date, to_date, default="high"),
+        engagement=item.get("engagement") or {},
+        relevance_hint=item.get("relevance", 0.5),
+        why_relevant=str(item.get("why_relevant") or ""),
+        snippet=content or comment_text,
         metadata={**(item.get("metadata") or {}), "top_comments": top_comments},
     )
 
@@ -1059,6 +1144,11 @@ def _normalize_polymarket(
             "question": question,
             "end_date": item.get("end_date"),
             "outcome_prices": item.get("outcome_prices") or [],
+            **(
+                {"outcome_market_ids": item["outcome_market_ids"]}
+                if item.get("outcome_market_ids")
+                else {}
+            ),
             "outcomes_remaining": item.get("outcomes_remaining"),
             # The market and price that stand for the event in the footer.
             **({"headline": item["headline"]} if item.get("headline") else {}),
@@ -1125,21 +1215,44 @@ def _normalize_grounding(
     title = str(item.get("title") or "").strip()
     snippet = str(item.get("snippet") or "").strip()
     url = str(item.get("url") or "").strip()
+    raw_meta = item.get("metadata")
+    metadata = dict(raw_meta) if isinstance(raw_meta, dict) else {}
+    raw_comments = item.get("top_comments")
+    if not isinstance(raw_comments, list) or not raw_comments:
+        meta_comments = metadata.get("top_comments")
+        raw_comments = meta_comments if isinstance(meta_comments, list) else []
+    top_comments = [dict(c) if isinstance(c, dict) else c for c in raw_comments]
+    if top_comments:
+        metadata["top_comments"] = top_comments
+    comment_text = _join_comment_excerpts(top_comments, "excerpt").strip() if top_comments else ""
+    enriched_via = item.get("enriched_via")
+    if enriched_via:
+        metadata["enriched_via"] = enriched_via
+    reddit_thread_score = item.get("reddit_thread_score")
+    if (
+        isinstance(reddit_thread_score, (int, float))
+        and not isinstance(reddit_thread_score, bool)
+        and math.isfinite(reddit_thread_score)
+    ):
+        metadata["reddit_thread_score"] = reddit_thread_score
+    reddit_subreddit = str(item.get("reddit_subreddit") or "").strip().removeprefix("r/")
+    if reddit_subreddit:
+        metadata["reddit_subreddit"] = reddit_subreddit
     return _source_item(
         item_id=str(item.get("id") or f"W{index + 1}"),
         source=source,
         title=title or _domain_from_url(url) or f"Web result {index + 1}",
-        body="\n".join(part for part in [title, snippet] if part),
+        body="\n".join(part for part in [title, snippet, comment_text] if part),
         url=url,
         author=None,
         container=str(item.get("source_domain") or _domain_from_url(url) or ""),
         published_at=item.get("date"),
         date_confidence=_date_confidence(item, from_date, to_date),
-        engagement=item.get("engagement") or {},
+        engagement=dict(item.get("engagement") or {}),
         relevance_hint=item.get("relevance", 0.5),
         why_relevant=str(item.get("why_relevant") or ""),
         snippet=snippet,
-        metadata=item.get("metadata") or {},
+        metadata=metadata,
     )
 
 

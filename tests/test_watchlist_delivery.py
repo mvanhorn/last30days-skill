@@ -54,7 +54,7 @@ def test_format_message_handles_zero_counts():
 
 # === Tests for _send_slack_webhook() ===
 
-@patch('watchlist.http.post')
+@patch('watchlist.http.post_raw')
 
 
 def test_send_slack_webhook_format(mock_post):
@@ -71,7 +71,7 @@ def test_send_slack_webhook_format(mock_post):
     assert call_args[1]["json_data"] == {"text": "Test message"}
     assert call_args[1]["timeout"] == 10
 
-@patch('watchlist.http.post')
+@patch('watchlist.http.post_raw')
 
 
 def test_send_slack_webhook_raises_on_error(mock_post):
@@ -86,7 +86,7 @@ def test_send_slack_webhook_raises_on_error(mock_post):
 
 # === Tests for _send_generic_webhook() ===
 
-@patch('watchlist.http.post')
+@patch('watchlist.http.post_raw')
 
 
 def test_send_generic_webhook_format(mock_post):
@@ -107,7 +107,7 @@ def test_send_generic_webhook_format(mock_post):
     assert "timestamp" in json_data
     assert isinstance(json_data["timestamp"], float)
 
-@patch('watchlist.http.post')
+@patch('watchlist.http.post_raw')
 
 
 def test_send_generic_webhook_raises_on_error(mock_post):
@@ -123,7 +123,7 @@ def test_send_generic_webhook_raises_on_error(mock_post):
 # === Tests for _deliver_findings() ===
 
 @patch('watchlist.store.get_setting')
-@patch('watchlist.http.post')
+@patch('watchlist.http.post_raw')
 
 
 def test_deliver_findings_sends_when_new_greater_than_zero(mock_post, mock_get_setting):
@@ -138,7 +138,7 @@ def test_deliver_findings_sends_when_new_greater_than_zero(mock_post, mock_get_s
     assert mock_post.called
 
 @patch('watchlist.store.get_setting')
-@patch('watchlist.http.post')
+@patch('watchlist.http.post_raw')
 
 
 def test_deliver_findings_skips_when_new_is_zero(mock_post, mock_get_setting):
@@ -153,7 +153,7 @@ def test_deliver_findings_skips_when_new_is_zero(mock_post, mock_get_setting):
     assert not mock_post.called
 
 @patch('watchlist.store.get_setting')
-@patch('watchlist.http.post')
+@patch('watchlist.http.post_raw')
 
 
 def test_deliver_findings_skips_when_channel_empty(mock_post, mock_get_setting):
@@ -168,7 +168,7 @@ def test_deliver_findings_skips_when_channel_empty(mock_post, mock_get_setting):
     assert not mock_post.called
 
 @patch('watchlist.store.get_setting')
-@patch('watchlist.http.post')
+@patch('watchlist.http.post_raw')
 
 
 def test_deliver_findings_uses_slack_format_for_slack_urls(mock_post, mock_get_setting):
@@ -185,7 +185,7 @@ def test_deliver_findings_uses_slack_format_for_slack_urls(mock_post, mock_get_s
     assert "Test Topic" in json_data["text"]
 
 @patch('watchlist.store.get_setting')
-@patch('watchlist.http.post')
+@patch('watchlist.http.post_raw')
 
 
 def test_deliver_findings_uses_generic_format_for_other_urls(mock_post, mock_get_setting):
@@ -203,7 +203,7 @@ def test_deliver_findings_uses_generic_format_for_other_urls(mock_post, mock_get
     assert "timestamp" in json_data
 
 @patch('watchlist.store.get_setting')
-@patch('watchlist.http.post')
+@patch('watchlist.http.post_raw')
 
 
 def test_deliver_findings_handles_failure_gracefully(mock_post, mock_get_setting, capsys):
@@ -238,7 +238,7 @@ def test_webhook_transport_keeps_url_out_of_diagnostics():
     assert log.call_args_list == []
 
 @patch('watchlist.store.get_setting')
-@patch('watchlist.http.post')
+@patch('watchlist.http.post_raw')
 
 
 def test_deliver_findings_rejects_non_https_slack_substring(mock_post, mock_get_setting, capsys):
@@ -256,7 +256,7 @@ def test_deliver_findings_rejects_non_https_slack_substring(mock_post, mock_get_
     assert "https://" in capsys.readouterr().err
 
 @patch('watchlist.store.get_setting')
-@patch('watchlist.http.post')
+@patch('watchlist.http.post_raw')
 
 
 def test_deliver_findings_slack_match_is_exact_host(mock_post, mock_get_setting):
@@ -274,7 +274,7 @@ def test_deliver_findings_slack_match_is_exact_host(mock_post, mock_get_setting)
     assert "text" not in json_data  # not the Slack {"text": ...} shape
 
 @patch('watchlist.store.get_setting')
-@patch('watchlist.http.post')
+@patch('watchlist.http.post_raw')
 
 
 def test_deliver_findings_respects_delivery_mode(mock_post, mock_get_setting):

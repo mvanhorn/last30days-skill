@@ -1,6 +1,6 @@
 # /last30days
 
-[English](README.md) | [Français](README.fr.md) | [Deutsch](README.de.md) | [Español](README.es.md) | [Português (Brasil)](README.pt-BR.md) | [日本語](README.ja.md) | [简体中文](README.zh-CN.md) | [العربية](README.ar.md) | فارسی | [Türkçe](README.tr.md)
+[English](README.md) | [Français](README.fr.md) | [Deutsch](README.de.md) | [Español](README.es.md) | [Português (Brasil)](README.pt-BR.md) | [日本語](README.ja.md) | [简体中文](README.zh-CN.md) | [العربية](README.ar.md) | فارسی | [Türkçe](README.tr.md) | [Tiếng Việt](README.vi.md)
 
 <p align="center">
   <img src="media/pr-assets/last30days-ad.gif" width="720" alt="last30days - یک موتور جستجو با هدایت ایجنت هوش مصنوعی که بر اساس مردم جستجو می‌کند، نه ویراستاران" />
@@ -224,6 +224,10 @@ npx skills update -g
 
 لیست کردن و حذف با `npx skills list -g` و `npx skills remove last30days -g`.
 
+### DeepSeek Harness
+
+[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH) مهارت‌ها را از `~/.agents/skills` (یا `$DSH_AGENTS_HOME/skills` در صورت تنظیم) بارگذاری می‌کند. نصب سراسری با `npx skills add mvanhorn/last30days-skill -g` دقیقاً last30days را همین‌جا قرار می‌دهد، بنابراین DSH بدون تنظیمات اضافه آن را پیدا می‌کند. پس از نصب، DSH را دوباره راه‌اندازی کنید.
+
 ### claude.ai (وب)
 
 1. [دانلود `last30days.skill`](https://github.com/mvanhorn/last30days-skill/releases/latest/download/last30days.skill) از آخرین انتشار
@@ -369,11 +373,11 @@ skills/last30days/scripts/setup-keychain.sh --delete XAI_API_KEY
 
 ## تاریخچه ستاره‌های گیت‌هاب
 
-<a href="https://star-history.dera.page/#mvanhorn/last30days-skill&Date">
+<a href="https://github.com/mvanhorn/last30days-skill/stargazers">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://star-history.dera.page/svg?repos=mvanhorn/last30days-skill&type=Date&theme=dark" />
-    <source media="(prefers-color-scheme: light)" srcset="https://star-history.dera.page/svg?repos=mvanhorn/last30days-skill&type=Date" />
-    <img alt="Star History Chart" src="https://star-history.dera.page/svg?repos=mvanhorn/last30days-skill&type=Date" />
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/mvanhorn/last30days-skill/star-history-assets/star-history-dark.svg" />
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/mvanhorn/last30days-skill/star-history-assets/star-history-light.svg" />
+    <img alt="Star History Chart" src="https://raw.githubusercontent.com/mvanhorn/last30days-skill/star-history-assets/star-history-light.svg" />
   </picture>
 </a>
 

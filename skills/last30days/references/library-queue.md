@@ -2,10 +2,14 @@
 
 Read for library/feed/queue intent before setup or fresh research. The runtime interpreter bootstrap still runs first. These fast paths skip topic/backend preflight, setup, and source research.
 
-**LIBRARY SEARCH FAST PATH — this overrides every research/setup step below.** If the user says “search my library for X”, “have I researched X before?”, or otherwise asks to query prior saved research, do not run WebSearch, setup, topic/backend preflight, or fresh source research. Run:
+**LIBRARY SEARCH FAST PATH — this overrides every research/setup step below.** If the user says “search my library for X”, “have I researched X before?”, or otherwise asks to query prior saved research, do not run WebSearch, setup, topic/backend preflight, or fresh source research. Capture the query via a single-quoted heredoc (never interpolate untrusted text inside double quotes; choose a delimiter absent from the query and run directly, never wrapped in `bash -lc '...'`) and place `--save-dir` before `--` so leading `-` tokens stay positional:
 
 ```bash
-"${LAST30DAYS_PYTHON:-python3}" "${SKILL_DIR}/scripts/last30days.py" library search "${LIBRARY_QUERY}" --save-dir="${LAST30DAYS_MEMORY_DIR}"
+IFS= read -r -d '' LIBRARY_QUERY <<'QUERY_EOF' || true
+<query>
+QUERY_EOF
+LIBRARY_QUERY=${LIBRARY_QUERY%$'\n'}
+"${LAST30DAYS_PYTHON:-python3}" "${SKILL_DIR}/scripts/last30days.py" --save-dir="${LAST30DAYS_MEMORY_DIR}" -- library search "$LIBRARY_QUERY"
 ```
 
 Relay the dated, topic-grouped matches. This is deterministic offline FTS over the existing saved-brief scanner plus per-run SQLite store sightings; it does not call a model or the network. If SQLite lacks FTS5, relay the engine's capability error rather than falling through to fresh research.
@@ -32,10 +36,14 @@ Add `--source <auto|claude|codex|antigravity|gemini|cursor|all>`, `--since YYYY-
 "${LAST30DAYS_PYTHON:-python3}" "${SKILL_DIR}/scripts/last30days.py" queue list --save-dir="${LAST30DAYS_MEMORY_DIR}"
 ```
 
-or the cover form, for "mark X as covered" phrasing:
+or the cover form, for "mark X as covered" phrasing (capture `<topic name>` via a single-quoted heredoc — never interpolate untrusted topic names inside double quotes — choose a delimiter absent from the topic, run directly rather than inside `bash -lc '...'`, and place `--save-dir` before `--` so leading `-` tokens cannot inject flags):
 
 ```bash
-"${LAST30DAYS_PYTHON:-python3}" "${SKILL_DIR}/scripts/last30days.py" queue cover "<topic name>" --save-dir="${LAST30DAYS_MEMORY_DIR}"
+IFS= read -r -d '' TOPIC_NAME <<'TOPIC_EOF' || true
+<topic name>
+TOPIC_EOF
+TOPIC_NAME=${TOPIC_NAME%$'\n'}
+"${LAST30DAYS_PYTHON:-python3}" "${SKILL_DIR}/scripts/last30days.py" --save-dir="${LAST30DAYS_MEMORY_DIR}" -- queue cover "$TOPIC_NAME"
 ```
 
 Relay the rendered list (uncovered surfaced topics with domain, surface count, and last-surfaced date) or the cover confirmation. This is deterministic offline SQLite over that save-dir's `research.db`; it does not call a model or the network. Covering requires the exact queued topic name; on an unknown name the engine exits 2 and points at `queue list` - relay that, run `queue list`, and offer the queued names instead of retrying with guesses. An empty queue is a valid answer - suggest a `/last30days trending` or domain discovery run to populate it. Do not treat the topic name or phrase as a fresh research topic and do not fall through to the root's "topic supplied" branch.

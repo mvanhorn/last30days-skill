@@ -12,18 +12,109 @@ The createSession endpoint accepts main-account passwords too, but they're
 bad hygiene (no scope, can't revoke individually).
 """
 
+import hashlib
 import math
 import os
 import re
+import threading
 import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlencode, urlsplit
 
-from . import http, log
+from . import auth_safety, http, log, public_host
 
 BSKY_SESSION_URL = "https://bsky.social/xrpc/com.atproto.server.createSession"
 BSKY_REFRESH_URL = "https://bsky.social/xrpc/com.atproto.server.refreshSession"
 _DEFAULT_BSKY_SEARCH_HOST = "api.bsky.app"
+_BSKY_HOST_RE = re.compile(
+    r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$"
+)
+_BSKY_DISALLOWED_SUFFIXES = (".localhost", ".local", ".internal", ".localdomain", ".home.arpa")
+_BSKY_TRUSTED_HOSTS = frozenset({"bsky.app", "bsky.social"})
+_BSKY_TRUSTED_SUFFIXES = (".bsky.app", ".bsky.social")
+
+
+def _is_trusted_bsky_host(host: str) -> bool:
+    """Return True when ``host`` is a Bluesky domain safe for bsky.social JWTs."""
+    normalized = (host or "").strip().lower()
+    return normalized in _BSKY_TRUSTED_HOSTS or normalized.endswith(_BSKY_TRUSTED_SUFFIXES)
+
+
+def _validate_search_host(raw: Any) -> Optional[str]:
+    """Validate and normalize a BSKY_SEARCH_HOST override to a bare public FQDN."""
+    if not isinstance(raw, str):
+        return None
+    text = raw.strip()
+    if not text:
+        return None
+    if any(ch.isspace() or ord(ch) < 0x20 or ord(ch) == 0x7F for ch in text):
+        return None
+    # Strip a single pasted https:// origin (reject http:// and other schemes).
+    if text.lower().startswith("https://"):
+        text = text[len("https://"):]
+    if text.endswith("/"):
+        text = text[:-1]
+    if not text or not text.isascii():
+        return None
+    if any(ch in text for ch in "/\\@?#:[]%"):
+        return None
+    try:
+        parts = urlsplit(f"https://{text}")
+        port = parts.port
+    except ValueError:
+        return None
+    if (
+        parts.scheme != "https"
+        or parts.username is not None
+        or parts.password is not None
+        or port is not None
+        or parts.path != ""
+        or parts.query != ""
+        or parts.fragment != ""
+    ):
+        return None
+    host = (parts.hostname or "").lower()
+    if not host or len(host) > 253 or parts.netloc.lower() != host:
+        return None
+    if not _BSKY_HOST_RE.fullmatch(host):
+        return None
+    if host == "localhost" or host.endswith(_BSKY_DISALLOWED_SUFFIXES):
+        return None
+    if public_host._parse_ip_literal(host) is not None or host.rsplit(".", 1)[-1].isdigit():
+        return None
+    if not public_host.is_public_address_syntax(f"https://{host}"):
+        return None
+    return host
+
+
+def _bsky_search_redirect_guard(expected_host: str):
+    """Allow redirects only over HTTPS to the exact validated search host."""
+    target_host = expected_host.lower()
+
+    def _guard(newurl: str) -> bool:
+        if not isinstance(newurl, str) or not newurl or newurl != newurl.strip():
+            return False
+        if any(ch.isspace() or ord(ch) < 0x20 or ord(ch) == 0x7F for ch in newurl):
+            return False
+        if not public_host.is_public_address_syntax(newurl):
+            return False
+        try:
+            parts = urlsplit(newurl)
+            port = parts.port
+        except ValueError:
+            return False
+        return (
+            parts.scheme.lower() == "https"
+            and parts.username is None
+            and parts.password is None
+            and "\\" not in parts.netloc
+            and port in (None, 443)
+            and (parts.hostname or "").lower() == target_host
+        )
+
+    return _guard
 
 
 def _resolve_search_url(config: Optional[Dict[str, Any]] = None) -> str:
@@ -34,12 +125,10 @@ def _resolve_search_url(config: Optional[Dict[str, Any]] = None) -> str:
     os.environ, so check both — same hybrid pattern as last30days.py for
     LAST30DAYS_STORE.
 
-    Hardens user-supplied host values against three common mis-configurations:
-    whitespace (e.g. " api.bsky.app "), embedded path components (e.g.
-    "api.bsky.app/xrpc/proxy") that would double the /xrpc/ segment, and
-    embedded scheme prefixes (e.g. "https://api.bsky.app"). On any of these
-    we log a warning and fall back to the default rather than building an
-    invalid URL with an opaque downstream error.
+    Strictly validates user-supplied host values as bare public FQDNs:
+    rejects non-HTTPS schemes, embedded paths, queries, fragments, userinfo,
+    ports, whitespace/control chars, IP literals, and localhost/private hosts.
+    On invalid input we log a warning and fall back to the default.
     """
     config = config or {}
     raw = (
@@ -47,18 +136,12 @@ def _resolve_search_url(config: Optional[Dict[str, Any]] = None) -> str:
         or config.get("BSKY_SEARCH_HOST")
         or _DEFAULT_BSKY_SEARCH_HOST
     )
-    host = raw.strip().rstrip("/")
-    # Strip embedded scheme so users who paste full URLs do not break the f-string.
-    for prefix in ("https://", "http://"):
-        if host.lower().startswith(prefix):
-            host = host[len(prefix):]
-            break
-    if not host or "/" in host or " " in host:
-        # Embedded path or whitespace remains — don't trust it. Default + log.
+    host = _validate_search_host(raw)
+    if not host:
         if raw != _DEFAULT_BSKY_SEARCH_HOST:
             _log(
-                f"BSKY_SEARCH_HOST={raw!r} is not a bare hostname; "
-                f"falling back to default {_DEFAULT_BSKY_SEARCH_HOST!r}"
+                f"BSKY_SEARCH_HOST is not a valid public hostname; "
+                f"falling back to {_DEFAULT_BSKY_SEARCH_HOST}"
             )
         host = _DEFAULT_BSKY_SEARCH_HOST
     return f"https://{host}/xrpc/app.bsky.feed.searchPosts"
@@ -88,12 +171,29 @@ DEPTH_CONFIG = {
     "deep": 60,
 }
 
-# Module-level token cache (valid for the lifetime of a single research run)
-_cached_token: Optional[str] = None
-_cached_refresh_token: Optional[str] = None
-_token_created_at: float = 0.0
-_session_error: Optional[str] = None
-_refresh_error_status: Optional[int] = None
+@dataclass
+class _SessionEntry:
+    access_token: str
+    refresh_token: Optional[str]
+    created_at: float
+
+
+@dataclass
+class _InflightAuth:
+    event: threading.Event
+    token: Optional[str] = None
+    error_msg: Optional[str] = "Bluesky authentication failed (unknown error)"
+    error_status: Optional[int] = None
+    did_reauth: bool = False
+
+
+# Module-level session cache and unified singleflight auth slots keyed by
+# (handle, sha256(app_password)). _session_lock guards in-memory state only and
+# is never held across network I/O or event waits.
+_session_lock = threading.Lock()
+_session_cache: Dict[tuple[str, str], _SessionEntry] = {}
+_inflight_auth: Dict[tuple[str, str], _InflightAuth] = {}
+_cache_generation: int = 0
 _TOKEN_MAX_AGE_SECONDS = 5400  # 90 minutes (conservative, tokens last ~2 hours)
 
 
@@ -101,24 +201,34 @@ def _log(msg: str):
     log.source_log("Bluesky", msg, tty_only=False)
 
 
-def _create_session(handle: str, app_password: str) -> Optional[str]:
-    """Create an AT Protocol session and return the access token.
+def _wait_for_inflight_auth(inflight: _InflightAuth) -> None:
+    inflight.event.wait()
 
-    Args:
-        handle: Bluesky handle (e.g. user.bsky.social)
-        app_password: App password from bsky.app/settings/app-passwords
 
-    Returns:
-        Access JWT string, or None on failure. Sets _session_error on failure.
-    """
-    global _cached_token, _cached_refresh_token, _token_created_at, _session_error
-    if _cached_token and (time.monotonic() - _token_created_at < _TOKEN_MAX_AGE_SECONDS):
-        return _cached_token
-    if _cached_token:
-        _log("Session token expired, re-authenticating")
-        _cached_token = None
-        _token_created_at = 0.0
+def _credential_key(handle: str, app_password: str) -> tuple[str, str]:
+    digest = hashlib.sha256(app_password.encode("utf-8")).hexdigest()
+    return (handle, digest)
 
+
+def _evict_session(
+    cred_key: tuple[str, str],
+    *,
+    expected_token: Optional[str] = None,
+) -> None:
+    with _session_lock:
+        entry = _session_cache.get(cred_key)
+        if entry is None:
+            return
+        if expected_token is None or entry.access_token == expected_token:
+            _session_cache.pop(cred_key, None)
+
+
+def _execute_create_session_request(
+    handle: str,
+    app_password: str,
+    cred_key: tuple[str, str],
+    generation: int,
+) -> tuple[Optional[str], Optional[str], Optional[int]]:
     try:
         response = http.request(
             "POST",
@@ -126,87 +236,321 @@ def _create_session(handle: str, app_password: str) -> Optional[str]:
             json_data={"identifier": handle, "password": app_password},
             timeout=15,
         )
-        token = response.get("accessJwt")
+        token = response.get("accessJwt") if isinstance(response, dict) else None
         if token:
-            _cached_token = token
-            _cached_refresh_token = response.get("refreshJwt")
-            _token_created_at = time.monotonic()
-            _session_error = None
+            with _session_lock:
+                if _cache_generation == generation:
+                    _session_cache[cred_key] = _SessionEntry(
+                        access_token=token,
+                        refresh_token=response.get("refreshJwt"),
+                        created_at=time.monotonic(),
+                    )
             _log("Session created successfully")
-            return token
-        _log("No accessJwt in session response")
-        _session_error = "No accessJwt in session response"
-        return None
+            return token, None, None
+        error_msg = "No accessJwt in session response"
+        _log(error_msg)
+        return None, error_msg, None
     except http.HTTPError as e:
         if e.status_code == 403 and e.body and "cloudflare" in e.body.lower():
-            _session_error = "Cloudflare blocked the request (403 Forbidden). This is a network-level block, not an auth issue. Try a different network or VPN."
+            error_msg = "Cloudflare blocked the request (403 Forbidden). This is a network-level block, not an auth issue. Try a different network or VPN."
         elif e.status_code == 401:
-            _session_error = "Invalid credentials (401 Unauthorized). Check BSKY_HANDLE and BSKY_APP_PASSWORD."
+            error_msg = "Invalid credentials (401 Unauthorized). Check BSKY_HANDLE and BSKY_APP_PASSWORD."
         else:
-            _session_error = f"Session request failed: {e}"
-        _log(f"Session creation failed: {_session_error}")
-        return None
+            safe_err = auth_safety.scrub_secrets(str(e), (app_password,))
+            error_msg = f"Session request failed: {safe_err}"
+        _log(f"Session creation failed: {error_msg}")
+        return None, error_msg, e.status_code
     except Exception as e:
-        _session_error = f"Session request failed: {type(e).__name__}: {e}"
-        _log(f"Session creation failed: {_session_error}")
-        return None
+        safe_err = auth_safety.scrub_secrets(str(e), (app_password,))
+        error_msg = f"Session request failed: {type(e).__name__}: {safe_err}"
+        _log(f"Session creation failed: {error_msg}")
+        return None, error_msg, None
 
 
-def _refresh_session(refresh_jwt: Optional[str]) -> Optional[str]:
-    """Refresh an access token using the cached AT Protocol refresh token.
-
-    Returns the new access token on success.  ``_refresh_error_status`` records
-    an HTTP status so the caller can distinguish an invalid refresh token
-    (which should fall back to createSession) from a transient failure.
-    """
-    global _cached_token, _cached_refresh_token, _token_created_at
-    global _session_error, _refresh_error_status
-
-    _refresh_error_status = None
-    if not refresh_jwt:
-        _session_error = "No Bluesky refresh token is available"
-        return None
+def _execute_refresh_request(
+    refresh_jwt: Optional[str],
+    *,
+    cred_key: Optional[tuple[str, str]] = None,
+    generation: Optional[int] = None,
+) -> tuple[Optional[str], Optional[str], Optional[int]]:
+    clean_refresh, token_err = auth_safety.normalize_header_token(refresh_jwt)
+    if token_err:
+        error_msg = f"Bluesky session refresh failed: {token_err}"
+        _log(f"Session refresh failed: {error_msg}")
+        return None, error_msg, None
+    if not clean_refresh:
+        return None, "No Bluesky refresh token is available", None
 
     try:
         response = http.request(
             "POST",
             BSKY_REFRESH_URL,
-            headers={"Authorization": f"Bearer {refresh_jwt}"},
+            headers={"Authorization": f"Bearer {clean_refresh}"},
             timeout=15,
             retries=0,
         )
-        token = response.get("accessJwt")
+        token = response.get("accessJwt") if isinstance(response, dict) else None
         if not token:
-            _session_error = "No accessJwt in refresh session response"
-            return None
-        _cached_token = token
-        _cached_refresh_token = response.get("refreshJwt") or refresh_jwt
-        _token_created_at = time.monotonic()
-        _session_error = None
-        return token
+            return None, "No accessJwt in refresh session response", None
+        new_refresh = response.get("refreshJwt") or clean_refresh
+        if cred_key is not None:
+            with _session_lock:
+                if generation is None or _cache_generation == generation:
+                    _session_cache[cred_key] = _SessionEntry(
+                        access_token=token,
+                        refresh_token=new_refresh,
+                        created_at=time.monotonic(),
+                    )
+        return token, None, None
     except http.HTTPError as e:
-        _refresh_error_status = e.status_code
-        _session_error = (
+        error_msg = (
             "Bluesky refresh token is invalid (401/400)"
             if e.status_code in (400, 401)
             else f"Bluesky session refresh failed (HTTP {e.status_code})"
         )
-        _log(f"Session refresh failed: {_session_error}")
-        return None
+        _log(f"Session refresh failed: {error_msg}")
+        return None, error_msg, e.status_code
     except Exception as e:
-        _session_error = f"Bluesky session refresh failed: {type(e).__name__}"
-        _log(f"Session refresh failed: {_session_error}")
-        return None
+        error_msg = f"Bluesky session refresh failed: {type(e).__name__}"
+        _log(f"Session refresh failed: {error_msg}")
+        return None, error_msg, None
+
+
+def _create_session(
+    handle: str,
+    app_password: str,
+    *,
+    force_new: bool = False,
+) -> tuple[Optional[str], Optional[str], Optional[int]]:
+    """Create or reuse a cached AT Protocol session for ``(handle, app_password)``.
+
+    Shares a unified per-account singleflight slot with 401 recovery so login
+    and refresh never run concurrently for the same account and concurrent
+    callers share both success and failure outcomes.
+
+    Returns:
+        ``(access_token, error_msg, error_status)`` tuple.
+    """
+    cred_key = _credential_key(handle, app_password)
+    expired_cached = False
+    with _session_lock:
+        generation = _cache_generation
+        existing = _inflight_auth.get(cred_key)
+        if existing is not None:
+            inflight = existing
+            is_leader = False
+        else:
+            entry = _session_cache.get(cred_key)
+            if not force_new and entry is not None:
+                if time.monotonic() - entry.created_at < _TOKEN_MAX_AGE_SECONDS:
+                    return entry.access_token, None, None
+            if entry is not None:
+                expired_cached = not force_new
+                _session_cache.pop(cred_key, None)
+            inflight = _InflightAuth(event=threading.Event())
+            _inflight_auth[cred_key] = inflight
+            is_leader = True
+
+    if not is_leader:
+        _wait_for_inflight_auth(inflight)
+        return inflight.token, inflight.error_msg, inflight.error_status
+
+    token: Optional[str] = None
+    error_msg: Optional[str] = "Bluesky session creation failed (unknown error)"
+    error_status: Optional[int] = None
+    try:
+        if expired_cached:
+            _log("Session token expired, re-authenticating")
+        token, error_msg, error_status = _execute_create_session_request(
+            handle, app_password, cred_key, generation,
+        )
+        return token, error_msg, error_status
+    except BaseException as exc:
+        token = None
+        error_msg = f"Session request failed: {type(exc).__name__}"
+        error_status = None
+        raise
+    finally:
+        inflight.token = token
+        inflight.error_msg = error_msg
+        inflight.error_status = error_status
+        inflight.did_reauth = True
+        with _session_lock:
+            if _inflight_auth.get(cred_key) is inflight:
+                _inflight_auth.pop(cred_key, None)
+        inflight.event.set()
+
+
+def _refresh_session(
+    refresh_jwt: Optional[str],
+    *,
+    cred_key: Optional[tuple[str, str]] = None,
+    failed_token: Optional[str] = None,
+) -> tuple[Optional[str], Optional[str], Optional[int]]:
+    """Refresh an access token using an AT Protocol refresh JWT.
+
+    Returns:
+        ``(access_token, error_msg, error_status)`` tuple. When ``cred_key`` is
+        supplied, coordinates via the unified per-account singleflight slot so
+        refresh never races a concurrent login or another refresh.
+    """
+    if cred_key is None:
+        return _execute_refresh_request(refresh_jwt, cred_key=None, generation=None)
+
+    with _session_lock:
+        generation = _cache_generation
+        entry = _session_cache.get(cred_key)
+        if (
+            failed_token is not None
+            and entry is not None
+            and entry.access_token != failed_token
+            and time.monotonic() - entry.created_at < _TOKEN_MAX_AGE_SECONDS
+        ):
+            return entry.access_token, None, None
+        existing = _inflight_auth.get(cred_key)
+        if existing is not None:
+            inflight = existing
+            is_leader = False
+        else:
+            if refresh_jwt is None and entry is not None:
+                refresh_jwt = entry.refresh_token
+            inflight = _InflightAuth(event=threading.Event())
+            _inflight_auth[cred_key] = inflight
+            is_leader = True
+
+    if not is_leader:
+        _wait_for_inflight_auth(inflight)
+        return inflight.token, inflight.error_msg, inflight.error_status
+
+    token: Optional[str] = None
+    error_msg: Optional[str] = "Bluesky session refresh failed (unknown error)"
+    error_status: Optional[int] = None
+    try:
+        token, error_msg, error_status = _execute_refresh_request(
+            refresh_jwt, cred_key=cred_key, generation=generation,
+        )
+        return token, error_msg, error_status
+    except BaseException as exc:
+        token = None
+        error_msg = f"Bluesky session refresh failed: {type(exc).__name__}"
+        error_status = None
+        raise
+    finally:
+        inflight.token = token
+        inflight.error_msg = error_msg
+        inflight.error_status = error_status
+        inflight.did_reauth = False
+        with _session_lock:
+            if _inflight_auth.get(cred_key) is inflight:
+                _inflight_auth.pop(cred_key, None)
+        inflight.event.set()
+
+
+def _recover_session(
+    handle: str,
+    app_password: str,
+    cred_key: tuple[str, str],
+    failed_token: str,
+) -> tuple[Optional[str], Optional[str], bool]:
+    """Refresh or re-authenticate once after a 401 via the unified auth slot.
+
+    Returns ``(new_token, error_msg, did_reauth)``. Because login and recovery
+    share ``_inflight_auth[cred_key]``, a slow refresh can never run
+    concurrently with or overwrite a newer login for the same account.
+    """
+    with _session_lock:
+        generation = _cache_generation
+        entry = _session_cache.get(cred_key)
+        if (
+            entry is not None
+            and entry.access_token != failed_token
+            and time.monotonic() - entry.created_at < _TOKEN_MAX_AGE_SECONDS
+        ):
+            return entry.access_token, None, False
+        existing = _inflight_auth.get(cred_key)
+        if existing is not None:
+            inflight = existing
+            is_leader = False
+        else:
+            inflight = _InflightAuth(event=threading.Event())
+            _inflight_auth[cred_key] = inflight
+            refresh_jwt = entry.refresh_token if entry is not None else None
+            is_leader = True
+
+    if not is_leader:
+        _wait_for_inflight_auth(inflight)
+        if inflight.token and inflight.token != failed_token:
+            return inflight.token, None, inflight.did_reauth
+        with _session_lock:
+            entry = _session_cache.get(cred_key)
+            if (
+                entry is not None
+                and entry.access_token != failed_token
+                and time.monotonic() - entry.created_at < _TOKEN_MAX_AGE_SECONDS
+            ):
+                return entry.access_token, None, inflight.did_reauth
+        if inflight.token is not None:
+            return inflight.token, None, inflight.did_reauth
+        return (
+            None,
+            inflight.error_msg or "Bluesky session refresh failed (unknown error)",
+            inflight.did_reauth,
+        )
+
+    token: Optional[str] = None
+    error_msg: Optional[str] = "Bluesky session refresh failed (unknown error)"
+    error_status: Optional[int] = None
+    did_reauth = False
+    try:
+        _log("Session expired; refreshing access token and retrying once")
+        if refresh_jwt:
+            refreshed_token, refresh_error, refresh_status = _execute_refresh_request(
+                refresh_jwt, cred_key=cred_key, generation=generation,
+            )
+            if refreshed_token:
+                token, error_msg, error_status, did_reauth = refreshed_token, None, None, False
+                return token, error_msg, did_reauth
+            if refresh_status not in (400, 401):
+                token, error_msg, error_status, did_reauth = None, refresh_error, refresh_status, False
+                return token, error_msg, did_reauth
+
+        _log("Refresh token missing or rejected; recreating session once")
+        did_reauth = True
+        with _session_lock:
+            if _cache_generation == generation:
+                _session_cache.pop(cred_key, None)
+        new_token, create_error, create_status = _execute_create_session_request(
+            handle, app_password, cred_key, generation,
+        )
+        if not new_token:
+            token = None
+            error_msg = create_error or "Bluesky session creation failed (unknown error)"
+            error_status = create_status
+            return token, error_msg, did_reauth
+        token, error_msg, error_status = new_token, None, None
+        return token, error_msg, did_reauth
+    except BaseException as exc:
+        token = None
+        error_msg = f"Bluesky session refresh failed: {type(exc).__name__}"
+        error_status = None
+        raise
+    finally:
+        inflight.token = token
+        inflight.error_msg = error_msg
+        inflight.error_status = error_status
+        inflight.did_reauth = did_reauth
+        with _session_lock:
+            if _inflight_auth.get(cred_key) is inflight:
+                _inflight_auth.pop(cred_key, None)
+        inflight.event.set()
 
 
 def _reset_session_cache() -> None:
-    global _cached_token, _cached_refresh_token, _token_created_at
-    global _session_error, _refresh_error_status
-    _cached_token = None
-    _cached_refresh_token = None
-    _token_created_at = 0.0
-    _session_error = None
-    _refresh_error_status = None
+    global _cache_generation
+    with _session_lock:
+        _session_cache.clear()
+        _inflight_auth.clear()
+        _cache_generation += 1
 
 
 def _extract_core_subject(topic: str) -> str:
@@ -295,7 +639,6 @@ def search_bluesky(
 
     _log(f"Searching for '{core_topic}' (depth={depth}, limit={count})")
 
-    from urllib.parse import urlencode
     params = {
         "q": core_topic,
         "limit": str(min(count, 100)),
@@ -303,56 +646,82 @@ def search_bluesky(
         "since": _inclusive_since_date(from_date),
         "until": _exclusive_until_date(to_date),
     }
-    url = f"{_resolve_search_url(config)}?{urlencode(params)}"
+    search_base_url = _resolve_search_url(config)
+    search_host = (urlsplit(search_base_url).hostname or _DEFAULT_BSKY_SEARCH_HOST).lower()
+    trusted_host = _is_trusted_bsky_host(search_host)
+    redirect_guard = _bsky_search_redirect_guard(search_host)
+    url = f"{search_base_url}?{urlencode(params)}"
 
-    def _search_with_token(token: str) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
+    def _search_with_token(token: Optional[str]) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
+        req_kwargs: Dict[str, Any] = {
+            "timeout": 30,
+            "redirect_guard": redirect_guard,
+        }
+        clean_token: Optional[str] = None
+        if token is not None:
+            clean_token, token_err = auth_safety.normalize_header_token(token)
+            if token_err or not clean_token:
+                err_msg = token_err or "Invalid token format"
+                _log(f"Search failed: {err_msg}")
+                return None, f"Bluesky search failed: {err_msg}"
+            req_kwargs["headers"] = {"Authorization": f"Bearer {clean_token}"}
+        if not trusted_host:
+            req_kwargs["public_only"] = True
         try:
-            response = http.request(
-                "GET", url,
-                headers={"Authorization": f"Bearer {token}"},
-                timeout=30,
-            )
+            response = http.request("GET", url, **req_kwargs)
             return response, None
         except http.HTTPError as e:
-            _log(f"Search failed: {e}")
+            safe_err = auth_safety.scrub_secrets(str(e), (token, clean_token, app_password))
+            _log(f"Search failed: {safe_err}")
             if e.status_code == 401:
+                if token is None:
+                    return None, (
+                        f"Bluesky search host {search_host!r} rejected unauthenticated search (401); "
+                        "bsky.social Bearer tokens are only sent to *.bsky.app / *.bsky.social hosts"
+                    )
                 return None, "refresh"
             if e.status_code == 403 and e.body and "cloudflare" in e.body.lower():
                 return None, "Bluesky search blocked by Cloudflare (403). This is a network-level block - try a different network or VPN."
-            return None, f"Bluesky search failed: {e}"
+            return None, f"Bluesky search failed: {safe_err}"
         except Exception as e:
-            _log(f"Search failed: {e}")
-            return None, f"Bluesky search failed: {type(e).__name__}: {e}"
+            safe_err = auth_safety.scrub_secrets(str(e), (token, clean_token, app_password))
+            _log(f"Search failed: {type(e).__name__}: {safe_err}")
+            return None, f"Bluesky search failed: {type(e).__name__}: {safe_err}"
 
-    def _auth_and_search() -> tuple[Optional[Dict[str, Any]], Optional[str]]:
-        token = _create_session(handle, app_password)
+    used_token: Optional[str] = None
+    if not trusted_host:
+        # Never exfiltrate a live bsky.social session JWT to an arbitrary third-party host.
+        _log(f"Withholding bsky.social Bearer token from non-Bluesky search host {search_host!r}")
+        response, error_msg = _search_with_token(None)
+    else:
+        token, create_err, _create_status = _create_session(handle, app_password)
         if not token:
-            error_msg = _session_error or "Bluesky session creation failed (unknown error)"
-            return None, error_msg
-        return _search_with_token(token)
-
-    response, error_msg = _auth_and_search()
-    if error_msg == "refresh":
-        _log("Session expired; refreshing access token and retrying once")
-        refreshed_token = _refresh_session(_cached_refresh_token)
-        if refreshed_token:
-            response, error_msg = _search_with_token(refreshed_token)
-        elif not _cached_refresh_token or _refresh_error_status in (400, 401):
-            _log("Refresh token missing or rejected; recreating session once")
-            _reset_session_cache()
-            response, error_msg = _auth_and_search()
-            if error_msg == "refresh":
-                error_msg = (
-                    "Bluesky session remained unauthorized after refresh and re-authentication; "
-                    "check credentials or app password"
-                )
+            response, error_msg = None, create_err or "Bluesky session creation failed (unknown error)"
         else:
-            response, error_msg = None, _session_error
-        if error_msg == "refresh":
-            error_msg = (
-                "Bluesky session remained unauthorized after token refresh; "
-                "check credentials or app password"
-            )
+            used_token = token
+            response, error_msg = _search_with_token(token)
+
+    if error_msg == "refresh" and used_token is not None:
+        cred_key = _credential_key(handle, app_password)
+        recovered_token, recover_err, did_reauth = _recover_session(
+            handle, app_password, cred_key, used_token,
+        )
+        if recovered_token:
+            response, error_msg = _search_with_token(recovered_token)
+            if error_msg == "refresh":
+                _evict_session(cred_key, expected_token=recovered_token)
+                if did_reauth:
+                    error_msg = (
+                        "Bluesky session remained unauthorized after refresh and re-authentication; "
+                        "check credentials or app password"
+                    )
+                else:
+                    error_msg = (
+                        "Bluesky session remained unauthorized after token refresh; "
+                        "check credentials or app password"
+                    )
+        else:
+            response, error_msg = None, recover_err or "Bluesky session refresh failed (unknown error)"
     if error_msg:
         return {"posts": [], "error": error_msg}
     if response is None:

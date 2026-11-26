@@ -106,7 +106,7 @@ def test_transcription_charge_without_usd_remains_unknown(journal, tmp_path, mon
 
 
 def test_brightdata_charge_without_usd_remains_unknown(journal, monkeypatch):
-    monkeypatch.setattr(brightdata, "is_installed", lambda: True)
+    monkeypatch.setattr(brightdata.shutil, "which", lambda _: "/usr/local/bin/brightdata")
     monkeypatch.setattr(brightdata.subproc, "run_with_timeout", lambda *a, **kw: subprocess.CompletedProcess([], 0, "[]", ""))
     brightdata.run_pipeline("gd_x", {}, timeout=1, config={"BRIGHTDATA_API_KEY": "dummy-key"})
     assert usage.read_journal(journal)["cost_unknown"] == 1
@@ -125,7 +125,7 @@ def test_grok_charge_without_usd_remains_unknown(journal, tmp_path, monkeypatch)
         assert cmd[:3] == ["/dummy/grok", "-p", "topic"]
         return subprocess.CompletedProcess(cmd, 0, "{}", "")
 
-    monkeypatch.setattr(grok_x.subprocess, "run", run)
+    monkeypatch.setattr(grok_x.subproc, "run_with_timeout", run)
     assert grok_x._invoke("topic", 1) == {"text": "{}"}
     assert len(calls) == 2
     assert usage.read_journal(journal)["cost_unknown"] == 1

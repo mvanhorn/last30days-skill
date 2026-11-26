@@ -297,7 +297,16 @@ def test_post_ranking_cli_enrichment_records_and_replays(
             {source: [item]}, topic="agents", depth="quick",
         )
 
-    assert enrichment_calls == [(["item-1"], expected_kwargs)]
+    assert len(enrichment_calls) == 1
+    recorded_ids, recorded_kwargs = enrichment_calls[0]
+    assert recorded_ids == ["item-1"]
+    if source == "digg":
+        assert recorded_kwargs["top_k"] == 3
+        assert isinstance(recorded_kwargs["deadline"], float)
+        assert recorded_kwargs["cancel"] is None
+        assert set(recorded_kwargs) == {"top_k", "deadline", "cancel"}
+    else:
+        assert recorded_kwargs == expected_kwargs
     assert len(recorded[source]) == 1
     assert recorded[source][0].metadata == expected_metadata
     replay_item = schema.SourceItem(
@@ -322,7 +331,7 @@ def test_post_ranking_cli_enrichment_records_and_replays(
 
     assert len(replayed[source]) == 1
     assert replayed[source][0].metadata == expected_metadata
-    assert enrichment_calls == [(["item-1"], expected_kwargs)]
+    assert len(enrichment_calls) == 1
 
 
 def test_youtube_fixtures_do_not_replay_across_comparison_entity_counts(tmp_path, monkeypatch):

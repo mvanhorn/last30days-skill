@@ -47,4 +47,5 @@ export const QUERY_IDS = {
     ...queryIds,
 };
 export const TARGET_QUERY_ID_OPERATIONS = Object.keys(FALLBACK_QUERY_IDS);
+export const SEARCH_QUERY_ID_OPERATIONS = ['SearchTimeline'];
 //# sourceMappingURL=twitter-client-constants.js.map

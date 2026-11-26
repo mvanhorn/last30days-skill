@@ -194,7 +194,8 @@ def test_topic_hydration_down_fails(tmp_path):
 
 def test_comment_tree_outage_fails_even_when_post_lookups_work(tmp_path):
     def hydrate_no_comments(refs, **_kwargs):
-        return SimpleNamespace(items=[], arctic_state="ok", detail="web+arctic served 3",
+        items = [{"engagement_source": "arctic", "top_comments": []} for _ in refs]
+        return SimpleNamespace(items=items, arctic_state="ok", detail=f"web+arctic served {len(items)}",
                                comment_fills=0, comment_failures=3)
 
     code, report = _run({
@@ -206,7 +207,8 @@ def test_comment_tree_outage_fails_even_when_post_lookups_work(tmp_path):
 
 def test_comment_tree_slow_downs_are_challenged_not_down(tmp_path):
     def hydrate_throttled(refs, **_kwargs):
-        return SimpleNamespace(items=[], arctic_state="ok", detail="web+arctic served 3",
+        items = [{"engagement_source": "arctic", "top_comments": []} for _ in refs]
+        return SimpleNamespace(items=items, arctic_state="ok", detail=f"web+arctic served {len(items)}",
                                comment_fills=0, comment_failures=2, comment_throttles=2)
 
     code, report = _run({
@@ -217,12 +219,14 @@ def test_comment_tree_slow_downs_are_challenged_not_down(tmp_path):
 
 def test_empty_comment_trees_are_not_an_outage(tmp_path):
     def hydrate_empty_trees(refs, **_kwargs):
-        return SimpleNamespace(items=[], arctic_state="ok", detail="web+arctic served 3",
+        items = [{"engagement_source": "arctic", "top_comments": []} for _ in refs]
+        return SimpleNamespace(items=items, arctic_state="ok", detail=f"web+arctic served {len(items)}",
                                comment_fills=0, comment_failures=0)
 
     code, report = _run({
         BRAVE: (200, BRAVE_PAGE), DDG: (202, ""), STARTPAGE: (429, ""), ARCTIC: (200, ARCTIC_OK),
     }, tmp_path, hydrate=hydrate_empty_trees)
+    assert code == 0, report["failures"]
     assert _states(report)["hydrate: Claude Code"] == canary.OK
 
 
