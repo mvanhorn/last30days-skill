@@ -95,6 +95,7 @@ def normalize_source_items(
         ),
         "hackernews": _normalize_hackernews,
         "devto": _normalize_devto,
+        "v2ex": _normalize_v2ex,
         "stocktwits": _normalize_stocktwits,
         "dripstack": _normalize_dripstack,
         "bluesky": lambda s, i, idx, fd, td: _normalize_microblog(
@@ -651,6 +652,41 @@ def _normalize_devto(
         relevance_hint=item.get("relevance", 0.5),
         why_relevant=str(item.get("why_relevant") or ""),
         snippet=description or comment_text,
+        metadata={**(item.get("metadata") or {}), "top_comments": top_comments},
+    )
+
+
+def _normalize_v2ex(
+    source: str,
+    item: dict[str, Any],
+    index: int,
+    from_date: str,
+    to_date: str,
+) -> schema.SourceItem:
+    top_comments = _remap_comments(
+        item.get("top_comments") or [],
+        score_keys=("score",),
+        excerpt_keys=("text", "excerpt"),
+        preserve_absent_score=True,
+    )
+    comment_text = _join_comment_excerpts(top_comments, "excerpt")
+    title = str(item.get("title") or "").strip()
+    content = str(item.get("text") or "").strip()
+    body = "\n".join(part for part in [title, content, comment_text] if part)
+    return _source_item(
+        item_id=str(item.get("id") or f"V2EX{index + 1}"),
+        source=source,
+        title=title or f"V2EX topic {index + 1}",
+        body=body,
+        url=str(item.get("url") or ""),
+        author=str(item.get("author") or ""),
+        container="V2EX",
+        published_at=item.get("date"),
+        date_confidence=_date_confidence(item, from_date, to_date, default="high"),
+        engagement=item.get("engagement") or {},
+        relevance_hint=item.get("relevance", 0.5),
+        why_relevant=str(item.get("why_relevant") or ""),
+        snippet=content or comment_text,
         metadata={**(item.get("metadata") or {}), "top_comments": top_comments},
     )
 

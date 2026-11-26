@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import json
 import shutil
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from . import log, subproc
@@ -83,12 +83,36 @@ def _clean_phrase(topic: str) -> str:
     return " ".join(topic.replace('"', " ").split())
 
 
-def _build_search_args(topic: str, limit: int, *, quoted: bool = True) -> List[str]:
+def _end_of_day(day: date) -> datetime:
+    return datetime.combine(day, time.max, tzinfo=timezone.utc)
+
+
+def _submitted_date_clause(to_date: str) -> str:
+    end_date = date.fromisoformat(to_date)
+    end = _end_of_day(end_date)
+    anchor = min(_today(), end)
+    # The parser floors age to whole days, so an age just under 366 days still
+    # qualifies. Round down to the start of the first eligible minute.
+    lookback = timedelta(days=RECENCY_DAYS + 1) - datetime.resolution
+    earliest = datetime.min.replace(tzinfo=timezone.utc)
+    start = anchor - min(lookback, anchor - earliest)
+    # arXiv interprets an upper minute as HH:MM:00. Query through midnight
+    # so the full final minute reaches the parser, which checks the end date.
+    query_end = end + datetime.resolution if end_date < date.max else end
+    return (
+        f"submittedDate:[{start.year:04d}{start:%m%d%H%M} "
+        f"TO {query_end.year:04d}{query_end:%m%d%H%M}]"
+    )
+
+
+def _build_search_args(
+    topic: str, limit: int, date_clause: str, *, quoted: bool = True,
+) -> List[str]:
     return [
         CLI_BIN,
         "query",
         "--search-query",
-        _build_search_query(topic, quoted=quoted),
+        f"{_build_search_query(topic, quoted=quoted)} AND {date_clause}",
         "--sort-by",
         "relevance",
         "--max-results",
@@ -183,7 +207,7 @@ def search_arxiv(
     to_date: str,
     depth: str = "default",
 ) -> Dict[str, Any]:
-    """Search arXiv via arxiv-pp-cli using a quoted, relevance-sorted query.
+    """Search arXiv by relevance within its recency window ending at to_date.
 
     Returns a dict with a flat ``results`` list of entry dicts. On failure,
     ``results`` is empty and an ``error`` key carries a one-line description.
@@ -195,14 +219,15 @@ def search_arxiv(
     if not _clean_phrase(topic):
         return {"results": []}
     limit = DEPTH_CONFIG.get(depth, DEPTH_CONFIG["default"])
-    cmd = _build_search_args(topic, limit)
+    date_clause = _submitted_date_clause(to_date)
+    cmd = _build_search_args(topic, limit, date_clause)
     _log(f"query '{topic}' (relevance, max={limit})")
     response = _run_cli(cmd, timeout=SEARCH_TIMEOUT)
     _log(f"found {len(response.get('results') or [])} entries")
     # Retry a clean zero-result phrase match with individually quoted AND terms.
     # CLI failures, malformed responses, and missing binaries skip the retry.
     if not response.get("error") and not response.get("results"):
-        retry_cmd = _build_search_args(topic, limit, quoted=False)
+        retry_cmd = _build_search_args(topic, limit, date_clause, quoted=False)
         _log(f"quoted phrase matched nothing; retrying unquoted for '{topic}'")
         response = _run_cli(retry_cmd, timeout=SEARCH_TIMEOUT)
         _log(f"unquoted retry found {len(response.get('results') or [])} entries")
@@ -274,7 +299,7 @@ def parse_arxiv_response(
     now = today or _today()
     end_date = date.fromisoformat(to_date) if to_date else None
     if end_date is not None:
-        now = min(now, datetime.combine(end_date, time.max, tzinfo=timezone.utc))
+        now = min(now, _end_of_day(end_date))
     items: List[Dict[str, Any]] = []
     for i, entry in enumerate(raw):
         if not isinstance(entry, dict):

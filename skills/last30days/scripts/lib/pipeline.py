@@ -90,6 +90,7 @@ from . import (
     topic_shape,
     truthsocial,
     trustpilot,
+    v2ex,
     x_api,
     x_envelope,
     x_judge,
@@ -142,7 +143,7 @@ SEARCH_ALIAS = {
 # resolved per run, so every subquery would issue the identical page fetch.
 MAX_SOURCE_FETCHES: dict[str, int] = {
     "x": 2, "jobs": 1, "linkedin": 1, "stocktwits": 1, "trustpilot": 1, "amazon": 1,
-    "telegram": 1, "meta_ads": 1, "devto": 1,
+    "telegram": 1, "meta_ads": 1, "devto": 1, "v2ex": 1,
 }
 
 # Sources whose thin result is their normal success state, so the "<3 items"
@@ -196,6 +197,14 @@ DISCOVERY_FINALIZATION_RESERVE_SECONDS = 10.0
 # owns a shared monotonic deadline (x_api's TIMEOUT 30/RETRIES 2/DEADLINE 90
 # pattern); backends past the deadline are skipped.
 X_CHAIN_DEADLINE_SECONDS = 90.0
+# Ceiling for a user-set X chain budget. The measured grok call is 150-170s at
+# the default depth, whose per-call ceiling is 240s (grok_x._TIMEOUT_SECONDS);
+# a deep call can be bounded at 360s, but this chain knob only needs to cover
+# the measured call plus headroom.
+X_CHAIN_DEADLINE_MAX_SECONDS = 240.0
+# Margin kept between the X chain budget and the stream wait that inherited it,
+# so the lane can return, normalize and score the last call's items.
+X_STREAM_WAIT_MARGIN_SECONDS = 10.0
 
 
 def _research_stopped(config: dict[str, Any]) -> bool:
@@ -211,6 +220,71 @@ def _research_deadline(config: dict[str, Any], seconds: float) -> float:
     deadline = time.monotonic() + seconds
     inherited = config.get("_research_deadline")
     return min(deadline, inherited) if inherited is not None else deadline
+
+
+def _x_lane_deadline(config: dict[str, Any], seconds: float) -> float:
+    """A supplemental X lane's own budget, never past the run's cutoff.
+
+    ``run()`` records its finalization cutoff in ``_finalization_deadline`` when
+    an explicit X budget raised the stream wait. The supplemental handle lanes
+    start after the main collection, so left on ``_research_deadline`` alone
+    their own budget can outlive that cutoff: a 200s X stream that uses most of
+    the window leaves a fresh 150s lane (grok and the bird/xapi/xquik lanes
+    share that constant) running past the host's finalization deadline. Clamp
+    every supplemental lane to the recorded cutoff, and keep the previous
+    behaviour when no cutoff was recorded.
+    """
+    deadline = _research_deadline(config, seconds)
+    cutoff = config.get("_finalization_deadline")
+    return min(deadline, cutoff) if cutoff is not None else deadline
+
+
+def _configured_x_budget_seconds(config: dict[str, Any]) -> float | None:
+    """The explicit LAST30DAYS_X_BUDGET_SECONDS value, or None when unusable."""
+    raw = config.get("LAST30DAYS_X_BUDGET_SECONDS")
+    if raw is None or str(raw).strip() == "":
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(value) or value <= 0:
+        return None
+    return min(value, X_CHAIN_DEADLINE_MAX_SECONDS)
+
+
+def _x_chain_budget_seconds(config: dict[str, Any]) -> float:
+    """X chain budget: the explicit setting, else the fixed 90s default."""
+    budget = _configured_x_budget_seconds(config)
+    return X_CHAIN_DEADLINE_SECONDS if budget is None else budget
+
+
+def _plan_includes_x(plan: schema.DiscoveryPlan, available: Any) -> bool:
+    """Whether this plan schedules an X stream in the main fan-out."""
+    return "x" in available and any(
+        "x" in subquery.sources for subquery in plan.subqueries
+    )
+
+
+def _x_lane_scheduled(
+    plan: schema.DiscoveryPlan, available: Any, config: dict[str, Any],
+) -> bool:
+    """Whether a configured X stream will actually be submitted."""
+    if not _plan_includes_x(plan, available):
+        return False
+    cap = _source_fetch_cap("x", config)
+    return cap is None or cap > 0
+
+
+def _x_stream_wait_seconds(config: dict[str, Any]) -> float:
+    """Stream wait that covers an explicitly configured X chain budget."""
+    budget = _configured_x_budget_seconds(config)
+    if budget is None:
+        return STREAM_FUTURE_TIMEOUT_SECONDS
+    return max(
+        STREAM_FUTURE_TIMEOUT_SECONDS,
+        budget + X_STREAM_WAIT_MARGIN_SECONDS,
+    )
 
 
 def _finalization_deadline(config: dict[str, Any], run_started: float) -> float:
@@ -288,13 +362,22 @@ def _completed_streams(
     bundle: schema.RetrievalBundle,
     retry_origins: dict[Any, Exception] | None = None,
 ):
-    for futures, wait_config, timeout_seconds, _keep_ready in batches:
+    for futures, wait_config, wait_deadline, _keep_ready in batches:
+        # Every batch carries an absolute monotonic deadline fixed before
+        # fan-out, so time spent submitting the streams cannot push the wait
+        # past the run's finalization cutoff. The batch's own research
+        # deadline can only shorten it further.
+        deadline = wait_deadline
+        inherited = wait_config.get("_research_deadline")
+        if inherited is not None:
+            deadline = min(deadline, inherited)
+        collection_wait = max(0.0, deadline - time.monotonic())
         yielded: set[Any] = set()
         while not _research_stopped(wait_config):
             pending = {f for f in futures if f not in yielded}
             if not pending:
                 break
-            remaining = wait_config["_research_deadline"] - time.monotonic()
+            remaining = deadline - time.monotonic()
             completed, _ = futures_wait(
                 pending,
                 timeout=max(0, min(0.1, remaining)),
@@ -313,7 +396,9 @@ def _completed_streams(
             if future.done() and not future.cancelled():
                 finished.add(future)
                 continue
-            detail = f"{source} timed out after {timeout_seconds:g}s"
+            # Report the wait the collector actually had, not the pre-fan-out
+            # budget, so a cutoff-clamped wait is never mislabelled.
+            detail = f"{source} timed out after {collection_wait:g}s"
             if retry_origins is not None and future in retry_origins:
                 detail = f"{retry_origins[future]} (retried once, still failed: {detail})"
             bundle.errors_by_source[source] = detail
@@ -684,6 +769,7 @@ MOCK_AVAILABLE_SOURCES = [
     "dripstack",
     "telegram",
     "devto",
+    "v2ex",
 ]
 
 # Full set of searchable source names accepted by --search /
@@ -839,6 +925,12 @@ def available_sources(
         or config.get("_devto_tags")
     ):
         available.append("devto")
+    # V2EX is opt-in for the same reason: SOV2EX is a community-run index
+    # that should only see queries from users who asked for V2EX.
+    if "v2ex" in include_sources or (
+        requested_sources and "v2ex" in requested_sources
+    ):
+        available.append("v2ex")
     if which("digg-pp-cli"):
         available.append("digg")
     # arXiv is default-on when its Printing Press CLI is installed (zero auth).
@@ -1119,7 +1211,10 @@ def _fetch_discovery_source(
         # Discovery uses domain directly as query (no planner search_query)
         query = plan.domain
         last_error = ""
-        chain_deadline = _research_deadline(config, X_CHAIN_DEADLINE_SECONDS)
+        chain_deadline = _research_deadline(config, _x_chain_budget_seconds(config))
+        cutoff = config.get("_finalization_deadline")
+        if cutoff is not None:
+            chain_deadline = min(chain_deadline, cutoff)
         x_warnings: list[str] = []
         for backend in env.x_backend_chain(config):
             if _research_stopped(config) or time.monotonic() >= chain_deadline:
@@ -3100,7 +3195,8 @@ def run(
             explicit=hiring_signals_mode or company_jobs_attached,
             topic=topic,
         )
-        _ensure_devto_in_plan(plan, available)
+        for opt_in_source in ("devto", "v2ex"):
+            _ensure_opt_in_source_in_plan(plan, available, opt_in_source)
     if "corpus" in available and plan.subqueries:
         # Corpus is deterministic and user-registered, so it always gets one
         # bounded stream even when a quick/LLM plan omits it. Reuse the primary
@@ -3419,9 +3515,33 @@ def run(
         # the first jobs stream starts because that stream settles the
         # lane's budget.
         config["_jobs_story_terms"] = _jobs_story_terms(plan, topic, config)
+    # Only an explicit, usable budget raises the wait; without one the run keeps
+    # exactly the base behaviour (fixed 180s shared wait, no cutoff clamp). When
+    # it is set and X will be submitted, the raise is capped by this run's
+    # finalization cutoff: if less time remains, the worker gets exactly the
+    # cutoff as its deadline. The cutoff is recorded in the run config so later
+    # X work — the supplemental handle lanes and the thin-result retries'
+    # chain calls — clamps to that same bound.
+    # The batch takes the absolute deadline, never the relative budget, so any
+    # time spent submitting the streams cannot extend the collector's wait.
+    stream_wait = STREAM_FUTURE_TIMEOUT_SECONDS
+    finalization_cutoff = None
+    if (
+        _configured_x_budget_seconds(config) is not None
+        and _x_lane_scheduled(plan, available, config)
+    ):
+        finalization_cutoff = _finalization_deadline(config, run_started)
+        config["_finalization_deadline"] = finalization_cutoff
+        stream_wait = min(
+            _x_stream_wait_seconds(config),
+            max(0.0, finalization_cutoff - time.monotonic()),
+        )
+    stream_deadline = _research_deadline(config, stream_wait)
+    if finalization_cutoff is not None:
+        stream_deadline = min(stream_deadline, finalization_cutoff)
     stream_config = dict(config)
-    stream_config["_research_deadline"] = _research_deadline(config, STREAM_FUTURE_TIMEOUT_SECONDS)
-    batches = [(futures, stream_config, STREAM_FUTURE_TIMEOUT_SECONDS, False)]
+    stream_config["_research_deadline"] = stream_deadline
+    batches = [(futures, stream_config, stream_deadline, False)]
     background_futures = {}
     with contextlib.ExitStack() as stack:
         executor = stack.enter_context(_abandoning_executor(max_workers=max_workers))
@@ -3499,7 +3619,12 @@ def run(
                     }
                     active_executor = stack.enter_context(_abandoning_executor(max_workers=1))
                     active_futures = background_futures
-                    batches.append((background_futures, background_wait_config, background_timeout, True))
+                    batches.append((
+                        background_futures,
+                        background_wait_config,
+                        background_wait_config["_research_deadline"],
+                        True,
+                    ))
                 active_futures[
                     active_executor.submit(
                         _retrieve_stream,
@@ -5010,6 +5135,15 @@ def _finalize_items_by_source(
                 http.fixture_source_record(enrichment_request, schema.to_dict(items))
             else:
                 http.fixture_source_record(enrichment_request, [])
+        if source == "v2ex" and items and not mock:
+            matched, replayed = http.fixture_source_replay(enrichment_request)
+            if matched:
+                items = _merge_replayed_enrichment(items, replayed)
+            elif time.monotonic() < finalization_deadline:
+                v2ex.enrich_source_items(items, deadline=finalization_deadline)
+                http.fixture_source_record(enrichment_request, schema.to_dict(items))
+            else:
+                http.fixture_source_record(enrichment_request, [])
         if source == "amazon" and items and not mock:
             # Attach-if-missing: review enrichment now runs at search time in
             # _retrieve_stream_impl, so items arriving here should already have
@@ -5692,21 +5826,23 @@ def _mean_source_weight(weights: Mapping[str, float]) -> float:
     return (sum(positive) / len(positive)) if positive else 1.0
 
 
-def _ensure_devto_in_plan(plan: schema.QueryPlan, available: list[str]) -> None:
-    """Give an activated dev.to source the primary subquery.
+def _ensure_opt_in_source_in_plan(
+    plan: schema.QueryPlan, available: list[str], source: str,
+) -> None:
+    """Give an activated off-by-default source (dev.to, V2EX) the primary subquery.
 
-    dev.to is off by default, so a host plan built from the default source
-    list never names it. Once tags or INCLUDE_SOURCES turn it on, activation
-    must not be a no-op.
+    These sources are off by default, so a plan built from the default source
+    list never names them. Once a flag or INCLUDE_SOURCES turns one on,
+    activation must not be a no-op.
     """
-    if "devto" not in available or not plan.subqueries:
+    if source not in available or not plan.subqueries:
         return
-    # A plan that already routes dev.to keeps its route: MAX_SOURCE_FETCHES
-    # allows one dev.to fetch, and a second route would spend it first.
-    if not any("devto" in subquery.sources for subquery in plan.subqueries):
-        plan.subqueries[0].sources.append("devto")
-    if "devto" not in plan.source_weights:
-        plan.source_weights["devto"] = _mean_source_weight(plan.source_weights)
+    # A plan that already routes the source keeps its route: MAX_SOURCE_FETCHES
+    # allows one fetch, and a second route would spend it first.
+    if not any(source in subquery.sources for subquery in plan.subqueries):
+        plan.subqueries[0].sources.append(source)
+    if source not in plan.source_weights:
+        plan.source_weights[source] = _mean_source_weight(plan.source_weights)
         plan.source_weights = planner._normalize_weights(plan.source_weights)
 
 
@@ -6751,12 +6887,15 @@ def _run_supplemental_searches(
     # never @-mentions them, so the two lanes reach disjoint sets.
     _name_lane = None
     cancel = config.get("_enrich_cancel")
-    supplemental_deadline = _research_deadline(config, x_api.LANE_BUDGET_SECONDS)
+    # Both supplemental budgets clamp to the run's recorded finalization cutoff:
+    # the lanes run after the main collection, so their own budget alone could
+    # outlive the window the raised X stream wait was capped to.
+    supplemental_deadline = _x_lane_deadline(config, x_api.LANE_BUDGET_SECONDS)
 
     if primary == "grok":
         # One budget shared by all three lanes, started here rather than per
         # lane: the point is to bound the total, not each part.
-        lane_deadline = _research_deadline(config, grok_x.LANE_BUDGET_SECONDS)
+        lane_deadline = _x_lane_deadline(config, grok_x.LANE_BUDGET_SECONDS)
 
         def _from_lane(hs: list, count: int, and_topic: bool = False) -> tuple[list, bool]:
             items, revoked = grok_x.search_handles(
@@ -8539,7 +8678,10 @@ def _retrieve_stream_impl(
         used_backend_auth_failed = False
         x_warnings: list[str] = []
         artifact: dict[str, Any] = {}
-        chain_deadline = _research_deadline(config, X_CHAIN_DEADLINE_SECONDS)
+        chain_deadline = _research_deadline(config, _x_chain_budget_seconds(config))
+        cutoff = config.get("_finalization_deadline")
+        if cutoff is not None:
+            chain_deadline = min(chain_deadline, cutoff)
         for i, backend in enumerate(chain):
             if _research_stopped(config) or time.monotonic() >= chain_deadline:
                 msg = "X chain budget exhausted (timed out or cancelled)"
@@ -8972,6 +9114,16 @@ def _retrieve_stream_impl(
         items = devto.parse_devto_response(result, query=relevance_topic)
         # Comment enrichment is deferred to _finalize_items_by_source so it
         # lands on the articles that survive relevance pruning.
+        return items, _result_outcome_artifact(source, result)
+    if source == "v2ex":
+        relevance_topic = raw_topic or topic or subquery.search_query
+        result = v2ex.search_v2ex(
+            relevance_topic, from_date, to_date, depth=depth,
+            search_query=subquery.search_query,
+        )
+        items = v2ex.parse_v2ex_response(result, query=relevance_topic)
+        # Reply enrichment is deferred to _finalize_items_by_source so it
+        # lands on the topics that survive relevance pruning.
         return items, _result_outcome_artifact(source, result)
     if source == "stocktwits":
         # Pass raw_topic so symbol detection sees the full topic, not the
