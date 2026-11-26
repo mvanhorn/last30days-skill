@@ -483,13 +483,8 @@ def install_release_binary(
                 pass
 
 
-def ensure_installed_for_run(*, timeout: float = 10.0) -> dict[str, Any] | None:
-    """Best-effort one-time auto-install on live runs with 24h failure backoff.
-
-    Returns the install result dict when an install/upgrade was attempted, or
-    ``None`` when a current binary is already available, Rust is disabled, or a
-    recent failed attempt is still within its cooldown window.
-    """
+def _auto_install_target_version() -> str | None:
+    """Return target release version if a live run would attempt auto-install, else ``None``."""
     if engine_mode() == "python":
         return None
     target_version = expected_skill_version()
@@ -512,7 +507,27 @@ def ensure_installed_for_run(*, timeout: float = 10.0) -> dict[str, Any] | None:
                 return None
         except ValueError:
             pass
+    return target_version
 
+
+def would_auto_install_on_run() -> bool:
+    """Return ``True`` when the next live run would download and install ``last30days-core``."""
+    return _auto_install_target_version() is not None
+
+
+def ensure_installed_for_run(*, timeout: float = 10.0) -> dict[str, Any] | None:
+    """Best-effort one-time auto-install on live runs with 24h failure backoff.
+
+    Returns the install result dict when an install/upgrade was attempted, or
+    ``None`` when a current binary is already available, Rust is disabled, or a
+    recent failed attempt is still within its cooldown window.
+    """
+    target_version = _auto_install_target_version()
+    if target_version is None:
+        return None
+
+    managed_path = install_bin_path()
+    attempt_stamp = managed_path.parent / _ATTEMPT_STAMP_NAME
     result = install_release_binary(version=target_version, timeout=timeout)
     if result.get("action") == "install_failed":
         try:

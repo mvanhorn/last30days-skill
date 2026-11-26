@@ -665,3 +665,23 @@ fn markdown_nested_inline_emphasis_matches_python_clean_inline() {
         assert_eq!(meta.slug, expected_slug, "slug mismatch for {doc:?}");
     }
 }
+
+#[test]
+fn markdown_unicode_line_breaks_redact_private_sections() {
+    let breaks = [
+        "\u{2028}", "\u{2029}", "\u{0085}", "\x0b", "\x0c", "\x1c", "\x1d", "\x1e",
+    ];
+    for brk in breaks {
+        let doc = format!("Intro{brk}## From your files\nSecret note\n## Public\nVisible\n");
+        let redacted = markdown::public_markdown(&doc);
+        assert!(
+            !redacted.contains("Secret note"),
+            "private section leaked after break {brk:?}: {redacted:?}"
+        );
+        assert!(
+            redacted.contains("## Public\nVisible\n"),
+            "public section lost after break {brk:?}: {redacted:?}"
+        );
+        assert_eq!(redacted, format!("Intro{brk}## Public\nVisible\n"));
+    }
+}

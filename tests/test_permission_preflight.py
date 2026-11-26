@@ -491,6 +491,9 @@ def test_cli_preflight_requires_mcp_save_for_research_persistence(
         })
     else:
         expected.add(("research_store_on_save", str(default_db)))
+    from lib import rust_accel
+    if rust_accel.would_auto_install_on_run():
+        expected.add(("native_core_on_first_run", str(rust_accel.install_bin_path())))
     assert {(row["kind"], row["path"]) for row in payload["conditional_writes"]} == expected
     assert list(tmp_path.iterdir()) == [corpus_dir]
 

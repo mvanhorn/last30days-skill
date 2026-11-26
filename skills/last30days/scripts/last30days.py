@@ -678,6 +678,13 @@ def _add_preflight_research_writes(
         and (args.perplexity_search_type is None or not config.get("PERPLEXITY_API_KEY"))
     ):
         return
+    if not args.mock and not args.record_fixtures and not args.cached_report:
+        from lib import rust_accel
+        if rust_accel.would_auto_install_on_run():
+            preflight["conditional_writes"].append({
+                "kind": "native_core_on_first_run",
+                "path": str(rust_accel.install_bin_path()),
+            })
     mcp_preflight = args.preflight_engine_cache_dir is not None
     research_writes = preflight["conditional_writes" if mcp_preflight else "local_writes"]
     kind_suffix = "_on_save" if mcp_preflight else ""
@@ -5448,6 +5455,7 @@ def _main(
         and not args.mock
         and not args.cached_report
         and not args.record_fixtures
+        and not args.no_research_persistence
         and not law7_blocked
     ):
         from lib import rust_accel

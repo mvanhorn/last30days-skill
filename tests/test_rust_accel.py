@@ -707,3 +707,48 @@ def test_setup_status_and_doctor_render_rust_core(monkeypatch):
     assert report["rust_core"]["active"] is True
     rendered = doctor.render_text(report)
     assert "compute core: rust (last30days-core v4.7.0, /tmp/last30days-core)" in rendered
+
+
+@requires_rust
+def test_public_markdown_unicode_line_breaks_parity(monkeypatch):
+    padding = "Public context line.\n" * 120
+    for brk in ("\u2028", "\u2029", "\u0085", "\x0b", "\x0c", "\x1c", "\x1d", "\x1e"):
+        doc = f"{padding}Intro{brk}## From your files\nTop secret note\n## Public\nVisible\n"
+        monkeypatch.setenv("LAST30DAYS_ENGINE", "python")
+        py_out = library.public_markdown(doc)
+        monkeypatch.setenv("LAST30DAYS_ENGINE", "rust")
+        rs_out = library.public_markdown(doc)
+        monkeypatch.setenv("LAST30DAYS_ENGINE", "auto")
+        auto_out = library.public_markdown(doc)
+        assert "Top secret note" not in py_out
+        assert rs_out == py_out, f"rust mismatch for {brk!r}"
+        assert auto_out == py_out, f"auto mismatch for {brk!r}"
+
+
+def test_preflight_discloses_native_core_auto_install_when_missing(tmp_path: Path, monkeypatch, capsys):
+    import json
+    import last30days as cli
+    from lib import permission_preflight
+
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("LAST30DAYS_ENGINE", "auto")
+    managed = rust_accel.install_bin_path()
+    monkeypatch.setattr(rust_accel, "_candidate_binary_paths", lambda: [managed])
+    monkeypatch.setattr(rust_accel, "platform_asset_name", lambda *_a, **_k: "last30days-core-test-bin")
+    monkeypatch.setattr(rust_accel, "expected_skill_version", lambda: "4.7.0")
+    monkeypatch.setattr(sys, "argv", ["last30days.py", "--preflight", "--emit=json", "--no-browser-cookies"])
+
+    assert cli.main() == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert {"kind": "native_core_on_first_run", "path": str(managed)} in payload["conditional_writes"]
+    rendered = permission_preflight.render_text(payload)
+    assert "Native Rust core binary" in rendered
+    assert "SHA-256 verification" in rendered
+
+    # When LAST30DAYS_ENGINE=python, no download/install is disclosed.
+    monkeypatch.setenv("LAST30DAYS_ENGINE", "python")
+    assert cli.main() == 0
+    py_payload = json.loads(capsys.readouterr().out)
+    assert not any(w.get("kind") == "native_core_on_first_run" for w in py_payload["conditional_writes"])

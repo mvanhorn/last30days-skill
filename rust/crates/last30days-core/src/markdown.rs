@@ -132,34 +132,50 @@ fn contains_ascii_ignore_case(haystack: &str, needle: &[u8]) -> bool {
         .any(|w| w.eq_ignore_ascii_case(needle))
 }
 
-/// Splits `text` into lines keeping their original `\r\n`, `\n`, or `\r` endings,
-/// matching Python `str.splitlines(keepends=True)` for standard line endings.
+/// Splits `text` into lines keeping their original line endings, matching
+/// Python `str.splitlines(keepends=True)` across all 11 Unicode line breaks:
+/// `\r\n`, `\n`, `\r`, `\x0b`, `\x0c`, `\x1c`, `\x1d`, `\x1e`, U+0085,
+/// U+2028, and U+2029.
 fn splitlines_keepends(text: &str) -> Vec<&str> {
     if text.is_empty() {
         return Vec::new();
     }
     let bytes = text.as_bytes();
+    let len = bytes.len();
     let mut lines = Vec::new();
     let mut start = 0;
     let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'\r' {
-            if i + 1 < bytes.len() && bytes[i + 1] == b'\n' {
-                i += 2;
-            } else {
-                i += 1;
+    while i < len {
+        let b = bytes[i];
+        let step = match b {
+            b'\r' => {
+                if i + 1 < len && bytes[i + 1] == b'\n' {
+                    2
+                } else {
+                    1
+                }
             }
-            lines.push(&text[start..i]);
-            start = i;
-        } else if bytes[i] == b'\n' {
-            i += 1;
+            b'\n' | 0x0B | 0x0C | 0x1C | 0x1D | 0x1E => 1,
+            // U+0085 NEXT LINE (UTF-8: C2 85)
+            0xC2 if i + 1 < len && bytes[i + 1] == 0x85 => 2,
+            // U+2028 LINE SEPARATOR (E2 80 A8) and U+2029 PARAGRAPH SEPARATOR (E2 80 A9)
+            0xE2 if i + 2 < len
+                && bytes[i + 1] == 0x80
+                && (bytes[i + 2] == 0xA8 || bytes[i + 2] == 0xA9) =>
+            {
+                3
+            }
+            _ => 0,
+        };
+        if step > 0 {
+            i += step;
             lines.push(&text[start..i]);
             start = i;
         } else {
             i += 1;
         }
     }
-    if start < bytes.len() {
+    if start < len {
         lines.push(&text[start..]);
     }
     lines
@@ -1324,7 +1340,7 @@ fn strip_delimited_any(input: &str, delims: &[&str]) -> String {
 fn brief_prose_paragraph(content: &str) -> String {
     let mut in_fence = false;
     let mut para: Vec<&str> = Vec::new();
-    for raw_line in content.lines() {
+    for raw_line in splitlines_keepends(content) {
         let stripped = raw_line.trim();
         if stripped.starts_with("```") {
             in_fence = !in_fence;

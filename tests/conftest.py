@@ -23,6 +23,7 @@ _CONFIG_ENV_NAMES = {
     "REDDIT_BROWSER_CONSENT", "REDDIT_FROM_BROWSER", "REDDIT_SESSION_OFFERED",
 }
 _CREDENTIAL_SUFFIXES = ("_API_KEY", "_TOKEN", "_KEY", "_SECRET", "_PASSWORD", "_COOKIE")
+_HARNESS_ENGINE = (os.environ.get("LAST30DAYS_ENGINE") or "").strip()
 _system_which = shutil.which
 _system_popen = subprocess.Popen
 
@@ -41,6 +42,8 @@ def _isolate_environment(monkeypatch, home):
             or name.endswith(_CREDENTIAL_SUFFIXES)
         ):
             monkeypatch.delenv(name, raising=False)
+    if _HARNESS_ENGINE:
+        monkeypatch.setenv("LAST30DAYS_ENGINE", _HARNESS_ENGINE)
     config_dir = home / ".config" / "last30days"
     config_dir.mkdir(parents=True)
     for name, value in {

@@ -120,7 +120,9 @@ jobs:
         run: uv python install 3.12
 
       - name: Run full test suite and evals with Rust core active
+        env:
+          LAST30DAYS_ENGINE: rust
         run: |
-          LAST30DAYS_ENGINE=rust uv run python -c "import sys; sys.path.insert(0, 'skills/last30days/scripts'); from lib import rust_accel; assert rust_accel.is_available(), 'Rust core binary not active'"
+          uv run python -c "import sys; sys.path.insert(0, 'skills/last30days/scripts'); from lib import rust_accel; assert rust_accel.engine_mode() == 'rust' and rust_accel.is_available(), 'Rust core binary not active'"
           uv run pytest -n auto --dist worksteal
           uv run pytest tests/eval -x
