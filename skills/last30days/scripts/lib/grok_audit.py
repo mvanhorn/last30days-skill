@@ -41,7 +41,7 @@ from typing import Any, Dict, List, Optional
 from . import env, log, subproc
 
 # Bump when the checks change so verdicts recorded by older checks re-audit.
-AUDIT_SCHEMA = 4
+AUDIT_SCHEMA = 5
 CACHE_FILENAME = "grok-audit.json"
 
 PASS = "pass"
@@ -490,6 +490,11 @@ def _audit_env(home: str, fixture: _Fixture, signed_in: bool = False) -> Dict[st
     # silently turn the OIDC audit pass into a second API-key pass.
     if signed_in:
         child_env.pop("XAI_API_KEY", None)
+        # A custom models endpoint requires an API key and deliberately won't
+        # use a session token. Let the signed-in CLI discover the fixture's
+        # catalog through the redirected session proxy instead.
+        child_env.pop("GROK_MODELS_BASE_URL", None)
+        child_env.pop("GROK_MODELS_LIST_URL", None)
     else:
         child_env["XAI_API_KEY"] = _DUMMY_KEY
     return child_env

@@ -199,6 +199,14 @@ _BOARD_DOMAINS = (
     "greenhouse.io", "ashbyhq.com", "lever.co", "workable.com",
     "smartrecruiters.com", "myworkdayjobs.com",
 )
+# Shared multi-tenant ATS and hiring-platform domains whose sitemaps can list
+# roles for companies other than the target; never read as an owned sitemap.
+_SHARED_PLATFORM_DOMAINS = (
+    *_BOARD_DOMAINS,
+    "kula.ai",
+    "oraclecloud.com",
+    "eightfold.ai",
+)
 SUPPORTED_SYSTEMS = "Greenhouse, Ashby, Lever, Workable, SmartRecruiters and Workday"
 # Hiring platforms read off a careers page on the company's own site.
 PLATFORM_SYSTEMS = "Oracle Recruiting Cloud, Jibe, Phenom, TalentBrew, Eightfold and Kula"
@@ -223,60 +231,128 @@ class LaneBudget:
         *,
         clock: Callable[[], float] | None = None,
     ) -> None:
+        self._lock = threading.RLock()
         self.clock = clock or time.monotonic
         self.seconds = float(seconds)
         self.started = self.clock()
         self.deadline = self.started + self.seconds
         # Finding a board may be given less than the whole budget, so that a
         # later company still has time; reading a found board has all of it.
-        self.step_deadline = self.deadline
+        self._step_deadline = self.deadline
         self.slow: list[str] = []
-        self.stopped_at = ""
+        self._stopped_at = ""
         # Board APIs that reached their own request limit while the lane
         # still had time: that call's failure, not the lane's.
         self.unanswered: list[str] = []
         # Set once the lane reached its answer for the topic, so a second
         # pass of the same run does not ask the same hosts again.
-        self.settled = False
+        self._settled = False
         # Careers page URL -> the address that answered it, after redirects.
         self.landed: dict[str, str] = {}
         # Hosts that gave no answer at all, so no later step asks them again.
         self.unreachable: set[str] = set()
 
+    @property
+    def step_deadline(self) -> float:
+        with self._lock:
+            return self._step_deadline
+
+    @step_deadline.setter
+    def step_deadline(self, value: float) -> None:
+        with self._lock:
+            self._step_deadline = value
+
+    @property
+    def stopped_at(self) -> str:
+        with self._lock:
+            return self._stopped_at
+
+    @stopped_at.setter
+    def stopped_at(self, value: str) -> None:
+        with self._lock:
+            self._stopped_at = value
+
+    @property
+    def settled(self) -> bool:
+        with self._lock:
+            return self._settled
+
+    @settled.setter
+    def settled(self, value: bool) -> None:
+        with self._lock:
+            self._settled = bool(value)
+
     def remaining(self) -> float:
-        return max(0.0, min(self.deadline, self.step_deadline) - self.clock())
+        with self._lock:
+            return max(0.0, min(self.deadline, self._step_deadline) - self.clock())
 
     def spent(self) -> bool:
-        return self.clock() >= self.deadline
+        with self._lock:
+            return self.clock() >= self.deadline
 
     def limit_discovery(self, seconds: float | None) -> None:
-        self.step_deadline = (
-            self.deadline if seconds is None
-            else min(self.deadline, self.clock() + max(0.0, seconds))
-        )
+        with self._lock:
+            self._step_deadline = (
+                self.deadline if seconds is None
+                else min(self.deadline, self.clock() + max(0.0, seconds))
+            )
 
     def note_slow(self, what: str) -> None:
-        if what and what not in self.slow:
-            self.slow.append(what)
+        with self._lock:
+            if what and what not in self.slow:
+                self.slow.append(what)
+
+    def note_unanswered(self, detail: str) -> None:
+        with self._lock:
+            if detail:
+                self.unanswered.append(detail)
+
+    def has_unanswered(self, detail: str | None = None) -> bool:
+        with self._lock:
+            if detail is None:
+                return bool(self.unanswered)
+            return detail in self.unanswered
+
+    def unanswered_snapshot(self) -> list[str]:
+        with self._lock:
+            return list(self.unanswered)
+
+    def record_landed(self, url: str, landed_url: str) -> None:
+        with self._lock:
+            self.landed[url] = landed_url
+
+    def get_landed(self, url: str, default: str | None = None) -> str | None:
+        with self._lock:
+            return self.landed.get(url, default)
+
+    def mark_unreachable(self, hosts: set[str] | list[str]) -> None:
+        with self._lock:
+            self.unreachable.update(hosts)
+
+    def is_unreachable(self, host: str) -> bool:
+        with self._lock:
+            return host in self.unreachable
 
     def stop(self, step: str) -> None:
         """Record the first step that found no time left."""
-        if not self.stopped_at:
-            self.stopped_at = step
+        with self._lock:
+            if not self._stopped_at:
+                self._stopped_at = step
 
     def reason(self) -> str:
         """Where the time went, for a lane that ran out of it."""
-        text = (
-            f"jobs lane ran out of time ({self.seconds:g}s budget)" if self.spent()
-            else f"jobs search used up its share of the lane's {self.seconds:g}s"
-        )
-        if self.stopped_at:
-            text += f" before {self.stopped_at}"
-        if self.slow:
-            text += "; slow: " + ", ".join(self.slow[:4])
-            if len(self.slow) > 4:
-                text += f" and {len(self.slow) - 4} more"
-        return text
+        with self._lock:
+            text = (
+                f"jobs lane ran out of time ({self.seconds:g}s budget)" if self.spent()
+                else f"jobs search used up its share of the lane's {self.seconds:g}s"
+            )
+            if self._stopped_at:
+                text += f" before {self._stopped_at}"
+            if self.slow:
+                text += "; slow: " + ", ".join(self.slow[:4])
+                if len(self.slow) > 4:
+                    text += f" and {len(self.slow) - 4} more"
+            return text
 
 
 _BUDGET: ContextVar[LaneBudget | None] = ContextVar("last30days_jobs_budget", default=None)
@@ -624,10 +700,11 @@ def _with_budget_outcome(
             if budget.spent():
                 artifact["_source_out_of_time"] = True
         return artifact
-    if budget.unanswered and not items:
+    unanswered = budget.unanswered_snapshot()
+    if unanswered and not items:
         # Time was left, but a board's API never answered: the lane cannot
         # say there is no board. Named, and open to a retry.
-        reason = f"{company}: {'; '.join(budget.unanswered[:4])}"
+        reason = f"{company}: {'; '.join(unanswered[:4])}"
         log.source_log("Jobs", reason, tty_only=False)
         return {
             **artifact,
@@ -746,6 +823,7 @@ def _search_jobs(
                 company, date_range, config, entry, entry["reason"],
                 attempted=attempted, web_backend=web_backend, explicit=explicit,
             )
+        share = budget.step_deadline
         attempted.append(f"company:{entry['provider']}:{entry['board']}")
         hosted = entry["provider"] in _HOSTED_PROVIDERS
         found, reason = _read_found_board(
@@ -755,9 +833,20 @@ def _search_jobs(
         )
         if found is not None:
             return found
+        budget.step_deadline = share
         if reason == "unanswered":
             # A board that did not answer is not one that cannot be read:
-            # the budget names it, and a retry may read it.
+            # the budget names it, and a retry may read it. For a hosted
+            # board (e.g. Workday), the company's own site may still serve an
+            # owned job sitemap while the third-party host is slow/overloaded.
+            if hosted:
+                roster = _sitemap_tier(
+                    company, date_range, _sitemap_hosts([], site),
+                    attempted=attempted, explicit=explicit, budget=budget,
+                    fallback=f"{entry['provider']} board did not answer",
+                )
+                if roster is not None:
+                    return roster
             return _web_tier(
                 company, date_range, config, attempted=attempted,
                 web_backend=web_backend, explicit=explicit,
@@ -806,6 +895,7 @@ def _search_jobs(
             platform = board_detect.detect_platform(careers_html, careers_url or "")
 
     if platform is not None:
+        share = budget.step_deadline
         platform_provider, entry = platform
         entry = {"name": company, **entry}
         attempted.append(f"careers:{platform_provider}:{entry['board']}")
@@ -816,14 +906,20 @@ def _search_jobs(
         )
         if found is not None:
             return found
+        budget.step_deadline = share
         if reason == "unanswered":
             return _web_tier(
                 company, date_range, config, attempted=attempted,
                 web_backend=web_backend, explicit=explicit,
             )
+        sitemap_first = (
+            [entry["board"], _host(careers_url or "")]
+            if page_via == "site"
+            else []
+        )
         return _fall_through(
             company, date_range, config, {"name": company, "site": entry["board"]},
-            reason, hosts=_sitemap_hosts([entry["board"], _host(careers_url or "")], site),
+            reason, hosts=_sitemap_hosts(sitemap_first, site),
             attempted=attempted, web_backend=web_backend, explicit=explicit, budget=budget,
             platform=platform_provider,
         )
@@ -871,8 +967,9 @@ def _search_jobs(
 
     # --- The roster tier: the job sitemap of the company's own site. ---
     if site and _host(site):
+        sitemap_first = [_host(careers_url or "")] if page_via == "site" else []
         roster = _sitemap_tier(
-            company, date_range, _sitemap_hosts([_host(careers_url or "")], site),
+            company, date_range, _sitemap_hosts(sitemap_first, site),
             attempted=attempted, explicit=explicit, budget=budget,
         )
         if roster is not None:
@@ -929,7 +1026,7 @@ def _read_found_board(
     )
     if found is not None:
         return found, ""
-    if f"the {provider} board {board} did not answer" in budget.unanswered:
+    if budget.has_unanswered(f"the {provider} board {board} did not answer"):
         return None, "unanswered"
     return None, f"its {provider} board answered with an error or with no roles the lane could read"
 
@@ -963,13 +1060,58 @@ def _fall_through(
     )
 
 
+def _is_shared_board_host(host: str) -> bool:
+    """Whether ``host`` belongs to a shared multi-tenant ATS or hiring platform."""
+    clean = _host(host)
+    return bool(clean) and any(
+        _same_site(clean, domain) for domain in _SHARED_PLATFORM_DOMAINS
+    )
+
+
+def _is_owned_sitemap_host(host: str, site: str) -> bool:
+    """Whether ``host`` is a company-dedicated host verified for ``site`` and
+    safe to stamp as an owned job sitemap (never a multi-tenant platform)."""
+    clean = _host(host)
+    site_host = _host(site)
+    if not clean or not site_host or _is_shared_board_host(clean):
+        return False
+    if _same_site(clean, site_host) or _named_jobs_host(clean, site):
+        return True
+    registered = _registry_entry(site)
+    if registered is not None and registered[0] == "board":
+        entry = registered[1]
+        if entry.get("provider") not in _HOSTED_PROVIDERS and _same_site(
+            clean, _host(entry.get("board", ""))
+        ):
+            return True
+    hinted = next(
+        (page for key, page in CAREERS_PAGES.items() if _same_site(site_host, key)),
+        "",
+    )
+    return bool(hinted) and _same_site(clean, _host(hinted))
+
+
 def _sitemap_hosts(first: list[str], site: str) -> list[str]:
-    """Hosts asked for a job sitemap: the board's and careers page's own,
-    then the official site's jobs and careers hosts, then the site itself."""
-    hosts = [host for host in first if host]
-    base = _host(site).removeprefix("www.") if site else ""
+    """Hosts asked for a job sitemap: verified company-dedicated hosts first,
+    then the official site's jobs and careers hosts, then the site itself.
+
+    Untrusted hosts and multi-tenant platform hosts are excluded because
+    ``_sitemap_tier`` stamps the first matching host as ``owned=True``.
+    """
+    site_host = _host(site) if site else ""
+    if not site_host:
+        return []
+    hosts = [
+        host for host in first
+        if host and _is_owned_sitemap_host(host, site)
+    ]
+    base = site_host.removeprefix("www.")
     if base:
-        hosts += [f"jobs.{base}", f"careers.{base}", _host(site)]
+        hosts += [
+            candidate
+            for candidate in (f"jobs.{base}", f"careers.{base}", site_host)
+            if not _is_shared_board_host(candidate)
+        ]
     return list(dict.fromkeys(host.lower() for host in hosts))
 
 
@@ -986,11 +1128,11 @@ def _sitemap_tier(
     """The roster tier (``lib.job_boards.sitemap``): roles listed in a job
     sitemap of the company's own site, as a board read titles only. None when
     no host has a job sitemap."""
-    hosts = [host for host in hosts if host not in budget.unreachable]
+    hosts = [host for host in hosts if not budget.is_unreachable(host)]
     if not hosts or _out_of_time("the job sitemap"):
         return None
     sitemap = importlib.import_module(f"{__package__}.job_boards.sitemap")
-    deadline = budget.deadline - budget.remaining() * DETAIL_SHARE
+    deadline = min(budget.deadline, budget.step_deadline) - budget.remaining() * DETAIL_SHARE
     attempted.append("sitemap:" + ",".join(hosts[:4]))
     def read() -> tuple[list[dict[str, Any]], dict[str, Any]]:
         try:
@@ -1137,7 +1279,7 @@ def _read_board(
             _note_slow(f"the {provider} board {slug} did not answer")
             # Its own request limit or the lane's: either way the board
             # was found and not read, which is said by name.
-            budget.unanswered.append(f"the {provider} board {slug} did not answer")
+            budget.note_unanswered(f"the {provider} board {slug} did not answer")
         items = []
     except ValueError as exc:  # BoardShapeError, UnicodeDecodeError, bad JSON
         # A company reader's answer in a shape or encoding it cannot read:
@@ -1150,8 +1292,9 @@ def _read_board(
         )
         items = []
     if not items:
-        if company_board is not None and board.get("board_unanswered"):
-            budget.unanswered.append(f"the {provider} board {slug} did not answer")
+        if board.get("board_unanswered"):
+            _note_slow(f"the {provider} board {slug} did not answer")
+            budget.note_unanswered(f"the {provider} board {slug} did not answer")
         return None
     stated = next(
         (str(item["company_name"]) for item in items if item.get("company_name")), "",
@@ -1597,8 +1740,8 @@ def _find_careers_page(
                 dead.add(host)
                 if budget is not None:
                     # Both host forms were asked for a known site.
-                    budget.unreachable.update({host, f"www.{host.removeprefix('www.')}",
-                                               host.removeprefix("www.")})
+                    budget.mark_unreachable({host, f"www.{host.removeprefix('www.')}",
+                                             host.removeprefix("www.")})
             if page is None:
                 continue
             if _names_board(page[0], page[1]):
@@ -1623,7 +1766,7 @@ def _find_careers_page(
             html, _no_answer = _careers_text(careers_url, guessed=True)
             if html:
                 budget = _BUDGET.get()
-                landed = (budget.landed.get(careers_url) if budget is not None else None) or careers_url
+                landed = (budget.get_landed(careers_url) if budget is not None else None) or careers_url
                 if board_detect.is_safe_public_url(landed) and (
                     _same_site(_host(landed), _host(careers_url)) or _jobs_host(_host(landed))
                 ):
@@ -1684,7 +1827,7 @@ def _careers_page_at(
         html, no_answer, url = _known_site_text(url)
     if not html:
         return None, no_answer, url
-    landed = (budget.landed.get(url) if budget is not None else None) or url
+    landed = (budget.get_landed(url) if budget is not None else None) or url
     if not board_detect.is_safe_public_url(landed):
         return None, False, url
     if not (_same_site(_host(landed), _host(url)) or _jobs_host(_host(landed)) or named):
@@ -1771,7 +1914,7 @@ def _careers_fetch(url: str, host: str, *, guessed: bool) -> tuple[str | None, b
             if any(failure.outcome_state == health.TIMEOUT for failure in failures):
                 _note_slow(f"{host} did not answer in {GUESS_TIMEOUT_SECONDS}s")
             if landed and budget is not None:
-                budget.landed[url] = landed[-1]
+                budget.record_landed(url, landed[-1])
             return html, any(failure.status_code is None for failure in failures)
         with http.tee_failures() as failures:
             html = http.get_text(
@@ -1780,7 +1923,7 @@ def _careers_fetch(url: str, host: str, *, guessed: bool) -> tuple[str | None, b
                 max_bytes=board_detect.MAX_HTML_BYTES, **_bounds(PAGE_TIMEOUT_SECONDS),
             )
     if landed and budget is not None:
-        budget.landed[url] = landed[-1]
+        budget.record_landed(url, landed[-1])
     timed_out = any(failure.outcome_state == health.TIMEOUT for failure in failures)
     if timed_out:
         _note_slow(f"{host} did not answer in {PAGE_TIMEOUT_SECONDS}s")
@@ -1825,7 +1968,7 @@ def _board_page(html: str, url: str, *, guessed: bool = False) -> tuple[str, str
         if _out_of_time(f"the jobs page {link}"):
             break
         linked, _no_answer = _careers_text(link, guessed=guessed)
-        landed = (budget.landed.get(link) if budget is not None else None) or link
+        landed = (budget.get_landed(link) if budget is not None else None) or link
         if not linked or not board_detect.is_safe_public_url(landed):
             continue
         landed_host = _host(landed)
@@ -2187,7 +2330,7 @@ def _probe_boards(
                     if budget.remaining() <= 0:
                         budget.stop(f"the {provider} probe for the slug {slug} answered")
                         return None, None, attempts, None
-                    budget.unanswered.append(
+                    budget.note_unanswered(
                         f"the {provider} API did not answer for the slug {slug}"
                     )
                 attempts.append(f"no-answer:{provider}:{slug}")
@@ -2336,8 +2479,10 @@ def read_smartrecruiters_board(
             deadline_monotonic=http_deadline, public_only=True,
         )
 
-    first = _workday_run([page(0)], deadline, clock)[0]
+    first, unanswered = _run_first_page(page(0), deadline, clock)
     if not isinstance(first, dict):
+        if unanswered:
+            info["board_unanswered"] = True
         return [], info
     items = parse_smartrecruiters_response(first, slug)
     total = max(_reported_total(first, "totalFound"), len(items))
@@ -2430,6 +2575,34 @@ def _workday_run(
         return [future.result() for future in futures]
 
 
+def _run_first_page(
+    call: Callable[[float], Any],
+    deadline: float,
+    clock: Callable[[], float],
+) -> tuple[Any, bool]:
+    """Run a board's first listing page and report whether it went unanswered.
+
+    No answer (deadline spent, timeout/transport error with ``status_code is
+    None``), an overload (5xx), or a rate limit (429) is retryable and marks
+    the board unanswered rather than permanently unreadable or absent.
+    """
+    failures: list[http.HTTPError] = []
+
+    def tracked(http_deadline: float) -> Any:
+        try:
+            return call(http_deadline)
+        except http.HTTPError as exc:
+            failures.append(exc)
+            raise
+
+    first = _workday_run([tracked], deadline, clock)[0]
+    if first is None or first is _OUT_OF_TIME:
+        status = failures[0].status_code if failures else None
+        unanswered = first is _OUT_OF_TIME or status is None or status == 429 or status >= 500
+        return first, unanswered
+    return first, False
+
+
 def _workday_body(offset: int, search_text: str = "") -> dict[str, Any]:
     return {
         "appliedFacets": {},
@@ -2487,8 +2660,10 @@ def search_workday_board(
         )
 
     # The total is reported on the first page only, so read that one first.
-    first = _workday_run([page(0)], deadline, clock)[0]
+    first, unanswered = _run_first_page(page(0), deadline, clock)
     if not isinstance(first, dict) or not isinstance(first.get("jobPostings"), list):
+        if unanswered:
+            info["board_unanswered"] = True
         # Not a listing: a site name the tenant does not have answers an
         # error record, which is not paged through.
         return [], info
@@ -3294,21 +3469,11 @@ def _read_newest_first(
         "board_newest_first": newest_first, "board_window_covered": False,
         "board_row_ceiling": row_ceiling, "board_reports_total": True,
     }
-    failures: list[http.HTTPError] = []
-
-    def first_page(http_deadline: float) -> Any:
-        try:
-            return page(0)(http_deadline)
-        except http.HTTPError as exc:
-            failures.append(exc)
-            raise
-
-    first = _workday_run([first_page], deadline, clock)[0]
+    first, unanswered = _run_first_page(page(0), deadline, clock)
     if first is None or first is _OUT_OF_TIME:
         # No answer, an overload or a rate limit is not the board refusing
         # to be read: the run says it did not answer, and a retry may.
-        status = failures[0].status_code if failures else None
-        info["board_unanswered"] = first is _OUT_OF_TIME or status is None or status == 429 or status >= 500
+        info["board_unanswered"] = unanswered
         return [], info
     try:
         items, total = parse(first)

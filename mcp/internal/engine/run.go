@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -196,25 +197,47 @@ func resolveTimeout(explicit time.Duration) time.Duration {
 }
 
 // buildEnv stitches PYTHONPATH onto os.Environ + ExtraEnv. Any pre-existing
-// PYTHONPATH in the parent environment is dropped before appending the
-// cache dir; otherwise the child sees two PYTHONPATH= entries and POSIX
-// getenv returns the first one, so the user's value wins and the engine's
-// `from lib import ...` fails with ModuleNotFoundError. The engine is
-// self-contained and does not need the user's Python module search path.
+// PYTHONPATH, PYTHONDONTWRITEBYTECODE, or key overridden by ExtraEnv in the
+// parent environment is dropped before appending; otherwise the child sees
+// duplicate entries and POSIX getenv returns the first one, shadowing our
+// cache-dir or MCP-level overrides.
 func buildEnv(cacheDir string, extra []string) []string {
 	const (
 		pyKey       = "PYTHONPATH="
 		bytecodeKey = "PYTHONDONTWRITEBYTECODE="
 	)
+	overrides := make(map[string]struct{}, len(extra))
+	for _, kv := range extra {
+		if key, ok := envKey(kv); ok {
+			overrides[key] = struct{}{}
+		}
+	}
 	parent := os.Environ()
 	base := make([]string, 0, len(parent)+2+len(extra))
 	for _, kv := range parent {
 		if strings.HasPrefix(kv, pyKey) || strings.HasPrefix(kv, bytecodeKey) {
 			continue
 		}
+		if key, ok := envKey(kv); ok {
+			if _, replaced := overrides[key]; replaced {
+				continue
+			}
+		}
 		base = append(base, kv)
 	}
 	base = append(base, pyKey+cacheDir, bytecodeKey+"1")
 	base = append(base, extra...)
 	return base
+}
+
+func envKey(kv string) (string, bool) {
+	eq := strings.IndexByte(kv, '=')
+	if eq <= 0 {
+		return "", false
+	}
+	key := kv[:eq]
+	if runtime.GOOS == "windows" {
+		return strings.ToUpper(key), true
+	}
+	return key, true
 }

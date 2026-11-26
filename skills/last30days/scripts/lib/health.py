@@ -111,12 +111,13 @@ def probe_command(
     callers pass a status/version subcommand, not a mutating one.
     """
     name = command[0] if command else ""
-    if not name or shutil.which(name) is None:
+    resolved = shutil.which(name) if name else None
+    if resolved is None:
         return SourceHealth(name=name, state=MISSING, reason=f"{name or 'command'} not found on PATH")
 
     try:
         proc = subprocess.run(
-            command,
+            [resolved, *command[1:]],
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -570,7 +571,7 @@ def _probe_dependency_uncached(name: str, timeout: float) -> DependencyProbe:
             owner_pkg_manager=manager,
         )
 
-    command = [name] + _VERSION_ARGS.get(name, ["--version"])
+    command = [resolved] + _VERSION_ARGS.get(name, ["--version"])
     try:
         cleanup_grace = 0.1
         proc = subproc.run_with_timeout(

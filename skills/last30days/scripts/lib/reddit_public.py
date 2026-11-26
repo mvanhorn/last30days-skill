@@ -24,7 +24,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 from lib import http
 from . import reddit_refs
@@ -256,6 +256,7 @@ def search_reddit_public(
     depth: str = "default",
     subreddits: Optional[List[str]] = None,
     dedicated_subreddits: Optional[List[str]] = None,
+    config: Optional[Mapping[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """High-level free Reddit search + enrichment (keyless).
 
@@ -279,13 +280,21 @@ def search_reddit_public(
         to_date: End date (YYYY-MM-DD)
         depth: 'quick', 'default', or 'deep'
         subreddits: Optional list of subreddit names (without r/) for targeted search
+        dedicated_subreddits: Optional list of entity-home subreddits (without r/)
+        config: Optional pre-loaded per-run config mapping.
 
     Returns:
         List of normalized item dicts matching ScrapeCreators output format.
         Empty list on total failure (so SC backup can engage).
     """
     from . import reddit_keyless
+    kwargs: Dict[str, Any] = {
+        "depth": depth,
+        "subreddits": subreddits,
+        "dedicated_subreddits": dedicated_subreddits,
+    }
+    if config is not None:
+        kwargs["config"] = config
     return reddit_keyless.search_and_enrich(
-        topic, from_date, to_date, depth=depth, subreddits=subreddits,
-        dedicated_subreddits=dedicated_subreddits,
+        topic, from_date, to_date, **kwargs,
     )

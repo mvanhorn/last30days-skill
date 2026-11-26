@@ -42,7 +42,7 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
-from typing import Any, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional
 from urllib.parse import parse_qs, urlencode, urlparse, urlsplit, urlunsplit
 
 from . import health, http, log, public_host
@@ -57,6 +57,8 @@ _KEYLESS_RELEVANCE = 0.6
 
 _MAX_SERP_BYTES = 2 * 1024 * 1024
 _MAX_SEARXNG_BYTES = 2 * 1024 * 1024
+# With a result filter, how many rows are looked at before giving up.
+_MAX_SEARXNG_SCANNED = 100
 
 _BLOCKED_SEARXNG_HOSTS = frozenset({
     "metadata.google.internal",
@@ -406,11 +408,13 @@ def keyless_search(
     freshness: Optional[str] = None,
     deadline_monotonic: Optional[float] = None,
     cancel: Optional[threading.Event] = None,
+    accept_result: Optional[Callable[[dict], bool]] = None,
 ) -> tuple[list[dict], dict]:
     """Run keyless web search; returns (items, artifact). Never raises.
 
     ``deadline_monotonic`` bounds every page fetch, and no further rung starts
     once it passes or ``cancel`` is set.
+    ``accept_result`` filters each rung before deciding whether it served.
 
     ``freshness`` (``day``/``week``/``month``/``year``) asks each HTML rung for
     results from that recent period only. The artifact's ``keyless_rungs``
@@ -434,6 +438,7 @@ def keyless_search(
         return deadline_monotonic is not None and time.monotonic() >= deadline_monotonic
 
     searxng_attempted = False
+    searxng_state: Optional[str] = None
     with http.tee_failures() as run_failures:
         for rung, search in ladder:
             if stopped():
@@ -445,6 +450,10 @@ def keyless_search(
             # A DuckDuckGo anomaly block (202 challenge page on a datacenter IP)
             # falls through to Startpage, which still serves organic results there.
             items, state = search(query, count, freshness, **bound)
+            if accept_result is not None and items:
+                items = [item for item in items if accept_result(item)]
+                if not items and state == OK:
+                    state = EMPTY
             tried[rung] = state
             RUNG_HEALTH.record(rung, state)
             used = rung
@@ -454,7 +463,14 @@ def keyless_search(
             searxng_url = (config.get("LAST30DAYS_SEARXNG_URL") or "").strip()
             if searxng_url and not stopped():
                 searxng_attempted = True
-                items = _search_searxng(query, count, searxng_url, **bound)
+                searxng_outcome: dict[str, str] = {}
+                items = _search_searxng(
+                    query, count, searxng_url, accept_result=accept_result,
+                    outcome=searxng_outcome, **bound,
+                )
+                # Reported on its own key so that ``keyless_rungs`` and the shared rung
+                # health stay the HTML rungs only.
+                searxng_state = searxng_outcome.get("state")
                 used = "searxng"
     # These backends never return a publish date, so normalize's grounding
     # require_date would drop every result. Keep undated links only when the
@@ -469,6 +485,8 @@ def keyless_search(
         "keyless_backend": used,
         "keyless_rungs": tried,
     }
+    if searxng_state:
+        artifact["keyless_searxng"] = searxng_state
     if not items:
         budget_exhausted = stopped() or any(
             isinstance(failure, http.DeadlineExceeded) for failure in run_failures
@@ -830,11 +848,38 @@ def is_challenge_page(rung: str, text: str) -> bool:
     return bool(text) and any(marker in text for marker in _CHALLENGE_MARKERS.get(rung, ()))
 
 
+def _searxng_failure_state(exc: http.HTTPError) -> str:
+    """The rung state for a failed SearXNG request (a refusal, a throttle, a timeout or other).
+
+    A refusal status wins. Any other error the transport normalized to a timeout counts as one,
+    including the shared deadline. Only the shared deadline ends a run, which is decided elsewhere.
+    """
+    if exc.status_code == 403:
+        return BLOCKED
+    if exc.status_code == 429:
+        return THROTTLED
+    if exc.outcome_state == health.TIMEOUT:
+        return health.TIMEOUT
+    return ERROR
+
+
 def _search_searxng(
     query: str, count: int, instance_url: str, time_range: str | None = None,
     deadline_monotonic: float | None = None,
     cancel: Optional[threading.Event] = None,
+    accept_result: Optional[Callable[[dict], bool]] = None,
+    outcome: Optional[dict[str, str]] = None,
 ) -> list[dict]:
+    """SearXNG results, up to ``count`` that ``accept_result`` keeps.
+
+    The filter runs before the count, over at most ``_MAX_SEARXNG_SCANNED`` rows.
+    ``outcome``, when given, receives ``state``: ok, empty, blocked (403),
+    throttled (429), timeout or error. The URL and response text stay out of it.
+    """
+    def record(state: str) -> None:
+        if outcome is not None:
+            outcome["state"] = state
+
     validated = _validate_searxng_url(instance_url)
     if validated is None:
         log.source_log(
@@ -864,13 +909,21 @@ def _search_searxng(
             decode_errors="replace",
             **extra,
         )
-    except (http.HTTPError, UnicodeDecodeError, ValueError):
+    except http.HTTPError as exc:
+        record(_searxng_failure_state(exc))
+        return []
+    except (UnicodeDecodeError, ValueError):
+        record(ERROR)
         return []
     if not isinstance(data, dict):
+        record(ERROR)
         return []
     raw_results = data.get("results")
     if not isinstance(raw_results, list):
+        record(ERROR)
         return []
+    if accept_result is not None:
+        raw_results = raw_results[:_MAX_SEARXNG_SCANNED]
     items: list[dict] = []
     for i, r in enumerate(raw_results):
         if len(items) >= count:
@@ -882,12 +935,16 @@ def _search_searxng(
             continue
         title = r.get("title")
         content = r.get("content")
-        items.append(_to_item(
+        item = _to_item(
             i,
             title if isinstance(title, str) else str(title or ""),
             target,
             content if isinstance(content, str) else str(content or ""),
-        ))
+        )
+        if accept_result is not None and not accept_result(item):
+            continue
+        items.append(item)
+    record(OK if items else EMPTY)
     return items
 
 

@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable
 
-from . import github, grounding, health, polymarket, schema, stocktwits
+from . import dates, github, grounding, health, polymarket, schema, stocktwits
 
 
 @dataclass(frozen=True)
@@ -26,6 +27,7 @@ class Claim:
     datum_kind: str
     datum_key: str
     original_value: Any
+    datum_market_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -34,6 +36,10 @@ class RefetchedDatum:
     url: str
     timestamp: str | None = None
     values: dict[str, Any] | None = None
+    legacy_values: dict[str, Any] | None = None
+    market_values: dict[str, Any] | None = None
+    blocked_repeats: frozenset[str] = frozenset()
+    legacy_blocked_repeats: frozenset[str] | None = None
 
 
 Refetcher = Callable[[schema.SourceItem | None, str], RefetchedDatum | dict[str, Any] | Any]
@@ -44,7 +50,8 @@ _STATUS_PATTERN = re.compile(
     r"(?P<status>open|closed|active|inactive|available|unavailable|"
     r"approved|rejected|launched|discontinued|online|offline)\b"
 )
-_STATUS_COPULA_PRIORITY = {"was": 0, "became": 0, "has been": 1, "is": 2, "remains": 2}
+_STATUS_COPULA_PRIORITY = {"was": 0, "became": 1, "has been": 2, "is": 3, "remains": 3}
+_DATE_ONLY_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 _OPPOSITE_STATUS = {
     "open": "closed",
     "closed": "open",
@@ -78,6 +85,8 @@ def _claim(
     key: str,
     value: Any,
     text: str,
+    *,
+    datum_market_id: str | None = None,
 ) -> Claim:
     item = grounded.item
     return Claim(
@@ -91,6 +100,7 @@ def _claim(
         datum_kind=kind,
         datum_key=key,
         original_value=value,
+        datum_market_id=datum_market_id,
     )
 
 
@@ -102,21 +112,38 @@ def extract_claims(report: schema.Report) -> list[Claim]:
         item = grounded.item
         if item.source == "polymarket":
             outcome_pairs = item.metadata.get("outcome_prices") or []
-            outcome_counts = Counter(
-                str(pair[0]).strip().casefold()
-                for pair in outcome_pairs
-                if isinstance(pair, (list, tuple)) and len(pair) == 2
+            raw_market_ids = item.metadata.get("outcome_market_ids")
+            aligned_market_ids = (
+                raw_market_ids
+                if isinstance(raw_market_ids, (list, tuple))
+                and len(raw_market_ids) == len(outcome_pairs)
+                else None
             )
-            seen_outcomes: dict[str, int] = defaultdict(int)
-            for pair in outcome_pairs:
+            valid_pairs: list[tuple[str, float, str | None]] = []
+            for idx, pair in enumerate(outcome_pairs):
                 if not isinstance(pair, (list, tuple)) or len(pair) != 2:
                     continue
                 name, value = pair
-                if not isinstance(value, (int, float)) or isinstance(value, bool):
+                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                    continue
+                try:
+                    numeric = float(value)
+                except OverflowError:
+                    continue
+                if not math.isfinite(numeric):
                     continue
                 key = str(name).strip()
                 if not key:
                     continue
+                market_id = (
+                    str(aligned_market_ids[idx] or "").strip() or None
+                    if aligned_market_ids is not None
+                    else None
+                )
+                valid_pairs.append((key, numeric, market_id))
+            outcome_counts = Counter(key.casefold() for key, _value, _mid in valid_pairs)
+            seen_outcomes: dict[str, int] = defaultdict(int)
+            for key, numeric, market_id in valid_pairs:
                 normalized_key = key.casefold()
                 occurrence = seen_outcomes[normalized_key]
                 seen_outcomes[normalized_key] += 1
@@ -130,8 +157,9 @@ def extract_claims(report: schema.Report) -> list[Claim]:
                         grounded,
                         "polymarket_probability",
                         datum_key,
-                        float(value),
-                        f"{item.title}: {key} is {float(value) * 100:g}%",
+                        numeric,
+                        f"{item.title}: {key} is {numeric * 100:g}%",
+                        datum_market_id=market_id,
                     )
                 )
             end_date = item.metadata.get("end_date")
@@ -259,15 +287,38 @@ def _default_refetchers() -> dict[str, Refetcher]:
     }
 
 
+def _coerce_blocked_repeats(raw: Any) -> frozenset[str]:
+    if not isinstance(raw, (list, tuple, set, frozenset)):
+        return frozenset()
+    return frozenset(str(name).strip().casefold() for name in raw if name and str(name).strip())
+
+
 def _coerce_refetched(value: RefetchedDatum | dict[str, Any] | Any, fallback_url: str) -> RefetchedDatum:
     if isinstance(value, RefetchedDatum):
         return value
     if isinstance(value, dict) and "value" in value:
+        raw_legacy_blocked = value.get("legacy_blocked_repeats")
         return RefetchedDatum(
             value=value["value"],
             url=str(value.get("url") or fallback_url),
             timestamp=value.get("timestamp"),
             values=value.get("values") if isinstance(value.get("values"), dict) else None,
+            legacy_values=(
+                value.get("legacy_values")
+                if isinstance(value.get("legacy_values"), dict)
+                else None
+            ),
+            market_values=(
+                value.get("market_values")
+                if isinstance(value.get("market_values"), dict)
+                else None
+            ),
+            blocked_repeats=_coerce_blocked_repeats(value.get("blocked_repeats")),
+            legacy_blocked_repeats=(
+                _coerce_blocked_repeats(raw_legacy_blocked)
+                if raw_legacy_blocked is not None
+                else None
+            ),
         )
     return RefetchedDatum(value=value, url=fallback_url)
 
@@ -304,10 +355,53 @@ def _values_match(claim: Claim, current: Any) -> bool:
     return claim.original_value == current
 
 
+def _item_identity(source: str, url: str | None, item_id: str) -> tuple[str, str]:
+    return (source, (url or "").strip() or item_id)
+
+
+def _parse_timestamp(raw: str | None) -> tuple[datetime, bool] | None:
+    if not isinstance(raw, str):
+        return None
+    text = raw.strip()
+    if not text:
+        return None
+    try:
+        parsed = dates.parse_date(text)
+    except (ValueError, TypeError, OverflowError, OSError):
+        parsed = None
+    if parsed is None:
+        try:
+            iso = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+        parsed = (
+            iso.astimezone(timezone.utc)
+            if iso.tzinfo is not None
+            else iso.replace(tzinfo=timezone.utc)
+        )
+    return parsed, bool(_DATE_ONLY_RE.fullmatch(text))
+
+
+def _is_strictly_newer(
+    item_ts: tuple[datetime, bool],
+    reference_ts: tuple[datetime, bool],
+) -> bool:
+    item_dt, item_date_only = item_ts
+    ref_dt, ref_date_only = reference_ts
+    if not item_date_only and not ref_date_only:
+        return item_dt > ref_dt
+    return item_dt.date() > ref_dt.date()
+
+
 def _newer_status_contradiction(
     report: schema.Report,
     claim: Claim,
 ) -> schema.SourceItem | None:
+    if not claim.source_timestamp:
+        return None
+    claim_ts = _parse_timestamp(claim.source_timestamp)
+    if claim_ts is None:
+        return None
     opposite = _OPPOSITE_STATUS.get(str(claim.original_value))
     if not opposite:
         return None
@@ -318,35 +412,115 @@ def _newer_status_contradiction(
     ]
     if not subject_tokens:
         return None
-    candidates = [
-        item
-        for items in report.items_by_source.values()
-        for item in items
-        if (item.source, item.item_id) != (claim.source, claim.source_item_id)
-        and item.published_at
-        and (not claim.source_timestamp or item.published_at > claim.source_timestamp)
+    claim_identity = _item_identity(claim.source, claim.source_url, claim.source_item_id)
+    matched: list[tuple[tuple[datetime, bool], schema.SourceItem, dict[int, set[str]]]] = []
+    for items in report.items_by_source.values():
+        for item in items:
+            if _item_identity(item.source, item.url, item.item_id) == claim_identity:
+                continue
+            item_ts = _parse_timestamp(item.published_at)
+            if item_ts is None or not _is_strictly_newer(item_ts, claim_ts):
+                continue
+            text = f"{item.title} {item.snippet} {item.body}"
+            statuses_by_priority: dict[int, set[str]] = defaultdict(set)
+            for match in _STATUS_PATTERN.finditer(text):
+                asserted_subject = [
+                    token.lower()
+                    for token in re.findall(r"[A-Za-z0-9]+", match.group("subject"))
+                    if len(token) >= 3
+                ]
+                if asserted_subject == subject_tokens:
+                    status = match.group("status").lower()
+                    if status in {opposite, claim.original_value}:
+                        priority = _STATUS_COPULA_PRIORITY[match.group("copula")]
+                        statuses_by_priority[priority].add(status)
+            if statuses_by_priority:
+                matched.append((item_ts, item, statuses_by_priority))
+    if not matched:
+        return None
+    newest = [
+        entry
+        for entry in matched
+        if not any(_is_strictly_newer(other[0], entry[0]) for other in matched)
     ]
-    candidates.sort(key=lambda item: item.published_at or "", reverse=True)
-    for item in candidates:
-        text = f"{item.title} {item.snippet} {item.body}"
-        statuses_by_priority: dict[int, set[str]] = defaultdict(set)
-        for match in _STATUS_PATTERN.finditer(text):
-            asserted_subject = [
-                token.lower()
-                for token in re.findall(r"[A-Za-z0-9]+", match.group("subject"))
-                if len(token) >= 3
-            ]
-            if asserted_subject == subject_tokens:
-                status = match.group("status").lower()
-                if status in {opposite, claim.original_value}:
-                    priority = _STATUS_COPULA_PRIORITY[match.group("copula")]
-                    statuses_by_priority[priority].add(status)
-        if statuses_by_priority:
-            priority = max(statuses_by_priority)
-            statuses = statuses_by_priority[priority]
-            if opposite in statuses and (priority == 0 or len(statuses) == 1):
-                return item
-            return None
+    newest.sort(
+        key=lambda entry: (
+            -entry[0][0].timestamp(),
+            entry[1].source,
+            entry[1].url,
+            entry[1].item_id,
+        )
+    )
+    aggregated: dict[int, set[str]] = defaultdict(set)
+    opposite_item: dict[int, schema.SourceItem] = {}
+    for _item_ts, item, item_statuses in newest:
+        for priority, statuses in item_statuses.items():
+            aggregated[priority].update(statuses)
+            if opposite in statuses and priority not in opposite_item:
+                opposite_item[priority] = item
+    top_priority = max(aggregated)
+    top_statuses = aggregated[top_priority]
+    if top_statuses == {opposite}:
+        return opposite_item[top_priority]
+    return None
+
+
+def _normalize_datum_key(key: str) -> str:
+    if "\x1f" in key:
+        name, occurrence = key.rsplit("\x1f", 1)
+        return f"{name.strip().casefold()}\x1f{occurrence.strip()}"
+    return key.strip().casefold()
+
+
+def _lookup_cached_datum(
+    cached: tuple[str | None, RefetchedDatum],
+    claim: Claim,
+) -> RefetchedDatum | None:
+    """Resolve ``claim.datum_key`` from a cached snapshot using refetch_datum semantics."""
+    cached_key, cached_datum = cached
+    if (
+        claim.datum_kind == "polymarket_probability"
+        and claim.datum_market_id
+        and cached_datum.market_values is not None
+    ):
+        value = cached_datum.market_values.get(claim.datum_market_id)
+        if value is not None:
+            return RefetchedDatum(
+                value=value,
+                url=cached_datum.url,
+                timestamp=cached_datum.timestamp,
+                values=cached_datum.values,
+                legacy_values=cached_datum.legacy_values,
+                market_values=cached_datum.market_values,
+                blocked_repeats=cached_datum.blocked_repeats,
+                legacy_blocked_repeats=cached_datum.legacy_blocked_repeats,
+            )
+        return None
+    values = cached_datum.values
+    legacy_values = cached_datum.legacy_values
+    if values or legacy_values or cached_datum.market_values is not None:
+        value = polymarket.resolve_snapshot_value(
+            values or {},
+            claim.datum_key,
+            legacy_values=legacy_values,
+            blocked_repeats=cached_datum.blocked_repeats,
+            legacy_blocked_repeats=cached_datum.legacy_blocked_repeats,
+            allow_occurrence_zero=(claim.datum_kind == "polymarket_probability"),
+        )
+        if value is not None:
+            return RefetchedDatum(
+                value=value,
+                url=cached_datum.url,
+                timestamp=cached_datum.timestamp,
+                values=values,
+                legacy_values=legacy_values,
+                market_values=cached_datum.market_values,
+                blocked_repeats=cached_datum.blocked_repeats,
+                legacy_blocked_repeats=cached_datum.legacy_blocked_repeats,
+            )
+        return None
+    if cached_key is not None and _normalize_datum_key(cached_key) == _normalize_datum_key(claim.datum_key):
+        return cached_datum if cached_datum.value is not None else None
     return None
 
 
@@ -437,17 +611,22 @@ def verify_report(
     """Attach and return deterministic freshness verdicts for ``report``."""
     checked = checked_at or _now()
     dispatch = _default_refetchers() if refetchers is None else refetchers
-    items = {
-        (item.source, item.item_id): item
-        for source_items in report.items_by_source.values()
-        for item in source_items
+    grounded_items = {
+        candidate_id: grounded.item
+        for candidate_id, grounded in grounding.claim_source_map(report).items()
     }
+    fallback_items: dict[tuple[str, str], schema.SourceItem] = {}
+    for source_items in report.items_by_source.values():
+        for item in source_items:
+            fallback_items[_item_identity(item.source, item.url, item.item_id)] = item
     for candidate in report.ranked_candidates:
         for item in candidate.source_items:
-            items.setdefault((item.source, item.item_id), item)
+            fallback_items.setdefault(
+                _item_identity(item.source, item.url, item.item_id), item
+            )
 
     verdicts: list[schema.FreshnessVerdict] = []
-    point_cache: dict[tuple[str, ...], tuple[str, RefetchedDatum]] = {}
+    point_cache: dict[tuple[str, ...], tuple[str | None, RefetchedDatum]] = {}
     point_errors: dict[tuple[str, ...], str] = {}
     for claim in extract_claims(report):
         if claim.datum_kind == "status_assertion":
@@ -519,7 +698,11 @@ def verify_report(
                 verdicts.append(_unsupported(claim, checked, detail))
             continue
 
-        item = items.get((claim.source, claim.source_item_id))
+        item = grounded_items.get(claim.candidate_id)
+        if item is None or item.source != claim.source:
+            item = fallback_items.get(
+                _item_identity(claim.source, claim.source_url, claim.source_item_id)
+            )
         outcome = report.source_status.get(claim.source)
         if item is None:
             verdicts.append(_unsupported(claim, checked, "Grounding source item is unavailable"))
@@ -546,26 +729,29 @@ def verify_report(
             continue
         try:
             cached = point_cache.get(cache_key)
-            if cached and cached[0] == claim.datum_key:
-                refreshed = cached[1]
-            elif cached and cached[1].values and claim.datum_key in cached[1].values:
-                refreshed = RefetchedDatum(
-                    value=cached[1].values[claim.datum_key],
-                    url=cached[1].url,
-                    timestamp=cached[1].timestamp,
-                    values=cached[1].values,
-                )
-            elif cached:
-                verdicts.append(
-                    _unsupported(
-                        claim,
-                        checked,
-                        "Re-fetched snapshot did not include this datum",
+            if cached is not None:
+                refreshed = _lookup_cached_datum(cached, claim)
+                if refreshed is None:
+                    verdicts.append(
+                        _unsupported(
+                            claim,
+                            checked,
+                            "Re-fetched snapshot did not include this datum",
+                        )
                     )
-                )
-                continue
+                    continue
             else:
                 refreshed = _coerce_refetched(refetcher(item, claim.datum_key), claim.source_url)
+                if refreshed.value is None:
+                    point_cache[cache_key] = (None, refreshed)
+                    verdicts.append(
+                        _unsupported(
+                            claim,
+                            checked,
+                            "Re-fetched snapshot did not include this datum",
+                        )
+                    )
+                    continue
                 point_cache[cache_key] = (claim.datum_key, refreshed)
             verdicts.append(_point_verdict(claim, checked, refreshed))
         except Exception as exc:  # verifier failures degrade to a typed verdict
@@ -576,6 +762,7 @@ def verify_report(
             elif cache_key not in point_cache and getattr(exc, "snapshot", None):
                 # Keep the fetched snapshot so sibling claims reuse it.
                 snapshot = exc.snapshot
+                raw_legacy_blocked = snapshot.get("legacy_blocked_repeats")
                 point_cache[cache_key] = (
                     None,
                     RefetchedDatum(
@@ -583,6 +770,22 @@ def verify_report(
                         url=str(snapshot.get("url") or claim.source_url),
                         timestamp=snapshot.get("timestamp"),
                         values=dict(snapshot.get("values") or {}),
+                        legacy_values=(
+                            dict(snapshot.get("legacy_values") or {})
+                            if isinstance(snapshot.get("legacy_values"), dict)
+                            else None
+                        ),
+                        market_values=(
+                            dict(snapshot.get("market_values") or {})
+                            if isinstance(snapshot.get("market_values"), dict)
+                            else None
+                        ),
+                        blocked_repeats=_coerce_blocked_repeats(snapshot.get("blocked_repeats")),
+                        legacy_blocked_repeats=(
+                            _coerce_blocked_repeats(raw_legacy_blocked)
+                            if raw_legacy_blocked is not None
+                            else None
+                        ),
                     ),
                 )
             verdicts.append(_unsupported(claim, checked, detail))

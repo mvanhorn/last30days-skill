@@ -3,6 +3,8 @@
 import json
 import unittest
 import urllib.parse
+from http.client import IncompleteRead
+from io import BytesIO
 from unittest.mock import patch, MagicMock
 
 from lib import github
@@ -651,15 +653,17 @@ class TestPersonPushEventsLane(unittest.TestCase):
 class TestPersonVelocityWindow(unittest.TestCase):
     """Person-mode PR counts must cover the requested window, not up to today."""
 
-    def _run(self, from_date, to_date):
+    def _run(self, from_date, to_date, *, open_response=None):
         queries = []
 
         def fetch(url, **kwargs):
             if "search/issues" in url:
-                queries.append(
-                    urllib.parse.parse_qs(urllib.parse.urlparse(url).query)["q"][0]
-                )
-                return {"total_count": 4, "items": []}
+                query = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)["q"][0]
+                queries.append(query)
+                if query.endswith(" is:open"):
+                    return open_response
+                count = 4 if query.endswith(" is:merged") else 10
+                return {"total_count": count, "items": []}
             return []
 
         with patch.object(github, "_resolve_token", return_value="t"), \
@@ -670,7 +674,7 @@ class TestPersonVelocityWindow(unittest.TestCase):
     def test_pr_searches_end_at_window_end(self):
         queries, _ = self._run("2026-05-31", "2026-06-30")
 
-        self.assertEqual(len(queries), 2)
+        self.assertEqual(len(queries), 3)
         for q in queries:
             self.assertIn("created:2026-05-31..2026-06-30", q)
             self.assertEqual(q.count("created:"), 1)
@@ -679,6 +683,43 @@ class TestPersonVelocityWindow(unittest.TestCase):
         _, items = self._run("2026-07-16", "2026-10-14")
 
         self.assertIn("CONTRIBUTION VELOCITY (last 90 days)", items[0]["snippet"])
+
+    def test_open_pr_count_excludes_closed_unmerged_prs(self):
+        for count in (2, 0):
+            with self.subTest(open_prs=count):
+                _, items = self._run(
+                    "2026-05-31", "2026-06-30",
+                    open_response={"total_count": count, "incomplete_results": False},
+                )
+                self.assertIn(f"10 total PRs submitted, {count} still open", items[0]["snippet"])
+
+    def test_unavailable_open_pr_count_is_omitted(self):
+        responses = (None, {"total_count": 2, "incomplete_results": True}, {"total_count": 11})
+        for response in responses:
+            with self.subTest(response=response):
+                _, items = self._run("2026-05-31", "2026-06-30", open_response=response)
+                self.assertIn("10 total PRs submitted\n", items[0]["snippet"])
+                self.assertNotIn("still open", items[0]["snippet"])
+
+    def test_unreadable_open_pr_response_keeps_person_report(self):
+        def fetch(request, timeout):
+            parsed = urllib.parse.urlsplit(request.full_url)
+            if parsed.path == "/users/kurt/repos":
+                return BytesIO(b"[]")
+            self.assertEqual(parsed.path, "/search/issues")
+            query = urllib.parse.parse_qs(parsed.query)["q"][0]
+            if query.endswith(" is:open"):
+                return open_response
+            count = 4 if query.endswith(" is:merged") else 10
+            return BytesIO(json.dumps({"total_count": count, "items": []}).encode())
+
+        truncated = MagicMock()
+        truncated.__enter__.return_value.read.side_effect = IncompleteRead(b"", 1)
+        for case, open_response in (("truncated", truncated), ("invalid UTF-8", BytesIO(b"\xff"))):
+            with self.subTest(case=case), patch.object(github.http, "open_request", side_effect=fetch):
+                items = github.search_github_person("kurt", "2026-05-31", "2026-06-30", token="t")
+                self.assertIn("10 total PRs submitted\n", items[0]["snippet"])
+                self.assertNotIn("still open", items[0]["snippet"])
 
 
 

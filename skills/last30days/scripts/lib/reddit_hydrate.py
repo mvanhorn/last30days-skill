@@ -176,13 +176,13 @@ def _stamp_uploader(post: dict) -> None:
 
     Set while the post author is still on the item; the normalized item drops it.
     """
-    author = str(post.get("author") or "").strip().lower()
+    author = str(post.get("author") or "").strip().lower().removeprefix("/").removeprefix("u/")
     if not author or author in ("[deleted]", "[removed]"):
         return
     for comment in post.get("top_comments") or []:
         if isinstance(comment, dict) and not isinstance(comment.get("is_uploader"), bool):
-            name = str(comment.get("author") or "").strip().lower()
-            if name:
+            name = str(comment.get("author") or "").strip().lower().removeprefix("/").removeprefix("u/")
+            if name and name not in ("[deleted]", "[removed]"):
                 comment["is_uploader"] = name == author
 
 
@@ -280,10 +280,17 @@ def _attach_comments(
         if end - time.monotonic() < 1:
             _log("comment budget spent; remaining threads keep no comments")
             break
-        rows = reddit_arctic.fetch_comment_tree(item["metadata"]["post_id"], deadline=end)
+        pid = item["metadata"]["post_id"]
+        if reddit_arctic.fetch_comment_tree is getattr(reddit_arctic, "_ORIG_FETCH_COMMENT_TREE", None):
+            rows, was_throttled = reddit_arctic._fetch_comment_tree_with_status(pid, deadline=end)
+        else:
+            if "last_tree_throttled" not in vars(reddit_arctic):
+                reddit_arctic._set_thread_tree_throttled(False)
+            rows = reddit_arctic.fetch_comment_tree(pid, deadline=end)
+            was_throttled = bool(getattr(reddit_arctic, "last_tree_throttled", False))
         if rows is None:
             failed += 1
-            throttled += bool(getattr(reddit_arctic, "last_tree_throttled", False))
+            throttled += bool(was_throttled)
             if failed >= 2 and not filled:
                 _log("archive comments failing; remaining threads keep no comments")
                 break
@@ -326,11 +333,28 @@ def on_topic_count(items: Iterable[dict], topic: str) -> int:
     return sum(names_topic(str(item.get("title") or ""), topic) for item in items)
 
 
+def _effective_score_rank(post: dict) -> int:
+    """Rank a post's score trustworthiness.
+
+    An explicit ``engagement_source`` (including ``LIVE`` with a measured 0)
+    uses ``score_rank``. An unlabeled dict with a placeholder 0/None score
+    ranks as ``UNKNOWN`` so missing votes never overwrite measured scores.
+    """
+    source = post.get("engagement_source")
+    if source:
+        return score_rank(source)
+    engagement = post.get("engagement") or {}
+    score = engagement.get("score") if engagement.get("score") is not None else post.get("score")
+    if _is_number(score) and score != 0:
+        return score_rank(LIVE)
+    return score_rank(UNKNOWN)
+
+
 def merge_post(existing: dict, incoming: dict) -> None:
     """Fold another layer's copy of a thread into ``existing``, field by field."""
     mine = existing.setdefault("engagement", {})
     theirs = incoming.get("engagement") or {}
-    if score_rank(incoming.get("engagement_source")) > score_rank(existing.get("engagement_source")):
+    if _effective_score_rank(incoming) > _effective_score_rank(existing):
         mine["score"] = theirs.get("score")
         existing["score"] = theirs.get("score")
         existing["engagement_source"] = incoming.get("engagement_source") or LIVE

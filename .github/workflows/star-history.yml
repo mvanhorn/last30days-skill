@@ -1,0 +1,72 @@
+name: Update Star History
+
+# Daily job that fetches stargazers_count via a single GitHub REST call,
+# appends today's count, renders crisp light/dark SVGs, and pushes them to the
+# dedicated orphan branch `star-history-assets` so `main` stays commit-free.
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: star-history
+  cancel-in-progress: false
+
+jobs:
+  update:
+    name: Update star history SVGs
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Fetch live stars and publish to assets branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          ASSETS_BRANCH: star-history-assets
+        run: |
+          set -euo pipefail
+
+          REMOTE_URL="https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git"
+          ASSETS_DIR="$(mktemp -d)"
+
+          if git ls-remote --exit-code --heads "${REMOTE_URL}" "${ASSETS_BRANCH}" >/dev/null; then
+            git clone --depth 1 --branch "${ASSETS_BRANCH}" "${REMOTE_URL}" "${ASSETS_DIR}"
+          else
+            LOOKUP_STATUS=$?
+            if [ "${LOOKUP_STATUS}" -ne 2 ]; then
+              exit "${LOOKUP_STATUS}"
+            fi
+            git init "${ASSETS_DIR}"
+            git -C "${ASSETS_DIR}" checkout --orphan "${ASSETS_BRANCH}"
+            git -C "${ASSETS_DIR}" remote add origin "${REMOTE_URL}"
+          fi
+
+          python3 .github/scripts/update_star_history.py \
+            --seed .github/data/star-history-seed.json \
+            --data "${ASSETS_DIR}/star-history.json" \
+            --out-light "${ASSETS_DIR}/star-history-light.svg" \
+            --out-dark "${ASSETS_DIR}/star-history-dark.svg" \
+            --repo "${REPOSITORY}" \
+            --fetch
+
+          git -C "${ASSETS_DIR}" config user.name "github-actions[bot]"
+          git -C "${ASSETS_DIR}" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C "${ASSETS_DIR}" add star-history.json star-history-light.svg star-history-dark.svg
+
+          if git -C "${ASSETS_DIR}" diff --cached --quiet; then
+            echo "Star history unchanged — nothing to push."
+            exit 0
+          fi
+
+          TODAY="$(date -u +%Y-%m-%d)"
+          git -C "${ASSETS_DIR}" commit -m "chore(stars): update star history (${TODAY})"
+          git -C "${ASSETS_DIR}" push -u origin "${ASSETS_BRANCH}"

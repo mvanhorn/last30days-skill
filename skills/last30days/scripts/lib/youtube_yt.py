@@ -106,8 +106,8 @@ _ytdlp_slots = threading.Semaphore(_YTDLP_MAX_CONCURRENT)
 # every entity sub-run; cache hits avoid the redundant expensive --dump-json work.
 # Inflight coalescing prevents N concurrent identical searches from all missing
 # the cache and stampeding YouTube together.
-_search_cache: Dict[Tuple[str, int, str, str, Optional[str]], Dict[str, Any]] = {}
-_search_inflight: Dict[Tuple[str, int, str, str, Optional[str]], tuple[threading.Event, list]] = {}
+_search_cache: Dict[Tuple[str, int, str, str, Optional[str], Optional[str]], Dict[str, Any]] = {}
+_search_inflight: Dict[Tuple[str, int, str, str, Optional[str], Optional[str]], tuple[threading.Event, list]] = {}
 _search_cache_lock = threading.Lock()
 # Comments are enrichment, not core evidence: keep the budget tight so a slow
 # comment API can never dominate a run's wall clock (bounded to 3 videos).
@@ -479,7 +479,7 @@ def _run_ytdlp(
 
 
 def _claim_search_slot(
-    cache_key: Tuple[str, int, str, str, Optional[str]],
+    cache_key: Tuple[str, int, str, str, Optional[str], Optional[str]],
 ) -> tuple[Optional[Dict[str, Any]], Optional[threading.Event], Optional[list], bool]:
     """Return ``(cached, event, slot, is_leader)`` for search coalesce.
 
@@ -501,7 +501,7 @@ def _claim_search_slot(
 
 
 def _finish_search_slot(
-    cache_key: Tuple[str, int, str, str, Optional[str]],
+    cache_key: Tuple[str, int, str, str, Optional[str], Optional[str]],
     payload: Dict[str, Any],
     *,
     event: threading.Event,
@@ -565,6 +565,21 @@ def classify_run_failure(detail: str) -> str:
     return http.classify_failure(message=detail)
 
 
+_ssh_host_override: contextvars.ContextVar[Optional[str]] = (
+    contextvars.ContextVar("youtube_ssh_host_override", default=None)
+)
+
+
+@contextlib.contextmanager
+def ssh_host_scope(host: Optional[str]) -> Iterator[None]:
+    """Scope a config-supplied LAST30DAYS_YOUTUBE_SSH_HOST to this call tree."""
+    token = _ssh_host_override.set(host)
+    try:
+        yield
+    finally:
+        _ssh_host_override.reset(token)
+
+
 def is_ytdlp_installed() -> bool:
     """Check if yt-dlp is available locally, or if SSH routing is configured.
 
@@ -608,7 +623,10 @@ def _ytdlp_ssh_host() -> Optional[str]:
         set -a; source ~/.config/last30days/.env; set +a
         python3 last30days.py "..."
     """
-    host = os.environ.get("LAST30DAYS_YOUTUBE_SSH_HOST", "").strip()
+    if "LAST30DAYS_YOUTUBE_SSH_HOST" in os.environ:
+        host = os.environ.get("LAST30DAYS_YOUTUBE_SSH_HOST", "").strip()
+    else:
+        host = str(_ssh_host_override.get() or "").strip()
     if not host:
         return None
     if not _SSH_HOST_ALIAS_RE.match(host):
@@ -980,7 +998,8 @@ def search_youtube(
 
     count = DEPTH_CONFIG.get(depth, DEPTH_CONFIG["default"])
     core_topic = _extract_core_subject(topic)
-    cache_key = (core_topic, count, from_date, to_date, freshness_mode)
+    ssh_host = _ytdlp_ssh_host()
+    cache_key = (core_topic, count, from_date, to_date, freshness_mode, ssh_host)
     timeout = _search_timeout()
 
     cached, event, slot, is_leader = _claim_search_slot(cache_key)
@@ -1011,7 +1030,6 @@ def search_youtube(
         "--no-download",
     ]
     cmd = _wrap_ytdlp_cmd(cmd)
-    ssh_host = _ytdlp_ssh_host()
 
     published: Dict[str, Any] | None = None
     try:
@@ -2309,7 +2327,12 @@ def _ytdlp_comments_result(
     """
     if not _is_valid_video_id(video_id) or not is_ytdlp_installed():
         return [], False
+    if max_comments <= 0:
+        return [], True
 
+    # Request top-level parents only (0 replies, 0 replies per thread) with a
+    # small buffer so empty-text entries do not starve the requested cap.
+    fetch_cap = max_comments + 2
     cmd = _wrap_ytdlp_cmd([
         "yt-dlp",
         "--write-comments",
@@ -2319,7 +2342,7 @@ def _ytdlp_comments_result(
         "--ignore-config",
         "--no-cookies-from-browser",
         "--extractor-args",
-        f"youtube:comment_sort=top;max_comments={max_comments},all,{max_comments}",
+        f"youtube:comment_sort=top;max_comments={fetch_cap},{fetch_cap},0,0",
         "--",
         _youtube_watch_url(video_id),
     ])
@@ -2340,10 +2363,28 @@ def _ytdlp_comments_result(
         _log(f"yt-dlp comment JSON parse failed for {video_id}: {exc}")
         return [], False
 
+    if not isinstance(payload, dict):
+        _log(f"yt-dlp comment JSON payload was not an object for {video_id}")
+        return [], False
+
+    raw_comments = payload.get("comments")
+    if not isinstance(raw_comments, list):
+        raw_comments = []
+
     channel_id = str(payload.get("channel_id") or "")
     comments = []
-    for c in (payload.get("comments") or [])[:max_comments]:
-        text = c.get("text") or ""
+    for c in raw_comments:
+        if len(comments) >= max_comments:
+            break
+        if not isinstance(c, dict):
+            continue
+        parent = c.get("parent")
+        if parent not in (None, "", "root"):
+            continue
+        raw_text = c.get("text")
+        if not isinstance(raw_text, str):
+            continue
+        text = raw_text.strip()
         if not text:
             continue
         comment = {

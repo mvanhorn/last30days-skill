@@ -54,6 +54,8 @@ DOC_ONLY_KEYS = {
     "LAST30DAYS_NO_PATENT_DIGEST",
     # Same wrapper, same reason: a .env line cannot drop the report checklist.
     "LAST30DAYS_NO_REPORT_CHECKLIST",
+    # Same wrapper, same reason: a .env line cannot opt ambient tokens into xapi.
+    "LAST30DAYS_X_API_OPT_IN",
 }
 
 

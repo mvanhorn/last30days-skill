@@ -20,6 +20,7 @@ than failing the run.
 from __future__ import annotations
 
 import json
+import math
 import secrets
 from collections import Counter
 from dataclasses import dataclass, field
@@ -39,6 +40,8 @@ NOMINATIONS_BUNDLE_FILENAME = "discover-nominations.json"
 PENDING_REPORT_FILENAME = "discover-pending.json"
 
 _VALID_TIERS = ("deep", "shallow")
+MAX_LOOKBACK_DAYS = 3650
+_MAX_LOOKBACK_DAYS = MAX_LOOKBACK_DAYS
 
 _RESWEEP_REMEDY = "Run a fresh `--discover --nominate-only` re-sweep."
 
@@ -235,6 +238,32 @@ def _searched_lines(searched: list[Path]) -> str:
     return "\n".join(f"  - {path}" for path in searched)
 
 
+def validate_lookback_days(
+    value: object,
+    *,
+    field_name: str = "lookback_days",
+    source_desc: str | None = None,
+    remedy: str = "",
+) -> int:
+    """Validate a discovery handoff lookback window (integer in 1..MAX_LOOKBACK_DAYS).
+
+    Shared across leg-1 pre-sweep CLI entry, bundle writing, and leg-2 bundle
+    reading so leg 1 can never sweep or write a bundle that leg 2 rejects.
+    """
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or value < 1
+        or value > MAX_LOOKBACK_DAYS
+    ):
+        prefix = f"{source_desc} has invalid {field_name}" if source_desc else f"Invalid {field_name}"
+        suffix = f" {remedy}" if remedy else ""
+        raise HandoffContractError(
+            f"{prefix} (expected integer in 1..{MAX_LOOKBACK_DAYS}).{suffix}"
+        )
+    return value
+
+
 def write_nominations_bundle(
     entries: Sequence[PoolEntry],
     *,
@@ -265,6 +294,7 @@ def write_nominations_bundle(
     """
     if tier not in _VALID_TIERS:
         raise ValueError(f"tier must be one of {_VALID_TIERS}, got {tier!r}")
+    lookback_days = validate_lookback_days(lookback_days)
     state_dir = handoff_state_dir(save_dir, config_dir)
     if state_dir is None:
         raise HandoffContractError(
@@ -400,13 +430,13 @@ def _parse_handoff_envelope(
     (payload, bundle_id, generated_at)."""
     try:
         raw = path.read_text(encoding="utf-8")
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         raise HandoffContractError(
             f"Could not read {label.lower()} {path}: {exc}"
         ) from exc
     try:
         payload = json.loads(raw)
-    except json.JSONDecodeError as exc:
+    except (json.JSONDecodeError, ValueError) as exc:
         raise HandoffContractError(
             f"{label} {path} is not valid JSON: {exc}"
         ) from exc
@@ -427,7 +457,8 @@ def _parse_handoff_envelope(
             f"{label} {path} has kind {file_kind!r}; expected "
             f"{kind!r}. {remedy}"
         )
-    bundle_id = str(payload.get("bundle_id") or "")
+    raw_bundle_id = payload.get("bundle_id")
+    bundle_id = raw_bundle_id.strip() if isinstance(raw_bundle_id, str) else ""
     if not bundle_id:
         raise HandoffContractError(
             f"{label} {path} is missing its bundle_id; "
@@ -443,6 +474,62 @@ def _parse_handoff_envelope(
     return payload, bundle_id, generated_at
 
 
+def _parse_mock_flag(payload: dict[str, Any], path: Path, *, label: str, remedy: str) -> bool:
+    raw_mock = payload.get("mock")
+    if raw_mock is None:
+        return False
+    if not isinstance(raw_mock, bool):
+        raise HandoffContractError(
+            f"{label} {path} has non-boolean \"mock\" value "
+            f"{raw_mock!r}. {remedy}"
+        )
+    return raw_mock
+
+
+def _validate_nomination(nomination: pipeline.Nomination) -> None:
+    """Validate deserialized nomination and seed-item field types so one
+    corrupt row is skipped cleanly instead of crashing resume/digest/sorting."""
+    if not isinstance(nomination.name, str):
+        raise TypeError("nomination.name must be a string")
+    if not isinstance(nomination.summary, str):
+        raise TypeError("nomination.summary must be a string")
+    if not math.isfinite(nomination.seed_score):
+        raise ValueError("nomination.seed_score must be finite")
+    if nomination.worthiness is not None and not math.isfinite(nomination.worthiness):
+        raise ValueError("nomination.worthiness must be finite")
+    for item in nomination.items:
+        if not isinstance(item.item_id, str):
+            raise TypeError("item.item_id must be a string")
+        if not isinstance(item.source, str) or not item.source.strip():
+            raise TypeError("item.source must be a non-empty string")
+        for attr in ("title", "body", "url", "snippet", "why_relevant", "date_confidence"):
+            if not isinstance(getattr(item, attr), str):
+                raise TypeError(f"item.{attr} must be a string")
+        for attr in ("author", "container", "published_at"):
+            val = getattr(item, attr)
+            if val is not None and not isinstance(val, str):
+                raise TypeError(f"item.{attr} must be a string or null")
+        if not math.isfinite(item.relevance_hint):
+            raise ValueError("item.relevance_hint must be finite")
+        for key, val in item.engagement.items():
+            if not isinstance(key, str):
+                raise TypeError("item.engagement keys must be strings")
+            if isinstance(val, (int, float)) and not isinstance(val, bool):
+                if not math.isfinite(float(val)):
+                    raise ValueError(f"item.engagement[{key!r}] must be finite")
+        top_comments = item.metadata.get("top_comments")
+        if top_comments is not None:
+            if not isinstance(top_comments, list):
+                raise TypeError("item.metadata.top_comments must be a list")
+            for comment in top_comments:
+                if not isinstance(comment, dict):
+                    continue
+                for text_key in ("excerpt", "text", "body"):
+                    text_val = comment.get(text_key)
+                    if text_val is not None and not isinstance(text_val, str):
+                        raise TypeError(f"comment.{text_key} must be a string or null")
+
+
 def _parse_bundle_file(path: Path) -> NominationsBundle:
     payload, bundle_id, generated_at = _parse_handoff_envelope(
         path,
@@ -454,14 +541,48 @@ def _parse_bundle_file(path: Path) -> NominationsBundle:
         stale_context="the momentum window it captured has moved on",
     )
     version = payload.get("schema_version")
+    mock_flag = _parse_mock_flag(
+        payload, path, label="Nominations bundle", remedy=_RESWEEP_REMEDY
+    )
 
-    context = payload.get("context") or {}
+    raw_context = payload.get("context")
+    if raw_context is None:
+        context: dict[str, Any] = {}
+    elif isinstance(raw_context, dict):
+        context = raw_context
+    else:
+        raise HandoffContractError(
+            f"Nominations bundle {path} has malformed \"context\" "
+            f"(expected object, got {type(raw_context).__name__}). {_RESWEEP_REMEDY}"
+        )
+
     boundary = context.get("enrichment_source_boundary")
+    if boundary is not None and (
+        not isinstance(boundary, list) or any(not isinstance(s, str) for s in boundary)
+    ):
+        raise HandoffContractError(
+            f"Nominations bundle {path} has malformed "
+            f"context.enrichment_source_boundary. {_RESWEEP_REMEDY}"
+        )
     requested = context.get("requested_sources")
-    try:
-        lookback_days = int(context.get("lookback_days") or 30)
-    except (TypeError, ValueError):
+    if requested is not None and (
+        not isinstance(requested, list) or any(not isinstance(s, str) for s in requested)
+    ):
+        raise HandoffContractError(
+            f"Nominations bundle {path} has malformed "
+            f"context.requested_sources. {_RESWEEP_REMEDY}"
+        )
+
+    raw_lookback = context.get("lookback_days")
+    if raw_lookback is None:
         lookback_days = 30
+    else:
+        lookback_days = validate_lookback_days(
+            raw_lookback,
+            field_name="context.lookback_days",
+            source_desc=f"Nominations bundle {path}",
+            remedy=_RESWEEP_REMEDY,
+        )
 
     rows_raw = payload.get("nominations")
     if not isinstance(rows_raw, list):
@@ -472,6 +593,7 @@ def _parse_bundle_file(path: Path) -> NominationsBundle:
         )
 
     nominations: list[BundleNomination] = []
+    seen_ids: set[str] = set()
     for position, row in enumerate(rows_raw, start=1):
         # Lenient per row: the bundle is engine-written, but one corrupted
         # row must not discard the rest of the pool.
@@ -481,16 +603,51 @@ def _parse_bundle_file(path: Path) -> NominationsBundle:
                 f"{path.name} (not an object)"
             )
             continue
-        try:
-            nomination = pipeline.Nomination(
-                **schema.nomination_kwargs_from_dict(row.get("nomination") or {})
+        nom_raw = row.get("nomination")
+        if not isinstance(nom_raw, dict):
+            _warn(
+                f"skipping unparseable nomination row {position} in "
+                f"{path.name}: nomination field is not an object"
             )
-        except (KeyError, TypeError, ValueError) as exc:
+            continue
+        items_raw = nom_raw.get("items")
+        if items_raw is not None and not isinstance(items_raw, list):
+            _warn(
+                f"skipping unparseable nomination row {position} in "
+                f"{path.name}: nomination.items is not a list"
+            )
+            continue
+        try:
+            for item_raw in items_raw or ():
+                if not isinstance(item_raw, dict):
+                    raise TypeError("nomination item must be an object")
+                if item_raw.get("engagement") is not None and not isinstance(item_raw.get("engagement"), dict):
+                    raise TypeError("nomination item.engagement must be an object")
+                if item_raw.get("metadata") is not None and not isinstance(item_raw.get("metadata"), dict):
+                    raise TypeError("nomination item.metadata must be an object")
+            nomination = pipeline.Nomination(
+                **schema.nomination_kwargs_from_dict(nom_raw)
+            )
+            _validate_nomination(nomination)
+        except (AttributeError, KeyError, TypeError, ValueError, OverflowError) as exc:
             _warn(
                 f"skipping unparseable nomination row {position} in "
                 f"{path.name}: {type(exc).__name__}: {exc}"
             )
             continue
+        raw_id = row.get("id")
+        if raw_id is None:
+            nomination_id = f"n{position}"
+        elif isinstance(raw_id, str) and raw_id.strip():
+            nomination_id = raw_id.strip()
+        else:
+            nomination_id = f"n{position}"
+        if nomination_id in seen_ids:
+            raise HandoffContractError(
+                f"Nominations bundle {path} contains duplicate nomination id "
+                f"{nomination_id!r}. {_RESWEEP_REMEDY}"
+            )
+        seen_ids.add(nomination_id)
         engagement_raw = row.get("engagement_by_source")
         engagement = {
             str(source): dict(metrics)
@@ -499,13 +656,29 @@ def _parse_bundle_file(path: Path) -> NominationsBundle:
             )
             if isinstance(metrics, dict)
         }
+        sources_raw = row.get("sources")
+        if sources_raw is None:
+            sources: list[str] = []
+        elif isinstance(sources_raw, list):
+            sources = [s for s in sources_raw if isinstance(s, str)]
+            if len(sources) != len(sources_raw):
+                _warn(
+                    f"ignoring non-string entries in sources list on nomination "
+                    f"row {position} in {path.name}"
+                )
+        else:
+            _warn(
+                f"ignoring malformed sources list on nomination row {position} "
+                f"in {path.name}"
+            )
+            sources = []
         nominations.append(BundleNomination(
-            nomination_id=str(row.get("id") or f"n{position}"),
+            nomination_id=nomination_id,
             nomination=nomination,
             cluster_id=str(row.get("cluster_id") or ""),
             heuristic_name=str(row.get("heuristic_name") or ""),
             heuristic_junk=bool(row.get("heuristic_junk")),
-            sources=[str(source) for source in row.get("sources") or []],
+            sources=sources,
             engagement_by_source=engagement,
         ))
 
@@ -542,17 +715,15 @@ def _parse_bundle_file(path: Path) -> NominationsBundle:
         domain=str(payload.get("domain") or ""),
         tier=str(payload.get("tier") or "deep"),
         enrichment_source_boundary=(
-            [str(source) for source in boundary]
-            if isinstance(boundary, list) else None
+            list(boundary) if boundary is not None else None
         ),
         requested_sources=(
-            [str(source) for source in requested]
-            if isinstance(requested, list) else None
+            list(requested) if requested is not None else None
         ),
         lookback_days=lookback_days,
         nominations=nominations,
         source_status=source_status,
-        mock=bool(payload.get("mock")),
+        mock=mock_flag,
         path=path,
         warnings=warnings,
     )
@@ -612,6 +783,9 @@ def _parse_pending_file(path: Path) -> PendingReport:
         )
         if isinstance(info, dict)
     }
+    mock_flag = _parse_mock_flag(
+        payload, path, label="Pending discovery report", remedy=_RESUME_REMEDY
+    )
     return PendingReport(
         schema_version=str(version),
         bundle_id=bundle_id,
@@ -619,7 +793,7 @@ def _parse_pending_file(path: Path) -> PendingReport:
         run_ref=str(payload.get("run_ref") or ""),
         report=report,
         angle_inputs=angle_inputs,
-        mock=bool(payload.get("mock")),
+        mock=mock_flag,
         path=path,
     )
 
@@ -629,13 +803,13 @@ def _load_host_file(path: str | Path, label: str) -> dict[str, Any]:
     file_path = Path(path).expanduser()
     try:
         raw = file_path.read_text(encoding="utf-8")
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         raise HandoffContractError(
             f"Could not read {label} file {file_path}: {exc}"
         ) from exc
     try:
         payload = json.loads(raw)
-    except json.JSONDecodeError as exc:
+    except (json.JSONDecodeError, ValueError) as exc:
         raise HandoffContractError(
             f"{label.capitalize()} file {file_path} is not valid JSON: {exc}"
         ) from exc
@@ -741,12 +915,14 @@ def _known_rows(
 
 
 def _clamped_worthiness(raw: object) -> int | None:
-    """Worthiness clamped to 0-100 integers; anything non-numeric is absent."""
+    """Worthiness clamped to 0-100 integers; non-numeric or non-finite values are absent."""
     if isinstance(raw, bool):
         return None
     try:
         value = float(raw)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(value):
         return None
     return max(0, min(100, round(value)))
 
@@ -890,7 +1066,9 @@ def resolve_name_collisions(
             title=nomination.name,
             candidate_ids=candidate_ids,
             representative_ids=candidate_ids[:1],
-            sources=sorted({item.source for item in nomination.items}),
+            sources=sorted({
+                item.source for item in nomination.items if isinstance(item.source, str)
+            }),
             score=nomination.seed_score,
         ))
 

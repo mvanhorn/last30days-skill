@@ -49,9 +49,9 @@ import math
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
-from . import http
+from . import health, http
 from . import reddit_search, reddit_shreddit, reddit_listing, reddit_arctic
 from . import reddit_discover, reddit_envelope, reddit_health, reddit_hydrate, reddit_refs, reddit_session, web_search_keyless
 # High-upvote posts from targeted-sub listings can bury on-topic search hits
@@ -201,11 +201,192 @@ def _log(msg: str) -> None:
     sys.stderr.flush()
 
 
-def _apply_scores(post: Dict[str, Any], scored: Dict[str, int]) -> None:
-    post["score"] = scored["score"]
-    post["num_comments"] = scored["num_comments"]
-    post.setdefault("engagement", {})["score"] = scored["score"]
-    post["engagement"]["num_comments"] = scored["num_comments"]
+_TIMED_OUT = object()
+
+
+def _apply_scores(post: Dict[str, Any], scored: Dict[str, Any]) -> None:
+    engagement = post.setdefault("engagement", {})
+    existing_source = post.get("engagement_source")
+    incoming_source = scored.get("engagement_source")
+    existing_rank = reddit_hydrate._effective_score_rank(post)
+    incoming_rank = (
+        reddit_refs.score_rank(incoming_source)
+        if incoming_source is not None
+        else reddit_refs.score_rank(reddit_refs.LIVE)
+    )
+    if incoming_rank >= existing_rank:
+        post["score"] = scored["score"]
+        engagement["score"] = scored["score"]
+        if incoming_source and (
+            not existing_source or incoming_rank > existing_rank
+        ):
+            post["engagement_source"] = incoming_source
+    counts = [
+        v for v in (
+            post.get("num_comments"),
+            engagement.get("num_comments"),
+            scored.get("num_comments"),
+        )
+        if isinstance(v, (int, float)) and not isinstance(v, bool)
+    ]
+    num_comments = int(max(counts)) if counts else 0
+    post["num_comments"] = num_comments
+    engagement["num_comments"] = num_comments
+
+
+def _needs_score_backfill(post: Dict[str, Any]) -> bool:
+    """True when ``post`` lacks a measured score and has not already tried Arctic Shift."""
+    if post.get("engagement", {}).get("score"):
+        return False
+    source = post.get("engagement_source")
+    if not source:
+        return True
+    if source == reddit_refs.UNKNOWN:
+        prov = set(post.get("provenance") or [])
+        return not (prov & {"web", "host", "session"})
+    return False
+
+
+def _listing_timeframe(from_date: Optional[str], to_date: Optional[str]) -> str:
+    from .reddit import _window_to_time_filter
+    return _window_to_time_filter(from_date or "", to_date or "")
+
+
+def _is_listing_block_failure(failure: Any) -> bool:
+    if getattr(failure, "status_code", None) == 403:
+        return True
+    msg = str(failure).lower()
+    return "reddit listing interstitial" in msg or "blocked by network security" in msg
+
+
+def _classify_listing_state(
+    posts: List[Dict[str, Any]],
+    failures: List[Any],
+    *,
+    timed_out: bool = False,
+    failed: bool = False,
+) -> str:
+    if posts:
+        return reddit_health.OK
+    snapshot = list(failures)
+    if any(_is_listing_block_failure(f) for f in snapshot):
+        return reddit_health.BLOCKED
+    if (
+        snapshot
+        and not timed_out
+        and not failed
+        and all(getattr(f, "status_code", None) == 429 for f in snapshot)
+    ):
+        return reddit_health.THROTTLED
+    if snapshot or timed_out or failed:
+        return reddit_health.ERROR
+    return reddit_health.EMPTY
+
+
+def _combine_listing_states(states: List[str], has_posts: bool) -> str:
+    if has_posts or reddit_health.OK in states:
+        return reddit_health.OK
+    if reddit_health.EMPTY in states:
+        return reddit_health.EMPTY
+    if states and all(s == reddit_health.THROTTLED for s in states):
+        return reddit_health.THROTTLED
+    if reddit_health.BLOCKED in states:
+        return reddit_health.BLOCKED
+    return reddit_health.ERROR
+
+
+def _scored_listings_with_state(
+    subreddits: List[str],
+    depth: str = "default",
+    query: str = "",
+    sorts: Optional[List[str]] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    deadline: Optional[float] = None,
+) -> tuple[List[Dict[str, Any]], str]:
+    """Scored subreddit listings plus health state: shreddit partials, arctic-shift supplement.
+
+    The shreddit ``community-more-posts`` partials 403 from datacenter IPs
+    (and any host Reddit decides to block). Shreddit is tried first; arctic-
+    shift supplements with any posts shreddit missed. Individual sort lanes
+    can fail silently (shreddit's ``fetch_listings`` flattens results without
+    exposing per-sort status), so arctic is called for all requested subreddits
+    and merged via deduplication. Both calls run inside
+    ``http.capture_failures()`` so listing HTTP failures stay isolated from the
+    outer stream sink while still classifying listing health accurately. Never
+    raises.
+    """
+    timeframe = _listing_timeframe(from_date, to_date)
+    posts: List[Dict[str, Any]] = []
+    timed_out = False
+    failed = False
+    with http.capture_failures() as failures:
+        try:
+            shreddit_res = _within(
+                deadline, "subreddit listing", _TIMED_OUT,
+                reddit_listing.fetch_listings, subreddits, depth=depth, query=query, sorts=sorts,
+                timeframe=timeframe,
+                **_stage_deadline(deadline),
+            )
+        except Exception as exc:  # defensive: listings must never break the pipeline
+            _log(f"shreddit listing fetch failed: {exc}")
+            failed = True
+        else:
+            if shreddit_res is _TIMED_OUT:
+                timed_out = True
+            elif shreddit_res:
+                posts = list(shreddit_res)
+
+        arctic_posts: List[Dict[str, Any]] = []
+
+        # Supplement with arctic for all requested subreddits. Shreddit's per-sort
+        # success/failure is opaque, so arctic provides coverage for any failed
+        # sort lanes (e.g., hot/new failing while top succeeded). Deduplication
+        # ensures no redundant posts when shreddit fully succeeded.
+        if subreddits and _out_of_time(deadline):
+            _log("arctic-shift supplement skipped: lane budget spent")
+        elif subreddits:
+            try:
+                arctic_res = _within(
+                    deadline, "arctic-shift supplement", _TIMED_OUT,
+                    reddit_arctic.fetch_listings,
+                    subreddits, depth=depth, query=query, sorts=sorts,
+                    from_date=from_date, to_date=to_date,
+                    **_stage_deadline(deadline, "lane_deadline"),
+                )
+            except Exception as exc:  # the fallback must never break the pipeline
+                _log(f"arctic-shift listing supplement failed: {exc}")
+                failed = True
+            else:
+                if arctic_res is _TIMED_OUT:
+                    timed_out = True
+                elif arctic_res:
+                    arctic_posts = list(arctic_res)
+            if arctic_posts:
+                # An archive count on a fresh post is not a settled score yet.
+                now = time.time()
+                for p in arctic_posts:
+                    reddit_hydrate.label_archive_post(p, now)
+                # Merge and dedupe by thread key (fallback URL) — shreddit posts take priority.
+                seen_urls = {p["url"] for p in posts}
+                seen_keys = {
+                    k for p in posts if (k := reddit_refs.thread_key(p.get("url", "")))
+                }
+                added = 0
+                for p in arctic_posts:
+                    key = reddit_refs.thread_key(p.get("url", ""))
+                    if p["url"] in seen_urls or (key and key in seen_keys):
+                        continue
+                    seen_urls.add(p["url"])
+                    if key:
+                        seen_keys.add(key)
+                    posts.append(p)
+                    added += 1
+                if added:
+                    _log(f"arctic-shift supplement: {added} new posts from {len(arctic_posts)} arctic results")
+
+    state = _classify_listing_state(posts, failures, timed_out=timed_out, failed=failed)
+    return posts, state
 
 
 def _scored_listings(
@@ -217,58 +398,40 @@ def _scored_listings(
     to_date: Optional[str] = None,
     deadline: Optional[float] = None,
 ) -> List[Dict[str, Any]]:
-    """Scored subreddit listings: shreddit partials, arctic-shift supplement.
-
-    The shreddit ``community-more-posts`` partials 403 from datacenter IPs
-    (and any host Reddit decides to block). Shreddit is tried first; arctic-
-    shift supplements with any posts shreddit missed. Individual sort lanes
-    can fail silently (shreddit's ``fetch_listings`` flattens results without
-    exposing per-sort status), so arctic is called for all requested subreddits
-    and merged via deduplication. This ensures fresh posts sought through
-    ``hot`` or ``new`` are recovered even when only ``top`` succeeded. Never
-    raises.
-    """
-    posts = _within(
-        deadline, "subreddit listing", [],
-        reddit_listing.fetch_listings, subreddits, depth=depth, query=query, sorts=sorts,
-        **_stage_deadline(deadline),
+    """Scored subreddit listings: shreddit partials, arctic-shift supplement. Never raises."""
+    posts, _state = _scored_listings_with_state(
+        subreddits, depth=depth, query=query, sorts=sorts,
+        from_date=from_date, to_date=to_date, deadline=deadline,
     )
-    arctic_posts: List[Dict[str, Any]] = []
-
-    # Supplement with arctic for all requested subreddits. Shreddit's per-sort
-    # success/failure is opaque, so arctic provides coverage for any failed
-    # sort lanes (e.g., hot/new failing while top succeeded). Deduplication
-    # ensures no redundant posts when shreddit fully succeeded.
-    if subreddits and _out_of_time(deadline):
-        _log("arctic-shift supplement skipped: lane budget spent")
-    elif subreddits:
-        try:
-            arctic_posts = _within(
-                deadline, "arctic-shift supplement", [],
-                reddit_arctic.fetch_listings,
-                subreddits, depth=depth, query=query, sorts=sorts,
-                from_date=from_date, to_date=to_date,
-                **_stage_deadline(deadline, "lane_deadline"),
-            )
-        except Exception as exc:  # the fallback must never break the pipeline
-            _log(f"arctic-shift listing supplement failed: {exc}")
-            arctic_posts = []
-        if arctic_posts:
-            # An archive count on a fresh post is not a settled score yet.
-            now = time.time()
-            for p in arctic_posts:
-                reddit_hydrate.label_archive_post(p, now)
-            # Merge and dedupe by URL — shreddit posts take priority.
-            seen = {p["url"] for p in posts}
-            added = 0
-            for p in arctic_posts:
-                if p["url"] not in seen:
-                    seen.add(p["url"])
-                    posts.append(p)
-                    added += 1
-            if added:
-                _log(f"arctic-shift supplement: {added} new posts from {len(arctic_posts)} arctic results")
     return posts
+
+
+# Reserve up to 8s (capped at 40% of remaining budget) before the lane deadline
+# so a slow second web query leaves room to hydrate query one's refs without
+# starving the first query when only a few seconds remain.
+_WEB_HYDRATION_RESERVE_SECONDS = 8.0
+_WEB_HYDRATION_MIN_SECONDS = 0.5
+
+
+def _web_discover_deadline(
+    deadline: Optional[float], now: Optional[float] = None,
+) -> Optional[float]:
+    if deadline is None:
+        return None
+    current = time.monotonic() if now is None else now
+    remaining = deadline - current
+    if remaining <= _WEB_HYDRATION_MIN_SECONDS:
+        return deadline
+    reserve = min(_WEB_HYDRATION_RESERVE_SECONDS, remaining * 0.4)
+    return deadline - reserve
+
+
+def _hydrate_stage_deadline(deadline: Optional[float]) -> Dict[str, float]:
+    if deadline is None:
+        return {}
+    remaining = max(0.0, deadline - time.monotonic())
+    margin = min(STAGE_RETURN_MARGIN_SECONDS, remaining * 0.25)
+    return {"deadline": deadline - margin}
 
 
 def _web_floor(
@@ -279,37 +442,55 @@ def _web_floor(
     from_date: Optional[str],
     to_date: Optional[str],
     deadline: Optional[float],
+    config: Optional[Mapping[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """Web-search thread refs, hydrated and held to the topic bar. Never raises."""
     reddit_health.seed_web_rungs()
     try:
-        # Filled in place, so a floor still running at the deadline hands back
-        # the threads its earlier queries found.
+        # Filled in place, so a floor still running at its cutoff hands back
+        # the threads its earlier queries found with time left to hydrate them.
         partial = reddit_discover.WebFloor()
+        discover_cutoff = _web_discover_deadline(deadline)
+        discover_kw = {"deadline": discover_cutoff} if discover_cutoff is not None else {}
         found = _within(
-            deadline, "web floor", partial,
+            discover_cutoff, "web floor", None,
             reddit_discover.web_refs,
             topic, subreddits=subreddits, from_date=from_date, to_date=to_date,
-            floor=partial, **_stage_deadline(deadline),
+            floor=partial, **discover_kw,
+            **({"config": config} if config is not None else {}),
         )
-        floor = reddit_discover.WebFloor(
-            refs=list(found.refs), queries=list(found.queries), rungs=dict(found.rungs),
+        wait_expired = found is None
+        if wait_expired:
+            found = partial
+        floor = (
+            found.snapshot()
+            if hasattr(found, "snapshot")
+            else reddit_discover.WebFloor(
+                refs=list(found.refs), queries=list(found.queries), rungs=dict(found.rungs),
+            )
         )
         _record_web_rungs(floor)
+        _note_searxng_rung(floor)
+        if wait_expired or floor.timed_out:
+            _mark("web", health.TIMEOUT)
         if not floor.refs:
             return []
-        if _out_of_time(deadline):
+        if deadline is not None and deadline - time.monotonic() < _WEB_HYDRATION_MIN_SECONDS:
             _log("web floor hydration skipped: lane budget spent")
             return []
+        hydrate_kw = _hydrate_stage_deadline(deadline)
+        hydrate_deadline = hydrate_kw.get("deadline", deadline)
         session = reddit_session.current()
         extra: Dict[str, Any] = {}
         if session is not None and session.alive:
-            extra["session_hydrator"] = reddit_session.hydrator(session, depth=depth, deadline=deadline)
+            extra["session_hydrator"] = reddit_session.hydrator(
+                session, depth=depth, deadline=hydrate_deadline,
+            )
         hydrated = _within(
             deadline, "web floor hydration", None,
             reddit_hydrate.hydrate,
             floor.refs, topic=topic, depth=depth, from_date=from_date, to_date=to_date,
-            **extra, **_stage_deadline(deadline),
+            **extra, **hydrate_kw,
         )
     except Exception as exc:  # the floor must never break the lane
         _log(f"web floor failed: {type(exc).__name__}: {exc}")
@@ -325,6 +506,30 @@ def _web_floor(
     for post in bar.kept:
         post["topic_bar"] = True
     return bar.kept
+
+
+# What the optional SearXNG fallback answered when it failed. This is a note on the
+# fallback itself. Its refusals say nothing about reddit.com, so they never become
+# a Reddit path state or touch the shared rung health. The wording avoids every phrase
+# that http.classify_failure reads, so a note can never change how a detail is classified.
+_SEARXNG_NOTES = {
+    web_search_keyless.BLOCKED: "refused (403)",
+    web_search_keyless.THROTTLED: "throttled (429)",
+    health.TIMEOUT: "ran out of time",
+    web_search_keyless.ERROR: "failed",
+}
+
+
+def searxng_note_texts() -> frozenset[str]:
+    """Every note the SearXNG fallback can produce. Nothing else is ever shown as one."""
+    return frozenset(f"SearXNG fallback {note}" for note in _SEARXNG_NOTES.values())
+
+
+def _note_searxng_rung(floor: "reddit_discover.WebFloor") -> None:
+    for state in floor.searxng_failures:
+        note = _SEARXNG_NOTES.get(state)
+        if note:
+            _note(f"SearXNG fallback {note}")
 
 
 _RUNG_STATES = {
@@ -520,6 +725,7 @@ def _discover(
     from_date: Optional[str] = None,
     to_date: Optional[str] = None,
     deadline: Optional[float] = None,
+    config: Optional[Mapping[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     # The host's own thread refs come first (best-first, KTD12): they cost
     # only hydration, and every other layer merges into them by thread id.
@@ -564,17 +770,20 @@ def _discover(
     else:
         web_posts = _web_floor(
             topic, depth, subreddits, dedicated_subreddits, from_date, to_date, deadline,
+            **({"config": config} if config is not None else {}),
         )
 
     # Dedicated lane: the entity's home subs are wholly on-topic. Pull
     # top+hot+new (real scores from the listing) and mark them floor-exempt so
     # an on-topic post whose title lacks the entity name is never dropped.
+    listing_states: List[str] = []
     dedicated_posts: List[Dict[str, Any]] = []
     if dedicated_subreddits:
-        dedicated_posts = _scored_listings(
+        dedicated_posts, dedicated_state = _scored_listings_with_state(
             dedicated_subreddits, depth=depth, query=topic, sorts=DEDICATED_SORTS,
             from_date=from_date, to_date=to_date, deadline=deadline,
         )
+        listing_states.append(dedicated_state)
         for p in dedicated_posts:
             p["dedicated"] = True
             p.setdefault("provenance", ["listing"])
@@ -583,60 +792,90 @@ def _discover(
     # Targeted run: the caller chose these subreddits, so their listing cards
     # are on-topic; include them as scored discovery. A bare run fetches no
     # listings, so high-upvote off-topic posts cannot flood the results.
-    listing_posts = (
-        _scored_listings(
+    listing_posts: List[Dict[str, Any]] = []
+    if subreddits and not _out_of_time(deadline):
+        listing_posts, targeted_state = _scored_listings_with_state(
             subreddits, depth=depth, query=topic, from_date=from_date, to_date=to_date,
             deadline=deadline,
         )
-        if subreddits and not _out_of_time(deadline)
-        else []
-    )
+        listing_states.append(targeted_state)
     for p in listing_posts:
         p.setdefault("provenance", ["listing"])
-    if subreddits or dedicated_subreddits:
-        _mark("listing", reddit_health.OK if listing_posts or dedicated_posts else reddit_health.EMPTY)
+    if listing_states:
+        _mark(
+            "listing",
+            _combine_listing_states(listing_states, bool(listing_posts or dedicated_posts)),
+        )
     _log(
         f"Tier 1 (site search) {len(search_posts)} posts; host {len(host_posts)}; "
         f"web floor {len(web_posts)}; "
         f"{'listing discovery ' + str(len(listing_posts)) if subreddits else 'no listings'}"
     )
 
-    # Score lookup by post id, from the scored listing cards.
-    score_map: Dict[str, Dict[str, int]] = {}
+    # Score lookup by post id, from the scored listing cards, carrying
+    # engagement_source so live scores are never overwritten by archive snapshots
+    # and unmeasured listing placeholders never enter the score map.
+    score_map: Dict[str, Dict[str, Any]] = {}
     for p in listing_posts:
         pid = p.get("metadata", {}).get("post_id", "")
-        if pid and not reddit_refs.score_pending(p):
-            score_map[pid] = {"score": p["score"], "num_comments": p["num_comments"]}
+        if not pid or reddit_refs.score_pending(p):
+            continue
+        rank = reddit_hydrate._effective_score_rank(p)
+        if rank <= reddit_refs.score_rank(reddit_refs.UNKNOWN):
+            continue
+        src = p.get("engagement_source") or reddit_refs.LIVE
+        prev = score_map.get(pid)
+        if prev is not None and reddit_refs.score_rank(src) < reddit_refs.score_rank(prev.get("engagement_source")):
+            continue
+        score_map[pid] = {
+            "score": p["score"],
+            "num_comments": p["num_comments"],
+            "engagement_source": src,
+        }
 
     # Merge: dedicated-sub posts first (floor-exempt), then scored listing posts
-    # (targeted only), then search results, taking a listing's live score where
-    # the post also appears there. First writer wins the dedupe, so a thread in
-    # both the dedicated lane and a listing keeps its floor-exempt status.
+    # (targeted only), then search results, merging copies of the same thread by
+    # canonical thread id so slugless search URLs and full listing URLs collapse
+    # into one item while preserving live scores over archive snapshots.
     merged: List[Dict[str, Any]] = []
     seen: set = set()
+    merged_by_thread: Dict[str, Dict[str, Any]] = {}
     for p in dedicated_posts + listing_posts:
-        if p["url"] not in seen:
-            seen.add(p["url"])
-            merged.append(p)
+        key = reddit_refs.thread_key(p.get("url", ""))
+        if key and key in merged_by_thread:
+            reddit_hydrate.merge_post(merged_by_thread[key], p)
+            continue
+        if p["url"] in seen:
+            continue
+        seen.add(p["url"])
+        if key:
+            merged_by_thread[key] = p
+        merged.append(p)
     # Session threads merge by thread id, so a listing copy gains the
     # session's comments and a thread found both ways stays one item.
-    merged_by_thread = {reddit_refs.thread_key(p.get("url", "")): p for p in merged}
     for p in session_posts:
         key = reddit_refs.thread_key(p.get("url", ""))
         if key and key in merged_by_thread:
             reddit_hydrate.merge_post(merged_by_thread[key], p)
             merged_by_thread[key]["topic_bar"] = True
             continue
-        merged_by_thread[key] = p
+        if key:
+            merged_by_thread[key] = p
         seen.add(p["url"])
         merged.append(p)
     for p in search_posts:
+        key = reddit_refs.thread_key(p.get("url", ""))
+        if key and key in merged_by_thread:
+            reddit_hydrate.merge_post(merged_by_thread[key], p)
+            continue
         if p["url"] in seen:
             continue
         pid = reddit_listing._post_id(p["url"])
         if pid in score_map:
             _apply_scores(p, score_map[pid])
         seen.add(p["url"])
+        if key:
+            merged_by_thread[key] = p
         merged.append(p)
     # Host and web-floor threads merge by thread id: a copy another rung
     # already holds keeps that copy's live score and gains their comments,
@@ -662,8 +901,7 @@ def _discover(
     # Hydrated web-floor threads carry their own labeled score (a pending
     # archive score stays pending) and are not looked up again.
     need = [pid for p in merged
-            if not (p.get("engagement", {}).get("score"))
-            and not p.get("engagement_source")
+            if _needs_score_backfill(p)
             for pid in [reddit_listing._post_id(p["url"])] if pid]
     if need and not _out_of_time(deadline):
         scores = _within(
@@ -671,38 +909,62 @@ def _discover(
             **_stage_deadline(deadline),
         )
         filled = 0
+        now = time.time()
         for p in merged:
-            if p.get("engagement", {}).get("score") or p.get("engagement_source"):
+            if not _needs_score_backfill(p):
                 continue
             pid = reddit_listing._post_id(p["url"])
             if pid in scores:
                 _apply_scores(p, scores[pid])
+                reddit_hydrate.label_archive_post(p, now)
                 filled += 1
         if filled:
             _log(f"arctic-shift backfilled {filled} post scores")
     return merged
 
 
+def _fetch_enrichment(
+    url: str,
+    deadline: Optional[float] = None,
+    post_author: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Fetch shreddit comments for ``url`` without touching any post dict. Never raises."""
+    try:
+        data = reddit_shreddit.fetch_comments(
+            url, deadline=deadline, post_author=post_author,
+        )
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _apply_enrichment(post: Dict[str, Any], data: Optional[Dict[str, Any]]) -> None:
+    """Apply fetched comment data to ``post`` on the calling thread."""
+    if not isinstance(data, dict):
+        return
+    if data.get("top_comments"):
+        post["top_comments"] = data["top_comments"]
+        reddit_hydrate._stamp_uploader(post)
+    if data.get("comment_insights"):
+        post["comment_insights"] = data["comment_insights"]
+    num = data.get("num_comments")
+    if num is not None:
+        post["num_comments"] = num
+        post.setdefault("engagement", {})["num_comments"] = num
+
+
 def _enrich_one(post: Dict[str, Any], deadline: Optional[float] = None) -> Dict[str, Any]:
-    """Attach shreddit comments + real comment count. Never raises.
+    """Fetch shreddit comments + real comment count without mutating ``post``. Never raises.
 
     A thread that already has comments (the web floor's archive comments)
-    is left as it is."""
+    is left as it is and returns ``{}``."""
     if post.get("top_comments"):
-        return post
-    try:
-        data = reddit_shreddit.fetch_comments(post.get("url", ""), deadline=deadline)
-        if data.get("top_comments"):
-            post["top_comments"] = data["top_comments"]
-        if data.get("comment_insights"):
-            post["comment_insights"] = data["comment_insights"]
-        num = data.get("num_comments")
-        if num is not None:
-            post["num_comments"] = num
-            post.setdefault("engagement", {})["num_comments"] = num
-    except Exception:
-        pass  # keep the post with whatever discovery gave us
-    return post
+        return {}
+    return _fetch_enrichment(
+        str(post.get("url") or ""),
+        deadline=deadline,
+        post_author=post.get("author"),
+    )
 
 
 @contextlib.contextmanager
@@ -730,7 +992,6 @@ def _enrich(
         _log("comment enrichment skipped: lane budget spent")
         return posts
 
-    result_map: Dict[int, Dict[str, Any]] = {}
     # Leaving the executor joins running workers, so the archive fallback
     # must stop by the same budget the wait below enforces.
     budget = ENRICH_BUDGET
@@ -742,24 +1003,31 @@ def _enrich(
     deadline = time.monotonic() + budget
     try:
         with _enrich_executor(min(limit, MAX_ENRICH_WORKERS), lane_deadline) as executor:
-            futures = {
-                http.submit_with_context(executor, _enrich_one, post, deadline): i
-                for i, post in enumerate(to_enrich)
-            }
-            # The budget covers the fetches; the allowance covers the shared
-            # bucket's queue (other lanes, other entities in compare mode).
-            done, not_done = concurrent.futures.wait(futures, timeout=wait_timeout)
-            for future in done:
-                idx = futures[future]
-                try:
-                    result_map[idx] = future.result(timeout=0)
-                except Exception:
-                    result_map[idx] = to_enrich[idx]
-            for future in not_done:
-                idx = futures[future]
-                result_map[idx] = to_enrich[idx]
-                future.cancel()
-        enriched = [result_map[i] for i in range(len(to_enrich))]
+            futures = {}
+            for i, post in enumerate(to_enrich):
+                if post.get("top_comments"):
+                    continue
+                # Snapshot immutable values before submitting so an abandoned
+                # worker never reads or mutates the returned post dict.
+                url = str(post.get("url") or "")
+                author = post.get("author")
+                futures[http.submit_with_context(
+                    executor, _fetch_enrichment, url, deadline, author,
+                )] = i
+            if futures:
+                # The budget covers the fetches; the allowance covers the shared
+                # bucket's queue (other lanes, other entities in compare mode).
+                done, not_done = concurrent.futures.wait(futures, timeout=max(0.0, wait_timeout))
+                for future in done:
+                    idx = futures[future]
+                    try:
+                        data = future.result(timeout=0)
+                    except Exception:
+                        data = None
+                    _apply_enrichment(to_enrich[idx], data)
+                for future in not_done:
+                    future.cancel()
+        enriched = list(to_enrich)
     except Exception:
         enriched = to_enrich
 
@@ -831,6 +1099,7 @@ def search_and_enrich(
     depth: str = "default",
     subreddits: Optional[List[str]] = None,
     dedicated_subreddits: Optional[List[str]] = None,
+    config: Optional[Mapping[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """Full keyless Reddit pipeline: discover then enrich.
 
@@ -842,6 +1111,7 @@ def search_and_enrich(
         subreddits: Optional pre-resolved broad/category subreddit names (no r/)
         dedicated_subreddits: Optional entity-home subreddit names (no r/) pulled
             in full (top+hot+new) and exempt from the relevance floor.
+        config: Optional pre-loaded per-run config mapping.
 
     Returns:
         List of normalized item dicts matching the reddit_public output shape,
@@ -852,6 +1122,7 @@ def search_and_enrich(
     posts = _discover(
         topic, depth, subreddits, dedicated_subreddits, from_date=from_date, to_date=to_date,
         **({"deadline": deadline} if deadline is not None else {}),
+        **({"config": config} if config is not None else {}),
     )
     if not posts:
         return []
@@ -962,7 +1233,13 @@ def enrich_source_items(
     executor = ThreadPoolExecutor(max_workers=min(len(targets), MAX_ENRICH_WORKERS))
     try:
         futures = {
-            http.submit_with_context(executor, reddit_shreddit.fetch_comments, item.url, deadline=end): item
+            http.submit_with_context(
+                executor,
+                _fetch_enrichment,
+                item.url,
+                end,
+                (item.metadata or {}).get("post_author") or item.author,
+            ): item
             for item in targets
         }
         done, _not_done = concurrent.futures.wait(futures, timeout=budget)
@@ -974,6 +1251,12 @@ def enrich_source_items(
                 continue
             if data.get("top_comments"):
                 item.metadata["top_comments"] = data["top_comments"]
+                post_author = (item.metadata or {}).get("post_author") or item.author
+                if post_author:
+                    reddit_hydrate._stamp_uploader({
+                        "author": post_author,
+                        "top_comments": item.metadata["top_comments"],
+                    })
                 item.metadata["comment_insights"] = data.get("comment_insights") or []
             if data.get("num_comments") is not None:
                 item.engagement["num_comments"] = data["num_comments"]

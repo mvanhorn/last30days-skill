@@ -18,14 +18,19 @@ Reset once per command (``last30days.py``) and between tests (``conftest``).
 
 from __future__ import annotations
 
+from collections import OrderedDict
+import contextlib
+import contextvars
 import copy
 import threading
 import time
-from typing import Any, Callable, Hashable, TypeVar
+from typing import Any, Callable, Hashable, Iterator, TypeVar
 
 from . import health, http
 
 T = TypeVar("T")
+
+MAX_ENTRIES = 512
 
 
 class MemoWaitTimeout(TimeoutError):
@@ -43,16 +48,47 @@ class _Slot:
         self.outcome: tuple[bool, Any, list] | None = None
 
 
-_CACHE: dict[Hashable, Any] = {}
-_INFLIGHT: dict[Hashable, _Slot] = {}
-_LOCK = threading.Lock()
+class _MemoStore:
+    __slots__ = ("cache", "inflight", "lock")
+
+    def __init__(self) -> None:
+        self.cache: OrderedDict[Hashable, Any] = OrderedDict()
+        self.inflight: dict[Hashable, _Slot] = {}
+        self.lock = threading.Lock()
+
+
+_DEFAULT_STORE = _MemoStore()
+_CACHE: OrderedDict[Hashable, Any] = _DEFAULT_STORE.cache
+_INFLIGHT: dict[Hashable, _Slot] = _DEFAULT_STORE.inflight
+_LOCK = _DEFAULT_STORE.lock
+
+_CURRENT_STORE: contextvars.ContextVar[_MemoStore | None] = contextvars.ContextVar(
+    "fetch_memo_store", default=None,
+)
+
+
+def _active_store() -> _MemoStore:
+    store = _CURRENT_STORE.get()
+    return store if store is not None else _DEFAULT_STORE
+
+
+@contextlib.contextmanager
+def run_scope() -> Iterator[_MemoStore]:
+    """Scope fetch memo state to a single top-level run without touching concurrent runs."""
+    store = _MemoStore()
+    token = _CURRENT_STORE.set(store)
+    try:
+        yield store
+    finally:
+        _CURRENT_STORE.reset(token)
 
 
 def reset() -> None:
-    """Forget cached and in-flight fetches. Called once per command, and by tests."""
-    with _LOCK:
-        _CACHE.clear()
-        _INFLIGHT.clear()
+    """Forget cached and in-flight fetches in the active store."""
+    store = _active_store()
+    with store.lock:
+        store.cache.clear()
+        store.inflight.clear()
 
 
 def _always(_value: Any) -> bool:
@@ -76,33 +112,47 @@ def fetch_once(
     *,
     timeout: float,
     cacheable: Callable[[T], bool] = _always,
+    cancel: threading.Event | None = None,
 ) -> T:
     """Return ``fetch()``, running it at most once per ``key`` while it stays clean.
 
     ``key`` must include every input that changes the request. ``timeout``
     bounds how long a caller waits on another caller's in-flight fetch; past
-    it, :class:`MemoWaitTimeout` is raised. Every caller gets its own copy.
+    it, :class:`MemoWaitTimeout` is raised. When ``cancel`` is set, waiting
+    callers unblock promptly with :class:`MemoWaitTimeout`. Every caller gets
+    its own copy.
     """
+    store = _active_store()
     deadline = time.monotonic() + max(0.0, timeout)
     while True:
-        with _LOCK:
-            hit = key in _CACHE
+        if cancel is not None and cancel.is_set():
+            raise MemoWaitTimeout("fetch cancelled")
+        with store.lock:
+            hit = key in store.cache
             if hit:
-                cached = _CACHE[key]
+                store.cache.move_to_end(key)
+                cached = store.cache[key]
             else:
-                slot = _INFLIGHT.get(key)
+                slot = store.inflight.get(key)
                 owner = slot is None
                 if owner:
                     slot = _Slot()
-                    _INFLIGHT[key] = slot
+                    store.inflight[key] = slot
         if hit:
             return copy.deepcopy(cached)
         if owner:
             break
-        if not slot.event.wait(max(0.0, deadline - time.monotonic())):
-            raise MemoWaitTimeout(
-                f"waited {timeout:g}s for an identical in-flight fetch"
-            )
+        while not slot.event.is_set():
+            if cancel is not None and cancel.is_set():
+                raise MemoWaitTimeout("fetch cancelled")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise MemoWaitTimeout(
+                    f"waited {timeout:g}s for an identical in-flight fetch"
+                )
+            wait_step = min(0.1, remaining) if cancel is not None else remaining
+            if slot.event.wait(wait_step):
+                break
         if slot.outcome is not None:
             return _deliver_shared(slot.outcome)
         # The owner was interrupted before publishing (e.g. KeyboardInterrupt):
@@ -121,14 +171,18 @@ def fetch_once(
         # owner's own value, which the owner's caller may mutate.
         shared = copy.deepcopy(value) if ok else value
         slot.outcome = (ok, shared, list(recorded))
-        with _LOCK:
+        with store.lock:
             # Slot identity guards against a reset() during the fetch.
-            if clean and _INFLIGHT.get(key) is slot:
-                _CACHE[key] = shared
+            if clean and store.inflight.get(key) is slot:
+                if MAX_ENTRIES > 0:
+                    store.cache[key] = shared
+                    store.cache.move_to_end(key)
+                    while len(store.cache) > MAX_ENTRIES:
+                        store.cache.popitem(last=False)
     finally:
-        with _LOCK:
-            if _INFLIGHT.get(key) is slot:
-                _INFLIGHT.pop(key)
+        with store.lock:
+            if store.inflight.get(key) is slot:
+                store.inflight.pop(key)
         slot.event.set()
     if not ok:
         raise value

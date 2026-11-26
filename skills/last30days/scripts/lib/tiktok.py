@@ -147,7 +147,7 @@ def _parse_items(raw_items: List[Dict[str, Any]], core_topic: str) -> List[Dict[
         text = raw.get("desc", "")
 
         stats = raw.get("statistics") if isinstance(raw.get("statistics"), dict) else {}
-        play_count = stats.get("play_count") if stats.get("play_count") is not None else 0
+        play_count = stats.get("play_count")
         digg_count = stats.get("digg_count") if stats.get("digg_count") is not None else 0
         comment_count = stats.get("comment_count") if stats.get("comment_count") is not None else 0
         share_count = stats.get("share_count") if stats.get("share_count") is not None else 0
@@ -352,7 +352,7 @@ def search_tiktok(
         _log(f"No videos within date range, keeping all {len(items)}")
 
     # Sort by views descending
-    items.sort(key=lambda x: x["engagement"]["views"], reverse=True)
+    items.sort(key=lambda x: x.get("engagement", {}).get("views") or 0, reverse=True)
 
     _log(f"Found {len(items)} TikTok videos")
     return {"items": items}

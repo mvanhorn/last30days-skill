@@ -5,6 +5,27 @@ from __future__ import annotations
 from . import dedupe, entity_extract, schema
 
 
+def _cluster_score(group: list[schema.Candidate]) -> float:
+    """Highest score among in-window members, falling back to all members when all are stale."""
+    if not group:
+        return 0.0
+    in_window = [c for c in group if not schema.candidate_out_of_window(c)]
+    return max(c.final_score for c in (in_window or group))
+
+
+def _cluster_out_of_window(
+    cluster: schema.Cluster,
+    candidate_by_id: dict[str, schema.Candidate],
+) -> bool:
+    """True when every known member of the cluster is out of the requested window."""
+    members = [
+        candidate_by_id[cid]
+        for cid in cluster.candidate_ids
+        if cid in candidate_by_id
+    ]
+    return bool(members) and all(schema.candidate_out_of_window(c) for c in members)
+
+
 def _cluster_sort_key(candidate: schema.Candidate) -> tuple:
     """Sort key that partitions stale candidates below fresh ones.
 
@@ -117,7 +138,7 @@ def cluster_candidates(
                 candidate_ids=[candidate.candidate_id for candidate in group],
                 representative_ids=representatives,
                 sources=sorted({source for candidate in group for source in schema.candidate_sources(candidate)}),
-                score=max(candidate.final_score for candidate in group),
+                score=_cluster_score(group),
                 uncertainty=_cluster_uncertainty(group),
             )
         )
@@ -130,7 +151,14 @@ def cluster_candidates(
         topic_entities=entity_extract.extract_text_entities(plan.raw_topic),
     )
 
-    return sorted(clusters, key=lambda cluster: cluster.score, reverse=True)
+    candidate_by_id = {c.candidate_id: c for c in candidates}
+    return sorted(
+        clusters,
+        key=lambda cluster: (
+            1 if _cluster_out_of_window(cluster, candidate_by_id) else 0,
+            -cluster.score,
+        ),
+    )
 
 
 def _merge_entity_clusters(
@@ -230,6 +258,9 @@ def _merge_entity_clusters(
         # Pick representatives from combined pool
         combined_candidates = [candidate_map[cid] for cid in combined_cids if cid in candidate_map]
         combined_candidates.sort(key=_cluster_sort_key)
+        ordered_cids = [c.candidate_id for c in combined_candidates]
+        known_cids = set(ordered_cids)
+        ordered_cids.extend(cid for cid in combined_cids if cid not in known_cids)
         merge_text_cache = {
             c.candidate_id: dedupe._PreparedText(_candidate_text(c))
             for c in combined_candidates
@@ -245,10 +276,10 @@ def _merge_entity_clusters(
         result.append(schema.Cluster(
             cluster_id=cluster_id,
             title=combined_candidates[0].title if combined_candidates else cl.title,
-            candidate_ids=combined_cids,
+            candidate_ids=ordered_cids,
             representative_ids=reps,
             sources=sorted(combined_sources),
-            score=best_score,
+            score=_cluster_score(combined_candidates) if combined_candidates else best_score,
             uncertainty=_cluster_uncertainty(combined_candidates),
         ))
 
@@ -256,9 +287,11 @@ def _merge_entity_clusters(
 
 
 def _cluster_uncertainty(group: list[schema.Candidate]) -> str | None:
+    if not group:
+        return "thin-evidence"
     sources = {source for candidate in group for source in schema.candidate_sources(candidate)}
     if len(sources) == 1:
         return "single-source"
-    if max(candidate.final_score for candidate in group) < 55:
+    if _cluster_score(group) < 55:
         return "thin-evidence"
     return None

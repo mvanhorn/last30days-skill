@@ -46,6 +46,7 @@ _DISCOVERY_ENGAGEMENT_FIELDS = {
     "reddit": ("score", "num_comments"),
     "hackernews": ("points", "comments"),
     "devto": ("reactions", "comments"),
+    "v2ex": ("replies",),
     "digg": ("postCount", "uniqueAuthors"),
     "x": ("likes", "reposts", "replies", "quotes"),
 }
@@ -260,6 +261,18 @@ UNTRUSTED_CONTENT_NOTICE = (
 )
 
 
+def candidate_sort_key(candidate: schema.Candidate) -> tuple:
+    """Global ordering for ranked candidates: in-window first, then final_score,
+    measured engagement (0 ahead of unknown None), best native rank, title."""
+    return (
+        1 if schema.candidate_out_of_window(candidate) else 0,
+        -candidate.final_score,
+        -(candidate.engagement if candidate.engagement is not None else -1),
+        min(candidate.native_ranks.values(), default=999),
+        candidate.title,
+    )
+
+
 def rerank_candidates(
     *,
     topic: str,
@@ -304,8 +317,14 @@ def rerank_candidates(
             response = provider.generate_json(
                 model, _build_prompt(topic, plan, shortlisted, primary_entity, resolved_handles=handles)
             )
-            _apply_llm_scores(shortlisted, response, resolved_handles=handles)
-        except (ValueError, KeyError, json.JSONDecodeError, OSError, http.HTTPError) as exc:
+            _apply_llm_scores(
+                shortlisted,
+                response,
+                primary_entity=primary_entity,
+                resolved_handles=handles,
+                subject_handles=subject,
+            )
+        except (TypeError, ValueError, KeyError, json.JSONDecodeError, OSError, http.HTTPError) as exc:
             import sys
             print(f"[Rerank] LLM reranking failed, using local fallback: {type(exc).__name__}: {exc}", file=sys.stderr)
             _apply_fallback_scores(
@@ -335,15 +354,7 @@ def rerank_candidates(
         primary_handle=primary_handle,
     )
 
-    return sorted(
-        candidates,
-        key=lambda candidate: (
-            -candidate.final_score,
-            -(candidate.engagement or -1),
-            min(candidate.native_ranks.values(), default=999),
-            candidate.title,
-        ),
-    )
+    return sorted(candidates, key=candidate_sort_key)
 
 
 def _intent_hint_block(plan: schema.QueryPlan) -> str:
@@ -470,19 +481,42 @@ Scoring guidance:
 """.strip()
 
 
+def _parse_llm_score(raw: object) -> float | None:
+    if raw is None or isinstance(raw, bool):
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(value):
+        return None
+    return max(0.0, min(100.0, value))
+
+
 def _apply_llm_scores(
-    candidates: list[schema.Candidate], payload: dict, *, resolved_handles: set[str] | None = None
+    candidates: list[schema.Candidate],
+    payload: dict,
+    *,
+    primary_entity: str = "",
+    resolved_handles: set[str] | None = None,
+    subject_handles: set[str] | None = None,
 ) -> None:
     handles = resolved_handles or set()
+    raw_scores = payload.get("scores") if isinstance(payload, dict) else None
+    if not isinstance(raw_scores, list):
+        raw_scores = []
     scores = {}
-    for row in payload.get("scores") or []:
+    for row in raw_scores:
         if not isinstance(row, dict):
             continue
         candidate_id = str(row.get("candidate_id") or "").strip()
         if not candidate_id:
             continue
+        parsed = _parse_llm_score(row.get("relevance"))
+        if parsed is None:
+            continue
         scores[candidate_id] = (
-            max(0.0, min(100.0, float(row.get("relevance") or 0.0))),
+            parsed,
             str(row.get("reason") or "").strip() or None,
         )
     for candidate in candidates:
@@ -490,7 +524,12 @@ def _apply_llm_scores(
             rerank_score, reason = scores[candidate.candidate_id]
             provenance = RERANK_PROVENANCE_LLM
         else:
-            rerank_score, reason = _fallback_tuple(candidate, resolved_handles=handles)
+            rerank_score, reason = _fallback_tuple(
+                candidate,
+                primary_entity=primary_entity,
+                resolved_handles=handles,
+                subject_handles=subject_handles,
+            )
             provenance = RERANK_PROVENANCE_FALLBACK
         candidate.rerank_score = rerank_score
         candidate.explanation = reason
@@ -736,6 +775,8 @@ def _apply_interaction_signal(
         if not targets:
             continue
         c.metadata = {**(c.metadata or {}), "interaction_targets": sorted(targets)}
+        if schema.candidate_out_of_window(c):
+            continue
         if not _first_party_floor_eligible(
             c, resolved_handles=resolved_handles, primary_entity=primary_entity, subject_handles=subject
         ):
@@ -767,8 +808,12 @@ def _apply_first_party_floor(
     for c in candidates:
         if not _is_first_party(c, resolved_handles):
             continue
-        if c.final_score < FIRST_PARTY_FLOOR and _first_party_floor_eligible(
-            c, resolved_handles=resolved_handles, primary_entity=primary_entity, subject_handles=subject
+        if (
+            not schema.candidate_out_of_window(c)
+            and c.final_score < FIRST_PARTY_FLOOR
+            and _first_party_floor_eligible(
+                c, resolved_handles=resolved_handles, primary_entity=primary_entity, subject_handles=subject
+            )
         ):
             c.final_score = FIRST_PARTY_FLOOR
         # Clear the entity-miss marker here, at the one site that knows the
@@ -779,6 +824,9 @@ def _apply_first_party_floor(
         # their own name in their own post.
         if c.explanation and "entity-miss" in c.explanation.lower():
             c.explanation = _FIRST_PARTY_EXPLANATION
+
+
+_ENGAGEMENT_SCORE_CAP = 100.0
 
 
 def _apply_engagement_rescue(
@@ -795,13 +843,24 @@ def _apply_engagement_rescue(
     a related handle's off-topic posts are excluded, preserving noise
     suppression.
     """
-    x_cands = [c for c in candidates if _is_x_candidate(c)]
+    x_cands = [
+        c for c in candidates
+        if _is_x_candidate(c) and not schema.candidate_out_of_window(c)
+    ]
     if len(x_cands) < 2:
         return
     subject = _subject_handles(primary_handle, topic)
-    engagements = sorted(_candidate_engagement(c) for c in x_cands)
-    n = len(engagements)
+    engagements: list[float] = []
     for c in x_cands:
+        raw = _candidate_engagement(c)
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)) or not math.isfinite(raw):
+            engagements.append(0.0)
+        else:
+            engagements.append(float(raw))
+    n = len(engagements)
+    for c, e in zip(x_cands, engagements):
+        if e <= 0:
+            continue
         # A first-party post qualifies only through _first_party_floor_eligible
         # (which needs positive grounding); the bare grounding pass below would
         # wave a related handle's off-topic post through on a short topic.
@@ -813,9 +872,14 @@ def _apply_engagement_rescue(
             qualifies = _is_entity_grounded(c, primary_entity)
         if not qualifies:
             continue
-        e = _candidate_engagement(c)
-        # Percentile rank in [0, 1]: fraction of the X pool strictly below e.
-        percentile = sum(1 for v in engagements if v < e) / (n - 1)
+        below = sum(1 for v in engagements if v < e)
+        equal = sum(1 for v in engagements if v == e)
+        if e >= _ENGAGEMENT_SCORE_CAP:
+            # Posts clamped at the 0-100 engagement ceiling represent distinct
+            # viral counts; upper-rank preserves their top-tier rescue floor.
+            percentile = (below + equal - 1) / (n - 1)
+        else:
+            percentile = (below + 0.5 * (equal - 1)) / (n - 1)
         floor = _rescue_floor(percentile)
         if floor > c.final_score:
             c.final_score = floor
@@ -1223,7 +1287,7 @@ def score_fun(
         try:
             response = provider.generate_json(model, _build_fun_prompt(topic, pool))
             _apply_fun_scores(pool, response)
-        except (ValueError, KeyError, json.JSONDecodeError, OSError, http.HTTPError) as exc:
+        except (TypeError, ValueError, KeyError, json.JSONDecodeError, OSError, http.HTTPError) as exc:
             import sys
             print(f"[FunJudge] LLM scoring failed: {type(exc).__name__}: {exc}", file=sys.stderr)
             _apply_fun_fallback(pool)
@@ -1306,15 +1370,21 @@ def _extract_comment_text_scored(candidate: schema.Candidate) -> str:
 
 
 def _apply_fun_scores(candidates: list[schema.Candidate], payload: dict) -> None:
+    raw_scores = payload.get("scores") if isinstance(payload, dict) else None
+    if not isinstance(raw_scores, list):
+        raw_scores = []
     scores = {}
-    for row in payload.get("scores") or []:
+    for row in raw_scores:
         if not isinstance(row, dict):
             continue
         cid = str(row.get("candidate_id") or "").strip()
         if not cid:
             continue
+        parsed = _parse_llm_score(row.get("fun"))
+        if parsed is None:
+            continue
         scores[cid] = (
-            max(0.0, min(100.0, float(row.get("fun") or 0.0))),
+            parsed,
             str(row.get("reason") or "").strip() or None,
         )
     for c in candidates:

@@ -241,8 +241,56 @@ func withBrowserCookiePolicy(args []string) []string {
 	return args
 }
 
+// xAPIOptInEnv tells the engine that X_BEARER_TOKEN was explicitly configured
+// in the MCP host environment, enabling xapi as a fallback without overriding
+// LAST30DAYS_X_BACKEND pins or higher-priority X credentials in .env/Keychain.
+const xAPIOptInEnv = "LAST30DAYS_X_API_OPT_IN=1"
+
 func researchExtraEnv() []string {
-	return []string{allowEnginePlanEnv, noJobsDigestEnv, noPatentDigestEnv, noReportChecklistEnv}
+	extra := []string{allowEnginePlanEnv, noJobsDigestEnv, noPatentDigestEnv, noReportChecklistEnv}
+	if shouldAutoEnableXAPI() {
+		extra = append(extra, xAPIOptInEnv)
+	}
+	return extra
+}
+
+// shouldAutoEnableXAPI opts into xapi as the tail fallback of Python's default
+// X chain when X_BEARER_TOKEN is explicitly provided in the MCP host
+// environment and LAST30DAYS_X_API_OPT_IN is not already set explicitly.
+// Python still honors explicit LAST30DAYS_X_BACKEND pins (while treating "auto"
+// as unpinned) and prefers usable higher-priority backends (bird when node and
+// cookies work, xai, xurl, xquik) ahead of xapi.
+func shouldAutoEnableXAPI() bool {
+	if !hasExplicitEnvValue("X_BEARER_TOKEN") {
+		return false
+	}
+	if hasExplicitEnvValue("LAST30DAYS_X_API_OPT_IN") {
+		return false
+	}
+	return true
+}
+
+func hasExplicitEnvValue(name string) bool {
+	value := strings.TrimSpace(os.Getenv(name))
+	return value != "" && !isUnsubstitutedUserConfig(value)
+}
+
+func isUnsubstitutedUserConfig(value string) bool {
+	const prefix = "${user_config."
+	if !strings.HasPrefix(value, prefix) || !strings.HasSuffix(value, "}") {
+		return false
+	}
+	inner := value[len(prefix) : len(value)-1]
+	if len(inner) == 0 {
+		return false
+	}
+	for i := 0; i < len(inner); i++ {
+		c := inner[i]
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') {
+			return false
+		}
+	}
+	return true
 }
 
 func browserCookiesAllowed() bool {

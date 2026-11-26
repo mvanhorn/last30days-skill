@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import datetime, timezone
+import re
 from typing import Any, Literal
 
 from . import health
@@ -361,6 +362,13 @@ class RetrievalBundle:
     # what a healthy-looking run lost without branding the source partial.
     detail_by_source: dict[str, str] = field(default_factory=dict)
     lane_state_by_source: dict[str, RunOutcomeState] = field(default_factory=dict)
+    # Hard failures recorded via record_failure, kept separate from promoted
+    # lane_state_by_source entries so a sibling stream delivering items can
+    # revert a promoted lane state back to OK while hard failures stick.
+    failed_sources: set[str] = field(default_factory=set)
+    # Most specific raw failure state recorded via record_failure per source,
+    # preserved even when items_by_source causes source_status to show PARTIAL.
+    failure_state_by_source: dict[str, RunOutcomeState] = field(default_factory=dict)
     # The raw rows of the company's job board, kept until ranking is done so
     # the Jobs Digest can add the roles the run ranked highest. Never rendered.
     jobs_board_rows: list[dict[str, Any]] = field(default_factory=list)
@@ -383,22 +391,64 @@ class RetrievalBundle:
         """Record a failure, preserving already-returned items as partial.
 
         AUTH_FAILED is preserved even when items exist, since the re-login
-        signal shouldn't be downgraded to generic PARTIAL guidance.
+        signal shouldn't be downgraded to generic PARTIAL guidance. Repeat
+        calls never downgrade an existing AUTH_FAILED or more-specific failure
+        state per ``health.FAILURE_SPECIFICITY``.
         """
         count = len(self.items_by_source.get(source, []))
+        previous = self.source_status.get(source)
+        prev_is_hard = (
+            source in self.failed_sources
+            or (
+                previous is not None
+                and previous.state not in (health.OK, NO_RESULTS)
+                and previous.fix_hint is not None
+            )
+        )
+        prev_raw = self.failure_state_by_source.get(source)
+        if prev_raw is None and prev_is_hard and previous is not None:
+            prev_raw = previous.state
+
+        if prev_is_hard and prev_raw is not None:
+            prev_rank = health.FAILURE_SPECIFICITY.get(prev_raw, 9)
+            new_rank = health.FAILURE_SPECIFICITY.get(state, 9)
+            if prev_raw == AUTH_FAILED or prev_rank <= new_rank:
+                winning_raw = prev_raw
+                winning_detail = (
+                    (previous.detail if previous and previous.detail else None)
+                    or detail
+                )
+                winning_attempted = (
+                    (previous.attempted if previous is not None else False)
+                    or attempted
+                )
+            else:
+                winning_raw = state
+                winning_detail = detail
+                winning_attempted = attempted
+        else:
+            winning_raw = state
+            winning_detail = detail
+            winning_attempted = attempted
+
+        self.failed_sources.add(source)
+        self.failure_state_by_source[source] = winning_raw
         # Preserve AUTH_FAILED even when items exist: it's an actionable signal
         # (re-login needed) that shouldn't be downgraded to PARTIAL.
-        if state == AUTH_FAILED:
+        if winning_raw == AUTH_FAILED:
             outcome_state: RunOutcomeState = AUTH_FAILED
         else:
-            outcome_state = PARTIAL if count else state
-        self.errors_by_source.setdefault(source, detail)
+            outcome_state = PARTIAL if count else winning_raw
+        if prev_is_hard:
+            self.errors_by_source[source] = winning_detail
+        else:
+            self.errors_by_source.setdefault(source, winning_detail)
         self.source_status[source] = SourceOutcome(
             source=source,
             state=outcome_state,
             items_returned=count,
-            attempted=attempted,
-            detail=detail,
+            attempted=winning_attempted,
+            detail=winning_detail,
             fix_hint="doctor",
         )
 
@@ -418,13 +468,37 @@ class RetrievalBundle:
         if not detail:
             return
         existing = self.detail_by_source.get(source)
-        if existing and detail not in existing:
-            detail = f"{existing}; {detail}"
+        if existing:
+            existing_clauses = [clause.strip() for clause in existing.split(";") if clause.strip()]
+            incoming_clauses = [clause.strip() for clause in detail.split(";") if clause.strip()]
+            if set(incoming_clauses).issubset(existing_clauses):
+                detail = existing
+            elif set(existing_clauses).issubset(incoming_clauses):
+                detail = "; ".join(dict.fromkeys(incoming_clauses))
+            else:
+                # Order merged clauses longest-first (Python's stable sort
+                # preserves arrival order on ties) so concurrent subqueries
+                # produce a deterministic leading detail regardless of finish order.
+                detail = "; ".join(
+                    sorted(
+                        dict.fromkeys(existing_clauses + incoming_clauses),
+                        key=lambda clause: -len(clause),
+                    )
+                )
         self.detail_by_source[source] = detail
         if state:
-            self.lane_state_by_source[source] = state
+            prev_lane_state = self.lane_state_by_source.get(source)
+            if (
+                prev_lane_state is None
+                or health.FAILURE_SPECIFICITY.get(state, 9)
+                < health.FAILURE_SPECIFICITY.get(prev_lane_state, 9)
+            ):
+                self.lane_state_by_source[source] = state
         current = self.source_status.get(source)
-        if current and current.state in (health.OK, NO_RESULTS):
+        if current and (
+            current.state in (health.OK, NO_RESULTS)
+            or source not in self.failed_sources
+        ):
             current.detail = detail
             current.lane_failure_state = self.lane_state_by_source.get(source)
 
@@ -433,7 +507,8 @@ class RetrievalBundle:
         self.items_by_source_and_query.setdefault((label, source), []).extend(items)
         self.items_by_source.setdefault(source, []).extend(items)
         previous = self.source_status.get(source)
-        state: RunOutcomeState = health.OK if items else NO_RESULTS
+        has_items = bool(self.items_by_source[source])
+        state: RunOutcomeState = health.OK if (items or has_items) else NO_RESULTS
         detail = None
         fix_hint = None
         if previous and previous.state == health.OK and not items:
@@ -444,18 +519,28 @@ class RetrievalBundle:
         if state in (health.OK, NO_RESULTS):
             detail = self.detail_by_source.get(source)
             lane_state = self.lane_state_by_source.get(source)
-            if state == NO_RESULTS and lane_state and not self.items_by_source[source]:
+            if state == NO_RESULTS and lane_state and not has_items:
                 # Nothing delivered and sub-requests failed: that is the
                 # failure, not a clean empty result.
                 state = lane_state
-        if previous and previous.state not in (health.OK, NO_RESULTS):
+        prev_is_hard = (
+            source in self.failed_sources
+            or (
+                previous is not None
+                and previous.state not in (health.OK, NO_RESULTS)
+                and previous.fix_hint is not None
+            )
+        )
+        if prev_is_hard and previous is not None and previous.state not in (health.OK, NO_RESULTS):
             # Preserve AUTH_FAILED state even when items are added: it's an
             # actionable signal (re-login needed) that shouldn't be downgraded
-            # to PARTIAL. Other failure states become PARTIAL when items exist.
+            # to PARTIAL. Other hard failure states become PARTIAL when items
+            # exist. Promoted lane_state values are not hard failures and
+            # revert to OK as soon as any sibling stream delivers items.
             if previous.state == AUTH_FAILED:
                 state = AUTH_FAILED
             else:
-                state = PARTIAL if self.items_by_source[source] else previous.state
+                state = PARTIAL if has_items else previous.state
             detail = previous.detail
             fix_hint = previous.fix_hint
         self.source_status[source] = SourceOutcome(
@@ -771,6 +856,11 @@ def partition_freshness_verdicts(
     return public, private
 
 
+def _artifact_matches_source(key: str, source: str) -> bool:
+    """Match artifact keys by exact name or delimiter-bounded token segment."""
+    return re.search(rf"(?:^|[_\-]){re.escape(source)}(?:$|[_\-])", key.lower()) is not None
+
+
 def without_sources(report: Report, excluded_sources: set[str]) -> Report:
     """Return a deep-copied report with private source evidence removed.
 
@@ -805,28 +895,89 @@ def without_sources(report: Report, excluded_sources: set[str]) -> Report:
         for source, weight in clean.query_plan.source_weights.items()
         if source.lower() not in excluded
     }
+    rebuilt_subqueries: list[SubQuery] = []
     for subquery in clean.query_plan.subqueries:
-        subquery.sources[:] = [
+        remaining_sources = [
             source for source in subquery.sources if source.lower() not in excluded
         ]
+        if remaining_sources:
+            rebuilt_subqueries.append(
+                SubQuery(
+                    label=subquery.label,
+                    search_query=subquery.search_query,
+                    ranking_query=subquery.ranking_query,
+                    sources=remaining_sources,
+                    weight=subquery.weight,
+                )
+            )
+    clean.query_plan.subqueries = rebuilt_subqueries
 
     kept_candidates: list[Candidate] = []
     removed_candidate_ids: set[str] = set()
+    rehomed_candidate_ids: set[str] = set()
     for candidate in clean.ranked_candidates:
-        if candidate.source.lower() in excluded:
-            removed_candidate_ids.add(candidate.candidate_id)
-            continue
-        candidate.source_items = [
+        had_source_items = bool(candidate.source_items)
+        removed_items = [
+            item for item in candidate.source_items if item.source.lower() in excluded
+        ]
+        surviving_items = [
             item for item in candidate.source_items if item.source.lower() not in excluded
         ]
-        candidate.sources = [
+        if (had_source_items and not surviving_items) or (
+            not had_source_items and candidate.source.lower() in excluded
+        ):
+            removed_candidate_ids.add(candidate.candidate_id)
+            continue
+
+        candidate.source_items = surviving_items
+        if candidate.source.lower() in excluded:
+            primary = surviving_items[0]
+            candidate.item_id = primary.item_id
+            candidate.source = primary.source
+            candidate.title = primary.title
+            candidate.url = primary.url
+            candidate.snippet = primary.snippet or primary.body
+            candidate.explanation = None
+            candidate.fun_explanation = None
+            rehomed_candidate_ids.add(candidate.candidate_id)
+        elif removed_items and surviving_items and candidate.snippet:
+            removed_texts = {
+                text
+                for item in removed_items
+                for text in (item.snippet, item.body)
+                if text
+            }
+            if candidate.snippet in removed_texts:
+                primary = candidate_primary_item(candidate)
+                candidate.snippet = (primary.snippet or primary.body) if primary else ""
+
+        filtered_sources = [
             source for source in candidate.sources if source.lower() not in excluded
         ]
+        if not filtered_sources and surviving_items:
+            filtered_sources = list(dict.fromkeys(item.source for item in surviving_items))
+        elif (
+            (surviving_items or candidate.sources)
+            and candidate.source
+            and candidate.source.lower() not in {s.lower() for s in filtered_sources}
+        ):
+            filtered_sources = [candidate.source, *filtered_sources]
+        candidate.sources = filtered_sources
         candidate.native_ranks = {
             key: rank
             for key, rank in candidate.native_ranks.items()
             if key.rsplit(":", 1)[-1].lower() not in excluded
         }
+        provenance = candidate.metadata.get("provenance")
+        if isinstance(provenance, list):
+            candidate.metadata["provenance"] = [
+                entry
+                for entry in provenance
+                if not (
+                    isinstance(entry, dict)
+                    and str(entry.get("source") or "").lower() in excluded
+                )
+            ]
         kept_candidates.append(candidate)
     clean.ranked_candidates = kept_candidates
     candidate_by_id = {
@@ -834,6 +985,7 @@ def without_sources(report: Report, excluded_sources: set[str]) -> Report:
     }
 
     kept_clusters: list[Cluster] = []
+    title_invalidated_ids = removed_candidate_ids | rehomed_candidate_ids
     for cluster in clean.clusters:
         original_ids = list(cluster.candidate_ids)
         cluster.candidate_ids = [
@@ -852,7 +1004,7 @@ def without_sources(report: Report, excluded_sources: set[str]) -> Report:
             for source in candidate_sources(candidate_by_id[candidate_id])
             if source.lower() not in excluded
         })
-        if private_drill or any(candidate_id in removed_candidate_ids for candidate_id in original_ids):
+        if private_drill or any(candidate_id in title_invalidated_ids for candidate_id in original_ids):
             cluster.title = candidate_by_id[cluster.representative_ids[0]].title
         kept_clusters.append(cluster)
     clean.clusters = kept_clusters
@@ -862,7 +1014,7 @@ def without_sources(report: Report, excluded_sources: set[str]) -> Report:
         if verdict.candidate_id in candidate_by_id
     ]
     for key in list(clean.artifacts):
-        if any(source in key.lower() for source in excluded):
+        if any(_artifact_matches_source(key, source) for source in excluded):
             del clean.artifacts[key]
     if private_drill:
         clean.drill_of = None

@@ -43,7 +43,7 @@ class TestDedicatedLane:
         ded["subreddit"] = "Kanye"  # Match the requested dedicated subreddit.
         captured = {}
 
-        def fake_fetch(subs, depth="default", query="", sorts=None):
+        def fake_fetch(subs, depth="default", query="", sorts=None, timeframe="month"):
             if sorts == reddit_keyless.DEDICATED_SORTS:
                 captured["sorts"] = sorts
                 captured["subs"] = subs
@@ -86,7 +86,7 @@ class TestDedicatedLane:
         shared_broad = _listing_post(1, 500, "fresh thread", rel=0.0)  # same url/id
         shared_broad["subreddit"] = "hiphopheads"  # Match the requested broad subreddit.
 
-        def fake_fetch(subs, depth="default", query="", sorts=None):
+        def fake_fetch(subs, depth="default", query="", sorts=None, timeframe="month"):
             return [shared_ded] if sorts == reddit_keyless.DEDICATED_SORTS else [shared_broad]
 
         with mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings",

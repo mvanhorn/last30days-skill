@@ -466,7 +466,7 @@ def _research_topic(
         store.update_run(run_id, status="failed", error_message=error, duration_seconds=duration)
         return {"topic": topic["name"], "status": "failed", "error": error, "duration": duration}
 
-    counts = store.store_findings(run_id, topic_id, findings)
+    counts = store.store_findings(run_id, topic_id, findings, count_by_topic=True)
     status = health.DEGRADED if degraded else "completed"
     store.update_run(
         run_id,
