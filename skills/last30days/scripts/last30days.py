@@ -5442,6 +5442,21 @@ def _main(
             hosted_kwargs["clarify"] = {"run_broadly": True}
         return hosted.run_hosted(topic, depth, **hosted_kwargs)
 
+    if (
+        topic
+        and not args.diagnose
+        and not args.mock
+        and not args.cached_report
+        and not args.record_fixtures
+        and not law7_blocked
+    ):
+        from lib import rust_accel
+        bootstrapped = rust_accel.ensure_installed_for_run()
+        if bootstrapped and bootstrapped.get("action") in {"installed", "upgraded"}:
+            ver = bootstrapped.get("version")
+            ver_tag = f" (v{ver})" if ver else ""
+            sys.stderr.write(f"[last30days] Installed native Rust core{ver_tag}\n")
+
     if args.lookback_days is None:
         args.lookback_days = 30
     requested_sources = resolve_requested_sources(args.search, config)

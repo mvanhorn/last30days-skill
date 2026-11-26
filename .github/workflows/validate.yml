@@ -119,22 +119,8 @@ jobs:
       - name: Set up Python
         run: uv python install 3.12
 
-      - name: Run Rust-accelerated parity tests
-        env:
-          LAST30DAYS_ENGINE: rust
+      - name: Run full test suite and evals with Rust core active
         run: |
-          uv run pytest \
-            tests/test_rust_accel.py \
-            tests/test_dedupe_v3.py \
-            tests/test_cluster_v3.py \
-            tests/test_cluster_diversity.py \
-            tests/test_relevance.py \
-            tests/test_relevance_core_v3.py \
-            tests/test_signals_v3.py \
-            tests/test_cjk.py \
-            tests/test_entity_extract.py \
-            tests/test_entity_extract_v3.py \
-            tests/test_library_feed.py \
-            tests/test_library_search.py \
-            tests/test_pr09_library_watchlist_store_security.py \
-            tests/test_pr32_signals_relevance_rerank_cluster_fusion_dedupe.py
+          LAST30DAYS_ENGINE=rust uv run python -c "import sys; sys.path.insert(0, 'skills/last30days/scripts'); from lib import rust_accel; assert rust_accel.is_available(), 'Rust core binary not active'"
+          uv run pytest -n auto --dist worksteal
+          uv run pytest tests/eval -x

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import random
 import stat
@@ -12,7 +13,7 @@ from unittest import mock
 
 import pytest
 
-from lib import cluster, dedupe, library, library_index, rust_accel, schema, signals
+from lib import cluster, dedupe, doctor, library, library_index, rust_accel, schema, setup_wizard, signals
 
 
 def _has_rust_binary() -> bool:
@@ -434,3 +435,178 @@ def test_rust_scan_rejects_fifo_without_blocking(tmp_path: Path, monkeypatch):
     assert outcomes is not None
     assert len(outcomes) == 1
     assert outcomes[0]["status"] == "skipped"
+
+
+def test_platform_asset_name_and_checksums_and_url_validation():
+    assert rust_accel.platform_asset_name("darwin", "arm64") == "last30days-core-darwin-arm64"
+    assert rust_accel.platform_asset_name("darwin", "x86_64") == "last30days-core-darwin-amd64"
+    assert rust_accel.platform_asset_name("linux", "x86_64") == "last30days-core-linux-amd64"
+    assert rust_accel.platform_asset_name("linux", "aarch64") == "last30days-core-linux-arm64"
+    assert rust_accel.platform_asset_name("win32", "AMD64") == "last30days-core-windows-amd64.exe"
+    assert rust_accel.platform_asset_name("freebsd", "x86_64") is None
+
+    valid_hex = "a" * 64
+    parsed = rust_accel.parse_checksums(
+        f"# comment\n"
+        f"{valid_hex}  last30days-core-darwin-arm64\n"
+        f"{valid_hex} *last30days-core-windows-amd64.exe\n"
+        f"short  ignored-bin\n"
+        f"{valid_hex}  ../escape-bin\n"
+    )
+    assert parsed == {
+        "last30days-core-darwin-arm64": valid_hex,
+        "last30days-core-windows-amd64.exe": valid_hex,
+    }
+
+    assert rust_accel._validate_download_url(
+        "https://github.com/mvanhorn/last30days-skill/releases/download/v4.7.0/last30days-core-darwin-arm64"
+    ).startswith("https://")
+    for bad_url in (
+        "http://github.com/mvanhorn/last30days-skill/releases/download/v4.7.0/bin",
+        "https://evil.example.com/last30days-core-darwin-arm64",
+        "https://user:pass@github.com/mvanhorn/last30days-skill/releases/download/v4.7.0/bin",
+        "file:///etc/passwd",
+    ):
+        with pytest.raises(ValueError, match="disallowed download URL"):
+            rust_accel._validate_download_url(bad_url)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX executable stub installer test")
+def test_install_release_binary_verifies_sha256_installs_upgrades_and_rejects_bad_digest(
+    tmp_path: Path, monkeypatch
+):
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("LAST30DAYS_ENGINE", "auto")
+    monkeypatch.delenv("LAST30DAYS_RUST_BIN", raising=False)
+
+    # Hide dev checkout binary so discovery uses only managed ~/.local/share/last30days/bin/
+    managed = rust_accel.install_bin_path()
+    monkeypatch.setattr(rust_accel, "_candidate_binary_paths", lambda: [managed])
+    monkeypatch.setattr(rust_accel, "platform_asset_name", lambda *_a, **_k: "last30days-core-test-bin")
+
+    good_script = (
+        f"#!{sys.executable}\n"
+        "import json, sys\n"
+        "for line in sys.stdin:\n"
+        "    if json.loads(line).get('op') == 'ping':\n"
+        "        sys.stdout.write(json.dumps({'status': 'ok', 'version': '0.1.0', 'protocol': 1}) + '\\n')\n"
+        "        sys.stdout.flush()\n"
+    ).encode("utf-8")
+    good_sha = hashlib.sha256(good_script).hexdigest()
+    checksums_text = f"{good_sha}  last30days-core-test-bin\n".encode("utf-8")
+
+    fetch_calls: list[str] = []
+
+    def _fake_fetch(url: str, *, max_bytes: int, timeout: float = 30.0) -> bytes:
+        fetch_calls.append(url)
+        if url.endswith(rust_accel.CHECKSUMS_ASSET):
+            return checksums_text
+        if url.endswith("last30days-core-test-bin"):
+            return good_script
+        raise AssertionError(f"unexpected URL: {url}")
+
+    monkeypatch.setattr(rust_accel, "_https_fetch_bytes", _fake_fetch)
+
+    try:
+        # 1. Fresh install succeeds with SHA-256 + ping verification.
+        res1 = rust_accel.install_release_binary(version="4.7.0")
+        assert res1["installed"] is True
+        assert res1["action"] == "installed"
+        assert res1["version"] == "4.7.0"
+        assert managed.is_file()
+        assert len(fetch_calls) == 2
+
+        # 2. Same version is idempotent with zero downloads.
+        res2 = rust_accel.install_release_binary(version="4.7.0")
+        assert res2["installed"] is True
+        assert res2["action"] == "already_installed"
+        assert len(fetch_calls) == 2
+
+        # 3. Version bump triggers verified upgrade.
+        res3 = rust_accel.install_release_binary(version="4.8.0")
+        assert res3["installed"] is True
+        assert res3["action"] == "upgraded"
+        assert res3["version"] == "4.8.0"
+        assert len(fetch_calls) == 4
+
+        # 4. Doctor status reports active rust core without network calls.
+        st = rust_accel.status()
+        assert st["active"] is True
+        assert st["installed_version"] == "4.8.0"
+        assert st["fallback"] is None
+
+        # 5. Tampered binary fails SHA-256 check and keeps existing binary intact.
+        def _tampered_fetch(url: str, *, max_bytes: int, timeout: float = 30.0) -> bytes:
+            if url.endswith(rust_accel.CHECKSUMS_ASSET):
+                return checksums_text
+            return b"corrupted payload"
+
+        monkeypatch.setattr(rust_accel, "_https_fetch_bytes", _tampered_fetch)
+        res4 = rust_accel.install_release_binary(version="4.9.0")
+        assert res4["action"] == "install_failed"
+        assert "SHA-256 mismatch" in res4["detail"]
+        assert res4["installed"] is True
+        assert managed.read_bytes() == good_script
+    finally:
+        rust_accel.shutdown()
+
+
+def test_ensure_installed_for_run_records_cooldown_on_failure(tmp_path: Path, monkeypatch):
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("LAST30DAYS_ENGINE", "auto")
+    managed = rust_accel.install_bin_path()
+    monkeypatch.setattr(rust_accel, "_candidate_binary_paths", lambda: [managed])
+    monkeypatch.setattr(rust_accel, "platform_asset_name", lambda *_a, **_k: "last30days-core-test-bin")
+    monkeypatch.setattr(rust_accel, "expected_skill_version", lambda: "4.7.0")
+
+    attempts = 0
+
+    def _failing_fetch(url: str, *, max_bytes: int, timeout: float = 30.0) -> bytes:
+        nonlocal attempts
+        attempts += 1
+        raise OSError("network unreachable")
+
+    monkeypatch.setattr(rust_accel, "_https_fetch_bytes", _failing_fetch)
+
+    first = rust_accel.ensure_installed_for_run()
+    assert first is not None and first["action"] == "install_failed"
+    assert attempts == 1
+
+    # Second call within cooldown must skip network entirely.
+    second = rust_accel.ensure_installed_for_run()
+    assert second is None
+    assert attempts == 1
+
+
+def test_setup_status_and_doctor_render_rust_core(monkeypatch):
+    text = setup_wizard.get_setup_status_text(
+        {
+            "cookies_found": {},
+            "ytdlp_installed": True,
+            "ytdlp_action": "already_installed",
+            "rust_core": {"installed": True, "action": "installed", "version": "4.7.0"},
+        }
+    )
+    assert "Installed native Rust core (v4.7.0)" in text
+
+    monkeypatch.setattr(
+        rust_accel,
+        "status",
+        lambda: {
+            "mode": "auto",
+            "active": True,
+            "binary_path": "/tmp/last30days-core",
+            "installed_version": "4.7.0",
+            "expected_version": "4.7.0",
+            "platform_asset": "last30days-core-darwin-arm64",
+            "fallback": None,
+        },
+    )
+    report = doctor.build_report({})
+    assert report["rust_core"]["active"] is True
+    rendered = doctor.render_text(report)
+    assert "compute core: rust (last30days-core v4.7.0, /tmp/last30days-core)" in rendered

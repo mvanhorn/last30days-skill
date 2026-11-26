@@ -230,7 +230,8 @@ jobs:
           path: ${{ env.MCPB_OUTPUT }}
 
   # Build standalone native last30days-core binaries so end users never need a
-  # Rust toolchain installed. Linked only against OS system libraries.
+  # Rust toolchain installed. Linux targets build statically against musl so
+  # they run on any Linux distro/container regardless of glibc version.
   build-rust-core:
     needs: [validate]
     runs-on: ${{ matrix.runner }}
@@ -244,12 +245,23 @@ jobs:
         include:
           - runner: macos-14
             platform: darwin-arm64
+            target: aarch64-apple-darwin
+            ext: ""
+          - runner: macos-14
+            platform: darwin-amd64
+            target: x86_64-apple-darwin
             ext: ""
           - runner: ubuntu-latest
             platform: linux-amd64
+            target: x86_64-unknown-linux-musl
+            ext: ""
+          - runner: ubuntu-24.04-arm
+            platform: linux-arm64
+            target: aarch64-unknown-linux-musl
             ext: ""
           - runner: windows-latest
             platform: windows-amd64
+            target: x86_64-pc-windows-msvc
             ext: ".exe"
     steps:
       - name: Checkout
@@ -274,12 +286,20 @@ jobs:
         shell: bash
         env:
           PLATFORM: ${{ matrix.platform }}
+          RUST_TARGET: ${{ matrix.target }}
           BIN_EXT: ${{ matrix.ext }}
         run: |
           set -euo pipefail
-          cargo build --manifest-path rust/Cargo.toml --release --locked
+          if [[ "${RUST_TARGET}" == *-musl ]]; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends musl-tools
+            export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc
+            export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc
+          fi
+          rustup target add "${RUST_TARGET}"
+          cargo build --manifest-path rust/Cargo.toml --release --locked --target "${RUST_TARGET}"
           mkdir -p rust/dist
-          cp "rust/target/release/last30days-core${BIN_EXT}" "rust/dist/last30days-core-${PLATFORM}${BIN_EXT}"
+          cp "rust/target/${RUST_TARGET}/release/last30days-core${BIN_EXT}" "rust/dist/last30days-core-${PLATFORM}${BIN_EXT}"
           if [ -z "${BIN_EXT}" ]; then
             chmod 0755 "rust/dist/last30days-core-${PLATFORM}"
           fi
@@ -331,6 +351,17 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+
+      - name: Generate last30days-core SHA-256 checksums
+        run: |
+          set -euo pipefail
+          rm -f dist/last30days-core-SHA256SUMS.txt
+          (
+            cd dist
+            sha256sum last30days-core-* > "${RUNNER_TEMP}/last30days-core-SHA256SUMS.txt"
+          )
+          mv "${RUNNER_TEMP}/last30days-core-SHA256SUMS.txt" dist/last30days-core-SHA256SUMS.txt
+          cat dist/last30days-core-SHA256SUMS.txt
 
       - name: Create GitHub release
         env:

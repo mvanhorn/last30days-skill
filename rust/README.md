@@ -1,7 +1,7 @@
-# last30days-core (Rust Accelerator)
+# last30days-core (Native Rust Compute Core)
 
-Optional standalone native binary that accelerates the measured CPU bottlenecks
-of `last30days-skill`:
+Built-in standalone native binary that powers the measured CPU hotspots of
+`last30days-skill` by default:
 
 - Parallel library Markdown privacy redaction, metadata parsing, and SHA-256 fingerprinting (`library.py`, `library_index.py`)
 - Near-duplicate detection with 64-bit trigram/token fingerprints (`dedupe.py`)
@@ -12,12 +12,16 @@ of `last30days-skill`:
 
 End users never install Rust, Cargo, or `rustup`.
 
-- Compiled release binaries (`last30days-core`) link only to standard OS
-  libraries already present on macOS, Linux, and Windows.
+- `setup` and the first live local run download the matching prebuilt binary
+  from GitHub Releases, verify its SHA-256 checksum against
+  `last30days-core-SHA256SUMS.txt` and its protocol handshake, and install it to
+  `~/.local/share/last30days/bin/last30days-core`.
+- Linux binaries build statically against `musl`; macOS and Windows binaries
+  link only to standard OS libraries already present on every machine.
 - They have no Python C-extension ABI coupling (one binary works across Python
   3.12, 3.13, 3.14, and 3.15).
-- If no binary is present on disk, `skills/last30days/scripts/lib/rust_accel.py`
-  falls back silently to the pure-Python implementation.
+- Pure Python stays in place as an automatic fallback for offline sandboxes or
+  unsupported architectures, and `doctor` reports which backend is active.
 
 ## Binary discovery
 

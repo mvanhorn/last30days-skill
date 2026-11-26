@@ -126,6 +126,16 @@ def _no_arctic_network():
 
 
 @pytest.fixture(autouse=True)
+def _no_rust_core_download():
+    """Prevent offline unit tests from hitting GitHub Releases for last30days-core."""
+    with mock.patch(
+        "lib.rust_accel._https_fetch_bytes",
+        side_effect=OSError("offline test: release binary download disabled"),
+    ):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _no_reddit_web_floor():
     """The Reddit lane's web floor searches the web for every run, so any
     in-process Reddit run would reach the network. Default it to finding

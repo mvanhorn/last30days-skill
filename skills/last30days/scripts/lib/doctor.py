@@ -67,6 +67,7 @@ from . import (
     private_files,
     proxy,
     reddit_health,
+    rust_accel,
     trustpilot,
     x_api,
 )
@@ -1822,6 +1823,7 @@ def build_report(config: Dict[str, Any]) -> Dict[str, Any]:
             "host_lane_file_ignored": bool(config.get("_X_HOST_LANE_FILE_IGNORED")),
         },
         "setup": _setup_block(config),
+        "rust_core": rust_accel.status(),
         "brief_capture_hooks": brief_hooks,
         "permissions": permissions,
         "sources": sources,
@@ -2010,6 +2012,19 @@ def render_text(report: Dict[str, Any]) -> str:
             f"permissions: {permissions['status']}"
             + (f"; browser cookies: {browser.get('status')}" if browser else "")
         )
+
+    rc = report.get("rust_core") or {}
+    if rc:
+        if rc.get("active"):
+            ver = f" v{rc['installed_version']}" if rc.get("installed_version") else ""
+            lines.append(f"compute core: rust (last30days-core{ver}, {rc.get('binary_path')})")
+        elif rc.get("mode") == "python":
+            lines.append("compute core: python (LAST30DAYS_ENGINE=python)")
+        else:
+            lines.append(
+                "compute core: python fallback (last30days-core binary not installed; "
+                "run `last30days.py setup` to install)"
+            )
 
     run_ev = report.get("run_evidence") or {}
     if run_ev.get("present") and run_ev.get("fresh"):

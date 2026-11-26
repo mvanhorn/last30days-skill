@@ -848,15 +848,15 @@ MCP returns the completed report with `status: "degraded"` and a visible coverag
 
 ---
 
-## Optional Rust accelerator
+## Native Rust compute core
 
-`last30days-core` is an optional standalone native binary that accelerates CPU-bound local work (parallel library Markdown scanning and redaction, near-duplicate filtering, candidate clustering, and signal annotation). End users never need Rust installed; when no binary is present, the Python engine runs unchanged.
+`last30days-core` is the built-in default native binary for CPU-bound local work (parallel library Markdown scanning and redaction, near-duplicate filtering, candidate clustering, and signal annotation). End users never need Rust installed: `setup` and the first live local run download the matching prebuilt binary from GitHub Releases, verify its SHA-256 checksum against `last30days-core-SHA256SUMS.txt` and its protocol handshake, and install it to `~/.local/share/last30days/bin/last30days-core` (upgrading automatically when the skill version bumps). If a platform has no prebuilt binary or downloads are blocked offline, the engine falls back automatically to pure Python. Run `doctor` to see whether Rust core or Python fallback is active.
 
 These variables are read from the process environment (not from `.env` files):
 
 | Env var | Default | Accepted values | Behavior |
 | --- | --- | --- | --- |
-| `LAST30DAYS_ENGINE` | `auto` | `auto`, `rust` (`rs`, `force`, `required`), `python` (`py`, `off`, `0`, `false`) | Selects the local compute backend. `auto` uses `last30days-core` when a compatible binary is found and falls back silently to pure Python otherwise. `rust` requires the native binary and raises an error if it is missing or fails. `python` disables Rust acceleration completely. |
+| `LAST30DAYS_ENGINE` | `auto` | `auto`, `rust` (`rs`, `force`, `required`), `python` (`py`, `off`, `0`, `false`) | Selects the local compute backend. `auto` uses `last30days-core` by default (auto-installing during `setup` and first live run) and falls back silently to pure Python if unavailable. `rust` requires the native binary and raises an error if it is missing or fails. `python` disables Rust completely and skips binary downloads. |
 | `LAST30DAYS_RUST_BIN` | unset | Path to a `last30days-core` executable | Overrides binary discovery. Lookup order when unset or empty: `LAST30DAYS_RUST_BIN`, `~/.local/share/last30days/bin/last30days-core` (`.exe` on Windows), `<repo>/rust/target/release/last30days-core`, then `last30days-core` on `PATH`. |
 | `LAST30DAYS_RUST_TIMEOUT` | `30` (seconds) | Positive finite number of seconds | Per-request deadline for the persistent stdio Rust worker (startup handshake is capped at `min(5, timeout)`). On timeout, the worker is killed; `auto` mode falls back to pure Python for that binary and `rust` mode raises `RustAccelError`. Invalid, zero, or negative values fall back to `30`. |
 
