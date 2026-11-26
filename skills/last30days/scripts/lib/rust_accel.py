@@ -454,6 +454,8 @@ def install_release_binary(
         except OSError:
             pass
         _POOL._disabled_for_bin = None
+        _POOL._verified_bin = str(managed_path)
+        _POOL._last_error = None
         return {
             "installed": True,
             "action": "upgraded" if had_managed else "installed",
@@ -546,34 +548,61 @@ def status() -> dict[str, Any]:
     if mode == "python":
         return {
             "mode": mode,
+            "state": "disabled",
             "active": False,
+            "verified": False,
             "binary_path": None,
             "installed_version": None,
             "expected_version": expected,
             "platform_asset": asset,
             "fallback": "python",
+            "detail": "LAST30DAYS_ENGINE=python",
         }
     bin_path = find_binary()
     if bin_path is None:
         return {
             "mode": mode,
+            "state": "not_installed",
             "active": False,
+            "verified": False,
             "binary_path": None,
             "installed_version": None,
             "expected_version": expected,
             "platform_asset": asset,
             "fallback": "python",
+            "detail": None,
         }
     path_obj = Path(bin_path)
     stamped = _read_stamp(path_obj.parent / _VERSION_STAMP_NAME) if path_obj == install_bin_path() else None
+    with _POOL._lock:
+        disabled = mode == "auto" and _POOL._disabled_for_bin == bin_path
+        verified_live = _POOL._verified_bin == bin_path
+        last_error = _POOL._last_error
+    if disabled:
+        return {
+            "mode": mode,
+            "state": "disabled_after_error",
+            "active": False,
+            "verified": False,
+            "binary_path": bin_path,
+            "installed_version": stamped,
+            "expected_version": expected,
+            "platform_asset": asset,
+            "fallback": "python",
+            "detail": last_error or "worker disabled after runtime failure",
+        }
+    verified = verified_live or (path_obj == install_bin_path() and stamped is not None)
     return {
         "mode": mode,
-        "active": True,
+        "state": "active" if verified else "discovered_unverified",
+        "active": verified,
+        "verified": verified,
         "binary_path": bin_path,
         "installed_version": stamped,
         "expected_version": expected,
         "platform_asset": asset,
-        "fallback": None,
+        "fallback": None if verified else "python (unverified)",
+        "detail": None if verified else "binary discovered on disk; protocol not yet verified",
     }
 
 
@@ -586,6 +615,8 @@ class _WorkerPool:
         self._bin_path: str | None = None
         self._pid: int = os.getpid()
         self._disabled_for_bin: str | None = None
+        self._verified_bin: str | None = None
+        self._last_error: str | None = None
         self._read_buf = bytearray()
 
     @staticmethod
@@ -650,6 +681,8 @@ class _WorkerPool:
             self._bin_path = None
             self._pid = current_pid
             self._disabled_for_bin = None
+            self._verified_bin = None
+            self._last_error = None
             self._read_buf.clear()
 
         if self._proc is not None and self._proc.poll() is None and self._bin_path == bin_path:
@@ -677,6 +710,8 @@ class _WorkerPool:
             raise RustAccelError(
                 f"incompatible last30days-core binary at {bin_path}: {resp!r}"
             )
+        self._verified_bin = bin_path
+        self._last_error = None
         return proc
 
     def _roundtrip_posix_locked(
@@ -821,12 +856,16 @@ class _WorkerPool:
                 if mode == "rust":
                     raise RustAccelError(f"last30days-core call failed: {exc}") from exc
                 self._disabled_for_bin = bin_path
+                self._verified_bin = None
+                self._last_error = str(exc)
                 return None
             except (OSError, ValueError, RustAccelError) as exc:
                 self._reset_locked()
                 if mode == "rust":
                     raise RustAccelError(f"last30days-core call failed: {exc}") from exc
                 self._disabled_for_bin = bin_path
+                self._verified_bin = None
+                self._last_error = str(exc)
                 return None
 
         if resp.get("status") != "ok":

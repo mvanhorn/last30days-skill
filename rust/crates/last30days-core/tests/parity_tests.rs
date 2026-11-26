@@ -685,3 +685,17 @@ fn markdown_unicode_line_breaks_redact_private_sections() {
         assert_eq!(redacted, format!("Intro{brk}## Public\nVisible\n"));
     }
 }
+
+#[test]
+fn markdown_nbsp_from_your_files_label_in_legacy_cluster_is_redacted() {
+    let doc = "## Ranked Evidence Clusters\n### 1. Notes\n\u{00a0}**From your files**\nSecret\n";
+    let redacted = markdown::public_markdown(doc);
+    assert!(
+        !redacted.contains("Secret"),
+        "private note leaked when preceded by NBSP: {redacted:?}"
+    );
+    assert!(
+        !redacted.contains("From your files"),
+        "private label leaked when preceded by NBSP: {redacted:?}"
+    );
+}

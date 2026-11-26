@@ -568,7 +568,11 @@ def test_cli_preflight_omits_disabled_corpus_and_library_writes(monkeypatch, cap
 
     assert cli.main() == 0
     plan = json.loads(capsys.readouterr().out)
-    assert {write["kind"] for write in plan["local_writes"] + plan["conditional_writes"]} == {"research_cache"}
+    from lib import rust_accel
+    expected_kinds = {"research_cache"}
+    if rust_accel.would_auto_install_on_run():
+        expected_kinds.add("native_core_on_first_run")
+    assert {write["kind"] for write in plan["local_writes"] + plan["conditional_writes"]} == expected_kinds
 
 
 def test_cli_preflight_json_returns_structured_contract(monkeypatch):
@@ -581,8 +585,14 @@ def test_cli_preflight_json_returns_structured_contract(monkeypatch):
             assert cli.main() == 0
 
     payload = json.loads(stdout.getvalue())
+    from lib import rust_accel
+    expected_conditional = (
+        [{"kind": "native_core_on_first_run", "path": str(rust_accel.install_bin_path())}]
+        if rust_accel.would_auto_install_on_run()
+        else []
+    )
     assert payload["local_reads"]["browser_cookies"]["status"] == "off"
-    assert payload["conditional_writes"] == []
+    assert payload["conditional_writes"] == expected_conditional
     assert payload["safe"] is True
 
 

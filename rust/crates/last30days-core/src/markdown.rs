@@ -79,7 +79,7 @@ static CORPUS_FOOTER_RE: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 static BOLD_FROM_YOUR_FILES_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?im)^[ \t]*(?:\*\*|__)?From your files:?(?:\*\*|__)?:?[ \t]*$")
+    Regex::new(r"(?im)^\s*(?:\*\*|__)?From your files:?(?:\*\*|__)?:?\s*$")
         .expect("BOLD_FROM_YOUR_FILES_RE is a valid literal regex")
 });
 

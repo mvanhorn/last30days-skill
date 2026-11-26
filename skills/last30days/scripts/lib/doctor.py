@@ -2033,6 +2033,16 @@ def render_text(report: Dict[str, Any]) -> str:
             lines.append(f"compute core: rust (last30days-core{ver}, {rc.get('binary_path')})")
         elif rc.get("mode") == "python":
             lines.append("compute core: python (LAST30DAYS_ENGINE=python)")
+        elif rc.get("state") == "disabled_after_error":
+            detail = rc.get("detail") or "worker error"
+            lines.append(
+                f"compute core: python fallback (last30days-core disabled after runtime error: {detail})"
+            )
+        elif rc.get("binary_path"):
+            lines.append(
+                f"compute core: rust binary discovered at {rc.get('binary_path')} "
+                "(protocol not yet verified)"
+            )
         else:
             lines.append(
                 "compute core: python fallback (last30days-core binary not installed; "

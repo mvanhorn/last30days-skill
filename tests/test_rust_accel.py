@@ -724,6 +724,49 @@ def test_public_markdown_unicode_line_breaks_parity(monkeypatch):
         assert rs_out == py_out, f"rust mismatch for {brk!r}"
         assert auto_out == py_out, f"auto mismatch for {brk!r}"
 
+    nbsp_doc = f"{padding}## Ranked Evidence Clusters\n### 1. Notes\n\u00a0**From your files**\nSecret\n"
+    monkeypatch.setenv("LAST30DAYS_ENGINE", "python")
+    py_nbsp = library.public_markdown(nbsp_doc)
+    monkeypatch.setenv("LAST30DAYS_ENGINE", "rust")
+    rs_nbsp = library.public_markdown(nbsp_doc)
+    assert "Secret" not in py_nbsp
+    assert rs_nbsp == py_nbsp
+
+
+def test_status_distinguishes_unverified_and_disabled_worker(tmp_path: Path, monkeypatch):
+    fake_bin = tmp_path / "custom-core"
+    fake_bin.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    fake_bin.chmod(fake_bin.stat().st_mode | stat.S_IXUSR)
+
+    monkeypatch.setenv("LAST30DAYS_ENGINE", "auto")
+    monkeypatch.setenv("LAST30DAYS_RUST_BIN", str(fake_bin))
+    monkeypatch.setattr(rust_accel, "_candidate_binary_paths", lambda: [fake_bin])
+    rust_accel.shutdown()
+    rust_accel._POOL._disabled_for_bin = None
+    rust_accel._POOL._verified_bin = None
+    rust_accel._POOL._last_error = None
+    try:
+        st_unverified = rust_accel.status()
+        assert st_unverified["active"] is False
+        assert st_unverified["verified"] is False
+        assert st_unverified["state"] == "discovered_unverified"
+        assert st_unverified["binary_path"] == str(fake_bin)
+
+        # Trigger a failing call in auto mode -> worker disables itself and status reflects it.
+        assert rust_accel.dedupe_kept_indices([{"mode": "fuzzy", "text": "hello"}], 0.7) is None
+        st_disabled = rust_accel.status()
+        assert st_disabled["active"] is False
+        assert st_disabled["state"] == "disabled_after_error"
+        assert st_disabled["fallback"] == "python"
+        assert st_disabled["detail"]
+        rendered = doctor.render_text(doctor.build_report({}))
+        assert "disabled after runtime error" in rendered
+    finally:
+        rust_accel.shutdown()
+        rust_accel._POOL._disabled_for_bin = None
+        rust_accel._POOL._verified_bin = None
+        rust_accel._POOL._last_error = None
+
 
 def test_preflight_discloses_native_core_auto_install_when_missing(tmp_path: Path, monkeypatch, capsys):
     import json
