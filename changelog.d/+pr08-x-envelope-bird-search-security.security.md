@@ -1,1 +1,0 @@
-Harden X envelope HTML-entity sanitization against downstream unescape bypasses, validate cached Bird GraphQL query IDs and session cookie tokens, redact X session cookies across all Bird Python and Node error paths, and enforce `--` end-of-options separation with strict count validation across the Python-to-Node `bird-search` CLI boundary.
