@@ -221,6 +221,22 @@ def _research_deadline(config: dict[str, Any], seconds: float) -> float:
     return min(deadline, inherited) if inherited is not None else deadline
 
 
+def _x_lane_deadline(config: dict[str, Any], seconds: float) -> float:
+    """A supplemental X lane's own budget, never past the run's cutoff.
+
+    ``run()`` records its finalization cutoff in ``_finalization_deadline`` when
+    an explicit X budget raised the stream wait. The supplemental handle lanes
+    start after the main collection, so left on ``_research_deadline`` alone
+    their own budget can outlive that cutoff: a 200s X stream that uses most of
+    the window leaves a fresh 150s grok lane (or 90s bird/xapi lane) running
+    past the host's finalization deadline. Clamp every supplemental lane to the
+    recorded cutoff, and keep the previous behaviour when no cutoff was recorded.
+    """
+    deadline = _research_deadline(config, seconds)
+    cutoff = config.get("_finalization_deadline")
+    return min(deadline, cutoff) if cutoff is not None else deadline
+
+
 def _configured_x_budget_seconds(config: dict[str, Any]) -> float | None:
     """The explicit LAST30DAYS_X_BUDGET_SECONDS value, or None when unusable."""
     raw = config.get("LAST30DAYS_X_BUDGET_SECONDS")
@@ -3494,7 +3510,8 @@ def run(
     # it is set and X will be submitted, the raise is capped by this run's
     # finalization cutoff: if less time remains, the worker gets exactly the
     # cutoff as its deadline. The cutoff is recorded in the run config so later
-    # X lanes (supplemental searches and thin-result retries) share that bound.
+    # X work — the supplemental handle lanes and the thin-result retries'
+    # chain calls — clamps to that same bound.
     # The batch takes the absolute deadline, never the relative budget, so any
     # time spent submitting the streams cannot extend the collector's wait.
     stream_wait = STREAM_FUTURE_TIMEOUT_SECONDS
@@ -6849,12 +6866,15 @@ def _run_supplemental_searches(
     # never @-mentions them, so the two lanes reach disjoint sets.
     _name_lane = None
     cancel = config.get("_enrich_cancel")
-    supplemental_deadline = _research_deadline(config, x_api.LANE_BUDGET_SECONDS)
+    # Both supplemental budgets clamp to the run's recorded finalization cutoff:
+    # the lanes run after the main collection, so their own budget alone could
+    # outlive the window the raised X stream wait was capped to.
+    supplemental_deadline = _x_lane_deadline(config, x_api.LANE_BUDGET_SECONDS)
 
     if primary == "grok":
         # One budget shared by all three lanes, started here rather than per
         # lane: the point is to bound the total, not each part.
-        lane_deadline = _research_deadline(config, grok_x.LANE_BUDGET_SECONDS)
+        lane_deadline = _x_lane_deadline(config, grok_x.LANE_BUDGET_SECONDS)
 
         def _from_lane(hs: list, count: int, and_topic: bool = False) -> tuple[list, bool]:
             items, revoked = grok_x.search_handles(
