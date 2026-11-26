@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import http.server as stdlib_http
 import json
-import socket
 import threading
+import urllib.error
 import urllib.request
 
 import pytest
@@ -183,17 +183,32 @@ def test_scrapecreators_loopback_override_bypasses_proxy(monkeypatch, serve):
 def test_get_text_failure_log_masks_credential_query_params(monkeypatch, capsys):
     """A failed fetch logs its URL; credential query params must be masked."""
     monkeypatch.setenv("LAST30DAYS_DEBUG", "1")
-    # Bound but never listening: the connection is refused while the port stays
-    # owned by this test, which the offline guard requires.
-    probe = socket.socket()
-    try:
-        probe.bind(("127.0.0.1", 0))
-        port = probe.getsockname()[1]
-        url = f"http://127.0.0.1:{port}/feed?api_key=DUMMY-SECRET-1234"
-        assert http.get_text(url, timeout=1, retries=1) is None
-    finally:
-        probe.close()
+
+    def _fail_open(*_args, **_kwargs):
+        raise urllib.error.URLError("connection refused")
+
+    monkeypatch.setattr(http, "_open_request", _fail_open)
+    url = "http://127.0.0.1:8080/feed?api_key=DUMMY-SECRET-1234"
+    assert http.get_text(url, timeout=1, retries=1) is None
 
     logged = capsys.readouterr().err
-    assert "DUMMY-SECRET-1234" not in logged
-    assert "api_key=" in logged
+    get_text_lines = [line for line in logged.splitlines() if "get_text failed" in line]
+    assert get_text_lines, logged
+    assert all("DUMMY-SECRET-1234" not in line for line in get_text_lines)
+    assert any("api_key=%3Credacted%3E" in line or "api_key=<redacted>" in line for line in get_text_lines)
+
+
+def test_get_text_failure_log_omits_unparseable_url_with_secret(monkeypatch, capsys):
+    """Malformed URLs that fail urlsplit must never be logged raw with secrets."""
+    monkeypatch.setenv("LAST30DAYS_DEBUG", "1")
+    monkeypatch.setattr(
+        http,
+        "request",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(http.HTTPError("invalid URL")),
+    )
+    malformed = "http://[::1/feed?api_key=DUMMY-SECRET-5678"
+    assert http.get_text(malformed, timeout=1, retries=1) is None
+
+    logged = capsys.readouterr().err
+    assert "DUMMY-SECRET-5678" not in logged
+    assert "<unparseable url>" in logged

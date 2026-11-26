@@ -880,6 +880,21 @@ def _scrub_fixture_url(url: str) -> str:
         return url
 
 
+def _scrub_log_url(url: str) -> str:
+    """Redact secret query parameters for logs, omitting unparseable URLs entirely."""
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return "<unparseable url>"
+    query = urlencode(
+        [
+            (key, "<redacted>" if _is_secret_key(key) else value)
+            for key, value in parse_qsl(parts.query, keep_blank_values=True)
+        ]
+    )
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, query, parts.fragment))
+
+
 def _fixture_request(
     method: str,
     url: str,
@@ -2212,7 +2227,7 @@ def get_text(
             **bounds,
         )
     except HTTPError as e:
-        log(f"get_text failed ({e}): {_scrub_fixture_url(url)}")
+        log(f"get_text failed ({e}): {_scrub_log_url(url)}")
         return None
     if landed is None:
         return answer
