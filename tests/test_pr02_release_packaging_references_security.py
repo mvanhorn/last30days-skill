@@ -402,13 +402,13 @@ def test_release_workflow_structure_permissions_pinning_and_zizmor_safety() -> N
     assert validate_job["permissions"] == {"contents": "read"}
     assert set(validate_job.get("outputs", {}).keys()) >= {"tag", "version", "commit"}
 
-    for gated_job in ("build-skill", "build-mcpb"):
+    for gated_job in ("build-skill", "build-mcpb", "build-rust-core"):
         needs = jobs[gated_job].get("needs")
         needs_list = [needs] if isinstance(needs, str) else list(needs or [])
         assert "validate" in needs_list, f"{gated_job} must depend on validate"
 
     release_needs = jobs["release"].get("needs") or []
-    assert {"validate", "build-skill", "build-mcpb"} <= set(release_needs)
+    assert {"validate", "build-skill", "build-mcpb", "build-rust-core"} <= set(release_needs)
 
     checkout_count = 0
     for job_name, job in jobs.items():
@@ -433,7 +433,7 @@ def test_release_workflow_structure_permissions_pinning_and_zizmor_safety() -> N
                     f"{job_name}/{step.get('name')}: never inline GitHub expressions in run:"
                 )
 
-    assert checkout_count == 4
+    assert checkout_count == 5
 
     mcpb_build_step = next(
         s for s in jobs["build-mcpb"]["steps"] if s.get("name") == "Build MCP binary"
