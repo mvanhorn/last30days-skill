@@ -618,6 +618,67 @@ def test_expected_skill_version_reads_mcp_sentinel_without_skill_md(tmp_path: Pa
     assert rust_accel.expected_skill_version(fake_mod) is None
 
 
+@requires_rust
+def test_library_sync_rust_preserves_distinct_topics_sharing_slug(tmp_path: Path, monkeypatch):
+    memory = tmp_path / "memory"
+    finished = memory / "finished"
+    finished.mkdir(parents=True)
+    briefs = tmp_path / "briefs"
+    (finished / "c-2026-07-10.md").write_text(
+        "🌐 last30days · C# · Jun 10 to Jul 10, 2026 · v4.6.0\n\nC# finished brief.\n",
+        encoding="utf-8",
+    )
+    (memory / "c-raw.md").write_text(
+        "# last30days v4.6.0: C++\n\n- Date range: 2026-06-10 to 2026-07-10\n\nC++ raw report.\n",
+        encoding="utf-8",
+    )
+    (memory / "c-raw-2026-07-10.md").write_text(
+        "# last30days v4.6.0: c#\n\n- Date range: 2026-06-10 to 2026-07-10\n\nSuperseded C# raw.\n",
+        encoding="utf-8",
+    )
+
+    py_db = tmp_path / "py.db"
+    rs_db = tmp_path / "rs.db"
+    monkeypatch.setenv("LAST30DAYS_ENGINE", "python")
+    py_sync = library_index.sync_library(memory, briefs, db_path=py_db)
+    monkeypatch.setenv("LAST30DAYS_ENGINE", "rust")
+    rs_sync = library_index.sync_library(memory, briefs, db_path=rs_db)
+
+    assert (rs_sync.indexed, rs_sync.removed, rs_sync.unchanged) == (2, 0, 0)
+    assert (py_sync.indexed, py_sync.removed, py_sync.unchanged) == (2, 0, 0)
+    found_topics = {
+        m.topic
+        for m in library_index.search("C", db_path=rs_db, store_db_path=tmp_path / "none.db")
+    }
+    assert found_topics == {"C#", "C++"}
+    assert len(library_index.search("Superseded", db_path=rs_db, store_db_path=tmp_path / "none.db")) == 0
+
+
+@requires_rust
+def test_v2ex_signal_parity(monkeypatch):
+    items_py = [
+        schema.SourceItem(
+            item_id="v2ex-1",
+            source="v2ex",
+            title="Rust async runtime discussion",
+            body="Comparing Tokio and smol in production.",
+            url="https://www.v2ex.com/t/12345",
+            published_at="2026-11-25",
+            engagement={"replies": 85},
+        )
+    ]
+    items_rs = [
+        schema.SourceItem(**{**items_py[0].__dict__, "engagement": dict(items_py[0].engagement)})
+    ]
+    monkeypatch.setenv("LAST30DAYS_ENGINE", "python")
+    py_res = signals.annotate_stream(items_py, "Rust async runtime", "balanced_recent", reference_date="2026-11-26")
+    monkeypatch.setenv("LAST30DAYS_ENGINE", "rust")
+    rs_res = signals.annotate_stream(items_rs, "Rust async runtime", "balanced_recent", reference_date="2026-11-26")
+    assert rs_res[0].source_quality == pytest.approx(py_res[0].source_quality, abs=1e-9)
+    assert rs_res[0].engagement_score == py_res[0].engagement_score
+    assert rs_res[0].local_rank_score == pytest.approx(py_res[0].local_rank_score, abs=1e-9)
+
+
 def test_setup_status_and_doctor_render_rust_core(monkeypatch):
     text = setup_wizard.get_setup_status_text(
         {

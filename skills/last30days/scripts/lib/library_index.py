@@ -335,6 +335,7 @@ def _sync_library_rust(
                 "size": req["_size"],
                 "entry_id": meta["entry_id"],
                 "slug": meta["slug"],
+                "topic": meta["topic"],
                 "published_date": meta["published_date"],
                 "stem": req["stem"],
                 "source_format": meta["source_format"],
@@ -356,6 +357,7 @@ def _sync_library_rust(
                 "size": file_size,
                 "entry_id": entry.entry_id,
                 "slug": entry.slug,
+                "topic": entry.topic,
                 "published_date": entry.published_date.isoformat(),
                 "stem": entry.source_path.stem,
                 "source_format": entry.source_format,
@@ -367,9 +369,10 @@ def _sync_library_rust(
             }
         )
 
-    # Mirror library._suppress_superseded_raw
+    # Mirror library._suppress_superseded_raw (requires full topic agreement
+    # alongside slug and date so distinct topics such as C# and C++ stay visible).
     finished_keys = {
-        (rec["slug"], rec["published_date"])
+        (rec["slug"], str(rec["topic"]).casefold(), rec["published_date"])
         for rec in preferred.values()
         if rec["source_format"] == "finished-brief" and not rec["unbounded_private"]
     }
@@ -379,7 +382,7 @@ def _sync_library_rust(
             for eid, rec in preferred.items()
             if not (
                 rec["source_format"] == "markdown"
-                and (rec["slug"], rec["published_date"]) in finished_keys
+                and (rec["slug"], str(rec["topic"]).casefold(), rec["published_date"]) in finished_keys
                 and library._is_unsuffixed_raw_dump(str(rec["stem"]))
             )
         }
