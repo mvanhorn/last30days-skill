@@ -627,7 +627,7 @@ class TestHigh022PostPlanWeightNormalization:
 
     def test_ensure_devto_in_plan_uses_mean_weight(self):
         plan = _make_plan(self.TEN_SOURCES)
-        pipeline._ensure_devto_in_plan(plan, [*self.TEN_SOURCES, "devto"])
+        pipeline._ensure_opt_in_source_in_plan(plan, [*self.TEN_SOURCES, "devto"], "devto")
 
         assert sum(plan.source_weights.values()) == pytest.approx(1.0)
         assert plan.source_weights["devto"] == pytest.approx(1.0 / 11)
@@ -686,7 +686,7 @@ class TestHigh022PostPlanWeightNormalization:
 
         pipeline._ensure_unplanned_lanes_in_host_plan(plan, available, installed=True)
         pipeline._ensure_company_jobs_in_host_plan(plan, available, "ticker ACME")
-        pipeline._ensure_devto_in_plan(plan, available)
+        pipeline._ensure_opt_in_source_in_plan(plan, available, "devto")
         pipeline._ensure_perplexity_in_plan(plan, "Acme Corp", available, force=True)
 
         assert sum(plan.source_weights.values()) == pytest.approx(1.0)
