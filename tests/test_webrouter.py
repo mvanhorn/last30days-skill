@@ -112,8 +112,22 @@ def test_cancelled_or_expired_run_stops_before_spawning(on_path):
     cancel.set()
     with patch.object(subproc, "run_with_timeout") as run:
         assert webrouter.search("topic", WINDOW, cancel=cancel)[0] == []
-        assert webrouter.search("topic", WINDOW, deadline_monotonic=0.0)[0] == []
+        with pytest.raises(RuntimeError, match="search deadline exceeded"):
+            webrouter.search("topic", WINDOW, deadline_monotonic=0.0)
     run.assert_not_called()
+
+
+@pytest.mark.parametrize("attempt", [1, 2])
+def test_deadline_exhausted_by_provider_reports_failure(on_path, attempt):
+    responses = [_result(_payload("you-mcp", []))] * (attempt - 1)
+    responses.append(subproc.SubprocTimeout("deadline exceeded"))
+    with patch.object(webrouter, "time") as clock, patch.object(
+        subproc, "run_with_timeout", side_effect=responses
+    ) as run:
+        clock.monotonic.side_effect = [1.0] * attempt + [2.0]
+        with pytest.raises(RuntimeError, match="search deadline exceeded"):
+            webrouter.search("topic", WINDOW, deadline_monotonic=2.0)
+    assert run.call_count == attempt
 
 
 def test_missing_cli_raises_with_the_install_command(monkeypatch):

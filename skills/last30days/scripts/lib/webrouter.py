@@ -188,8 +188,8 @@ def search(
 ) -> Tuple[List[dict], dict]:
     """Search through the keyless chain; the first backend with dated results wins.
 
-    Raises RuntimeError when the CLI is missing or every backend failed, so the
-    web source reports a failure instead of an empty result.
+    Raises RuntimeError when the CLI is missing, the deadline expires, or
+    every backend fails.
     """
     if not is_available():
         raise RuntimeError(f"{CLI_BIN} is not on PATH; install it with: uv tool install webrouter")
@@ -199,10 +199,12 @@ def search(
         if cancel is not None and cancel.is_set():
             break
         if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
-            break
+            raise RuntimeError("WebRouter search deadline exceeded")
         try:
             data = _run(_command(query, provider, count, recency), deadline_monotonic, cancel)
         except RuntimeError as exc:
+            if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
+                raise RuntimeError("WebRouter search deadline exceeded") from exc
             _log(f"{provider} failed: {exc}")
             errors.append(f"{provider}: {exc}")
             continue
