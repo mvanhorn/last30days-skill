@@ -215,7 +215,7 @@ Check governing formatting/citation instructions first. Skip a conflicting prese
 
 If one regeneration cannot satisfy a data-backed check, display the best supported result and name the unsatisfied check. Never fabricate missing evidence.
 
-Final checklist - mark each box before displaying the synthesis. An unchecked box means go back to the matching self-check item above, fix it (regenerating at most once), and return here.
+Final checklist - mark each box before displaying the synthesis. An unchecked box means go back to the matching self-check item above, fix it (regenerating at most once), and return here. Two exits stay allowed and need no go-back: a data-absent check is skipped silently per the rule above, and after the one permitted regeneration an unresolved check is presented as the best supported result with the unsatisfied check named.
 
 - [ ] Item 1 - narrative paragraphs use the `**Headline phrase** -` shape
 - [ ] Item 2 - fenced footer relayed exactly
@@ -226,7 +226,7 @@ Final checklist - mark each box before displaying the synthesis. An unchecked bo
 - [ ] Item 7 - engagement counts only where allowed
 - [ ] Item 8 - local-engine emit/plan contract verified
 - [ ] Item 9 - person-topic handles resolved
-- [ ] All boxes above are checked; nothing to go back for
+- [ ] All boxes above are checked, or each remaining one records an allowed exit (data absent, or named after the one permitted regeneration)
 
 ## HTML and follow-up handoff
 
