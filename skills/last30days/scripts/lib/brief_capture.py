@@ -253,7 +253,7 @@ def save_finished_brief(brief: CapturedBrief, save_dir: Path | str) -> SaveResul
     finished_dir = base_dir / FINISHED_SUBDIR
     _ensure_finished_dir(finished_dir, private=brief.is_private)
 
-    stem_prefix = f"{brief.slug}-{brief.published_date.isoformat()}"
+    stem_prefix = f"{library.filename_slug(brief.slug)}-{brief.published_date.isoformat()}"
     candidates = [finished_dir / f"{stem_prefix}.md"]
     candidates.extend(finished_dir / f"{stem_prefix}-{idx}.md" for idx in range(2, 100))
 

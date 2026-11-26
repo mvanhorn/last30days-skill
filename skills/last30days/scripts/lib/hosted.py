@@ -38,7 +38,7 @@ import sys
 import time
 from urllib.parse import urlsplit, urlunsplit
 
-from . import env, http, providers, usage
+from . import env, http, library, providers, usage
 from .log import source_log
 
 # Distinct exit code for the clarify gate so the invoking model can tell
@@ -345,8 +345,7 @@ def _poll_with_retry(search_id: str) -> dict | None:
 
 
 def _slugify(value: str) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
-    return slug or "last30days"
+    return library.filename_slug(library.slugify(value))
 
 
 def _sanitize_suffix(suffix: str) -> str:

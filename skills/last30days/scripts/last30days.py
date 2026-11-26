@@ -272,14 +272,9 @@ def activate_telegram_for_explicit_sources(
 
 
 def slugify(value: str, max_length: int = 180) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
-    if len(slug) > max_length:
-        # Filenames built from long topics can exceed the OS 255-byte limit
-        # (macOS errno 63). Truncate and append a hash of the full value so
-        # distinct long topics still get distinct, deterministic names.
-        digest = hashlib.sha1(slug.encode("utf-8")).hexdigest()[:10]
-        slug = f"{slug[:max_length].rstrip('-')}-{digest}"
-    return slug or "last30days"
+    from lib import library
+
+    return library.filename_slug(library.slugify(value), max_length)
 
 
 def sanitize_suffix(suffix: str) -> str:

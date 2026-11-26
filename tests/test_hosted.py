@@ -546,6 +546,24 @@ def test_save_dir_writes_raw_markdown(remote_env, monkeypatch, capsys, tmp_path)
     assert TEST_KEY not in captured.err
 
 
+def test_save_dir_shortens_a_long_topic_like_the_local_save(
+    remote_env, monkeypatch, capsys, tmp_path,
+):
+    monkeypatch.setattr(hosted.http, "post", lambda *a, **k: dict(SUBMIT_OK))
+    poll_rows = [dict(POLL_COMPLETE)]
+    monkeypatch.setattr(hosted.http, "get", lambda *a, **k: poll_rows.pop(0))
+    long_topic = "multi model comparison across providers and pricing tiers " * 8
+
+    rc = hosted.run_hosted(long_topic, "default", emit="compact",
+                           save_dir=str(tmp_path), save_suffix="")
+    capsys.readouterr()
+
+    assert rc == 0
+    saved = tmp_path / f"{cli.slugify(long_topic)}-raw.md"
+    assert saved.exists()
+    assert "# Raw markdown" in saved.read_text(encoding="utf-8")
+
+
 def test_save_dir_uses_unique_dated_fallback(remote_env, monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(hosted.http, "post", lambda *a, **k: dict(SUBMIT_OK))
     poll_rows = [dict(POLL_COMPLETE)]
