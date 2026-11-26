@@ -85,8 +85,18 @@ def test_search_github_title_only_false_omits_in_title():
 def test_pipeline_github_retries_without_in_title_when_expanded_query_misses():
     calls = []
 
-    def _fake_search(query, from_date, to_date, depth="default", token=None, *, title_only=True):
-        calls.append((query, title_only))
+    def _fake_search(
+        query,
+        from_date,
+        to_date,
+        depth="default",
+        token=None,
+        *,
+        title_only=True,
+        deadline=None,
+        stopped=None,
+    ):
+        calls.append((query, title_only, deadline, callable(stopped)))
         if title_only:
             return {
                 "items": [],
@@ -112,6 +122,8 @@ def test_pipeline_github_retries_without_in_title_when_expanded_query_misses():
         ranking_query="Claude Code",
         sources=["github"],
     )
+    import time
+    future_deadline = time.monotonic() + 60.0
     with patch.object(github, "resolve_token", return_value=None), patch.object(
         github, "search_github", side_effect=_fake_search
     ):
@@ -119,7 +131,7 @@ def test_pipeline_github_retries_without_in_title_when_expanded_query_misses():
             topic="Claude Code",
             subquery=sq,
             source="github",
-            config={},
+            config={"_research_deadline": future_deadline},
             depth="default",
             date_range=("2026-03-01", "2026-03-31"),
             runtime=schema.ProviderRuntime(
@@ -132,8 +144,8 @@ def test_pipeline_github_retries_without_in_title_when_expanded_query_misses():
         )
 
     assert calls == [
-        ("Claude Code subagents worktrees release", True),
-        ("Claude Code subagents worktrees release", False),
+        ("Claude Code subagents worktrees release", True, future_deadline, True),
+        ("Claude Code subagents worktrees release", False, future_deadline, True),
     ]
     assert len(items) == 1
     assert items[0]["title"] == "Claude Code hooks stop firing"
@@ -142,7 +154,17 @@ def test_pipeline_github_retries_without_in_title_when_expanded_query_misses():
 def test_pipeline_github_does_not_retry_without_in_title_on_error():
     calls = []
 
-    def _fake_search(query, from_date, to_date, depth="default", token=None, *, title_only=True):
+    def _fake_search(
+        query,
+        from_date,
+        to_date,
+        depth="default",
+        token=None,
+        *,
+        title_only=True,
+        deadline=None,
+        stopped=None,
+    ):
         calls.append(title_only)
         return {
             "items": [],
@@ -177,3 +199,93 @@ def test_pipeline_github_does_not_retry_without_in_title_on_error():
 
     assert calls == [True]
     assert items == []
+
+
+def test_pipeline_github_skips_fallback_retry_when_cancelled_or_timed_out():
+    import threading
+    import time
+
+    for case in ("cancelled", "expired"):
+        calls = []
+        cancel = threading.Event()
+        config = {"_enrich_cancel": cancel}
+        if case == "expired":
+            config["_research_deadline"] = time.monotonic() + 60.0
+
+        def _fake_search(
+            query,
+            from_date,
+            to_date,
+            depth="default",
+            token=None,
+            *,
+            title_only=True,
+            deadline=None,
+            stopped=None,
+        ):
+            calls.append(title_only)
+            if case == "cancelled":
+                cancel.set()
+            else:
+                config["_research_deadline"] = time.monotonic() - 1.0
+            return {
+                "items": [],
+                "context": {"core": query, "from_date": from_date, "to_date": to_date, "count": 30},
+            }
+
+        sq = schema.SubQuery(
+            label="primary",
+            search_query="Claude Code subagents",
+            ranking_query="Claude Code",
+            sources=["github"],
+        )
+        with patch.object(github, "resolve_token", return_value="tok"), patch.object(
+            github, "search_github", side_effect=_fake_search
+        ), patch.object(github, "enrich_with_comments") as enrich_mock:
+            items, _artifact = pipeline._retrieve_stream_impl(
+                topic="Claude Code",
+                subquery=sq,
+                source="github",
+                config=config,
+                depth="default",
+                date_range=("2026-03-01", "2026-03-31"),
+                runtime=schema.ProviderRuntime(
+                    reasoning_provider="local",
+                    planner_model="local",
+                    rerank_model="local",
+                ),
+                mock=False,
+                raw_topic="Claude Code",
+            )
+
+        assert calls == [True], f"expected no fallback retry for {case}"
+        assert items == []
+        enrich_mock.assert_not_called()
+
+
+def test_search_github_clamps_timeout_and_stops_between_partitions():
+    import time
+
+    seen_timeouts = []
+    stop_flag = {"stopped": False}
+
+    def _fake_fetch(url, token=None, timeout=15, failure_out=None):
+        seen_timeouts.append(timeout)
+        stop_flag["stopped"] = True
+        return {"items": []}
+
+    with patch.object(github, "_resolve_token", return_value="tok"), patch.object(
+        github, "_fetch_json", side_effect=_fake_fetch
+    ):
+        github.search_github(
+            "Claude Code",
+            "2026-03-01",
+            "2026-03-31",
+            token="tok",
+            title_only=False,
+            deadline=time.monotonic() + 2.5,
+            stopped=lambda: stop_flag["stopped"],
+        )
+
+    assert len(seen_timeouts) == 1
+    assert 0 < seen_timeouts[0] <= 2.5

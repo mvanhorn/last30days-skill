@@ -8086,7 +8086,17 @@ def _retrieve_stream_impl(
         )
     if source == "github":
         token = github.resolve_token(config.get("GITHUB_TOKEN"))
-        response = github.search_github(subquery.search_query, from_date, to_date, depth=depth, token=token)
+        deadline = config.get("_research_deadline")
+        stopped_fn = lambda: _research_stopped(config)
+        response = github.search_github(
+            subquery.search_query,
+            from_date,
+            to_date,
+            depth=depth,
+            token=token,
+            deadline=deadline,
+            stopped=stopped_fn,
+        )
         # Judge results against the stable research topic, not the narrowed
         # per-subquery search_query, as polymarket does above.
         relevance_topic = raw_topic or topic or subquery.search_query
@@ -8094,10 +8104,12 @@ def _retrieve_stream_impl(
         # Title-first search can return zero topical matches when the planner
         # added extra keywords that appear only in issue bodies. Retry once
         # across title and body only after a clean, non-error, non-empty core
-        # search so rate-limited or qualifier-only queries never double-fetch.
+        # search while the run still has budget left so rate-limited, cancelled,
+        # or qualifier-only queries never double-fetch.
         if (
             not items
             and not response.get("error")
+            and not _research_stopped(config)
             and github.strip_search_qualifiers(github.extract_core_subject(subquery.search_query))
         ):
             fallback_response = github.search_github(
@@ -8107,6 +8119,8 @@ def _retrieve_stream_impl(
                 depth=depth,
                 token=token,
                 title_only=False,
+                deadline=deadline,
+                stopped=stopped_fn,
             )
             fallback_items = github.parse_github_response(
                 fallback_response, topic=relevance_topic
@@ -8118,7 +8132,7 @@ def _retrieve_stream_impl(
         # tokenless anon tier and returns empty here rather than raising — github
         # is now always eligible, so raising would spam "github failed" on every
         # tokenless run. The condition is logged in github.search_github.
-        if token:
+        if token and items and not _research_stopped(config):
             items = github.enrich_with_comments(items, depth=depth)
         return items, _result_outcome_artifact(source, response)
     if source == "pinterest":
