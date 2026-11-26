@@ -184,6 +184,7 @@ SOURCE_ORDER = (
     "polymarket",
     "github",
     "devto",
+    "v2ex",
     "digg",
     "techmeme",
     "arxiv",
@@ -839,6 +840,17 @@ def _devto_record(config):
     )
 
 
+def _v2ex_record(config):
+    requires = "none (public SOV2EX search and V2EX API)"
+    if "v2ex" in env.include_sources(config):
+        return _record(status=health.OK, requires=requires)
+    return _record(
+        status="opt-in", requires=requires,
+        fix="add v2ex to INCLUDE_SOURCES (or request it via --search v2ex)",
+        note="off by default",
+    )
+
+
 def _polymarket_record(config):
     return _record(status=health.OK, requires="none (public API)")
 
@@ -1271,6 +1283,7 @@ _SOURCE_BUILDERS: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
     "polymarket": _polymarket_record,
     "github": _github_record,
     "devto": _devto_record,
+    "v2ex": _v2ex_record,
     "digg": _digg_record,
     "techmeme": _techmeme_record,
     "arxiv": _arxiv_record,

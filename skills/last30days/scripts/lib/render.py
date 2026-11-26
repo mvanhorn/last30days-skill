@@ -244,6 +244,7 @@ SOURCE_LABELS = {
     "grounding": "Web",
     "hackernews": "Hacker News",
     "devto": "dev.to",
+    "v2ex": "V2EX",
     "truthsocial": "Truth Social",
     "linkedin": "LinkedIn",
     "linkedin_profile": "LinkedIn",
@@ -2069,6 +2070,7 @@ def render_full(report: schema.Report, save_path: str | None = None) -> str:
         "pinterest",
         "hackernews",
         "devto",
+        "v2ex",
         "bluesky",
         "truthsocial",
         "polymarket",
@@ -3720,6 +3722,7 @@ _SITE_NAMES: dict[str, str] = {
     "medium.com": "Medium",
     "substack.com": "Substack",
     "dev.to": "dev.to",
+    "v2ex.com": "V2EX",
     "github.com": "GitHub",
     "stackoverflow.com": "Stack Overflow",
     "producthunt.com": "Product Hunt",
@@ -3874,6 +3877,7 @@ _FOOTER_SOURCES: list[tuple[str, str, str, str, list[tuple[str, str]]]] = [
         [("points", "points"), ("comments", "comments")],
     ),
     ("devto", "👩‍💻", "dev.to", "article", [("reactions", "reactions"), ("comments", "comments")]),
+    ("v2ex", "💬", "V2EX", "topic", [("replies", "replies")]),
     ("bluesky", "🦋", "Bluesky", "post", [("likes", "likes"), ("reposts", "reposts")]),
     (
         "truthsocial",
@@ -4751,6 +4755,7 @@ ENGAGEMENT_DISPLAY: dict[str, list[tuple[str, str]]] = {
     "pinterest": [("saves", "saves"), ("comments", "cmt")],
     "hackernews": [("points", "pts"), ("comments", "cmt")],
     "devto": [("reactions", "react"), ("comments", "cmt")],
+    "v2ex": [("replies", "re")],
     "bluesky": [("likes", "likes"), ("reposts", "rt"), ("replies", "re")],
     "truthsocial": [("likes", "likes"), ("reposts", "rt"), ("replies", "re")],
     "linkedin": [("likes", "likes"), ("comments", "cmt")],
@@ -5090,6 +5095,8 @@ _TOP_COMMENT_MIN_SCORE: dict[str, int] = {
     # Replies are the only comment signal the dev.to API exposes; most top
     # comments have none, so any positive floor would drop the whole source.
     "devto": 0,
+    # V2EX replies carry no votes at all.
+    "v2ex": 0,
 }
 _TOP_COMMENT_VOTE_LABEL: dict[str, str] = {
     "reddit": "upvotes",

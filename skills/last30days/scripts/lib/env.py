@@ -754,6 +754,13 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         ('LAST30DAYS_RERANK_MODEL', None),
         ('LAST30DAYS_X_MODEL', None),
         ('LAST30DAYS_X_BACKEND', None),
+        # Wall-clock budget (seconds) for the X backend chain. Default 90; a
+        # grok call on a subscription account measured 150-170s, so pinning
+        # grok needs a larger budget to return the first call's posts. Read
+        # from the resolved config only (pipeline._x_chain_budget_seconds);
+        # blank/invalid/non-finite/non-positive falls back to 90, values above
+        # 240 clamp to 240 (the default-depth grok per-call ceiling).
+        ('LAST30DAYS_X_BUDGET_SECONDS', None),
         ('LAST30DAYS_REDDIT_BACKEND', None),
         ('LAST30DAYS_YOUTUBE_BACKEND', None),
         # Jobs lane: skip a job listing its site's robots.txt disallows.

@@ -398,14 +398,14 @@ def _plan(sources):
 
 def test_activated_devto_joins_a_host_plan_that_omits_it():
     plan = _plan(["hackernews"])
-    pipeline._ensure_devto_in_plan(plan, ["hackernews", "devto"])
+    pipeline._ensure_opt_in_source_in_plan(plan, ["hackernews", "devto"], "devto")
     assert "devto" in plan.subqueries[0].sources
     assert "devto" in plan.source_weights
 
 
 def test_inactive_devto_is_not_added_to_a_plan():
     plan = _plan(["hackernews"])
-    pipeline._ensure_devto_in_plan(plan, ["hackernews"])
+    pipeline._ensure_opt_in_source_in_plan(plan, ["hackernews"], "devto")
     assert plan.subqueries[0].sources == ["hackernews"]
 
 
@@ -470,6 +470,6 @@ def test_existing_devto_route_is_left_alone():
     plan = _plan(["hackernews"])
     plan.subqueries.append(schema.SubQuery(label="focused", search_query="claude code hooks",
                                            ranking_query="q", sources=["devto"], weight=1.0))
-    pipeline._ensure_devto_in_plan(plan, ["hackernews", "devto"])
+    pipeline._ensure_opt_in_source_in_plan(plan, ["hackernews", "devto"], "devto")
     assert plan.subqueries[0].sources == ["hackernews"]
     assert plan.subqueries[1].sources == ["devto"]

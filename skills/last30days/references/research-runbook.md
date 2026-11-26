@@ -52,7 +52,7 @@ For a supported hosted request, announce the hosted backend without listing loca
 
 ### Local engine route
 
-`--diagnose` prints JSON. `ACTIVE_SOURCES_LIST` is its `available_sources` array — the engine's authoritative source set, computed after credential resolution. Map the tokens to display names: `reddit`→Reddit, `hackernews`→Hacker News, `polymarket`→Polymarket, `github`→GitHub, `digg`→Digg, `x`→X, `youtube`→YouTube, `tiktok`→TikTok, `instagram`→Instagram, `threads`→Threads, `pinterest`→Pinterest, `linkedin`→LinkedIn, `bluesky`→Bluesky, `perplexity`→Perplexity, `grounding`→Web, `jobs`→Jobs, `meta_ads`→Meta Ads, `corpus`→Your files, `dripstack`→DripStack.
+`--diagnose` prints JSON. `ACTIVE_SOURCES_LIST` is its `available_sources` array — the engine's authoritative source set, computed after credential resolution. Map the tokens to display names: `reddit`→Reddit, `hackernews`→Hacker News, `polymarket`→Polymarket, `github`→GitHub, `digg`→Digg, `x`→X, `youtube`→YouTube, `tiktok`→TikTok, `instagram`→Instagram, `threads`→Threads, `pinterest`→Pinterest, `linkedin`→LinkedIn, `bluesky`→Bluesky, `perplexity`→Perplexity, `grounding`→Web, `jobs`→Jobs, `meta_ads`→Meta Ads, `corpus`→Your files, `dripstack`→DripStack, `v2ex`→V2EX.
 
 - If EXCLUDE_SOURCES is set (comma-separated, case-insensitive): drop any matching source from ACTIVE_SOURCES_LIST before displaying
 
@@ -550,7 +550,7 @@ Only show lines for platforms where something was resolved. On the Reddit line, 
 **Rules for your plan:**
 - Emit 1 to 4 subqueries (more for multi-faceted topics, fewer for simple ones)
 - **Primary: include every applicable source from `ACTIVE_SOURCES_LIST`.** Preserve X whenever it is active. Keep active Reddit and YouTube. Never add unavailable sources. Leave out only `grounding`, `corpus`, `perplexity` (engine-attached), `amazon` / `meta_ads` (`--search`, Steps 0.5e / 0.5f), and explicit omissions. For a company or the person who leads it, name `jobs` (unlisted) plus top-level `jobs_queries`: 2-4 product or team terms, not the company name.
-- Above quick depth, an unnamed optional lane is added to the primary subquery unless it cannot run (Trustpilot when `trustpilot_can_run` is false); exclusions win. To avoid backfilling a lane (digg, arxiv, techmeme, bluesky, truthsocial, stocktwits, linkedin, dripstack, devto, telegram, trustpilot), omit it from all subqueries and list it in top-level `"omit_sources": ["arxiv"]`. Never omit a user-requested source.
+- Above quick depth, an unnamed optional lane is added to the primary subquery unless it cannot run (Trustpilot when `trustpilot_can_run` is false); exclusions win. To avoid backfilling a lane (digg, arxiv, techmeme, bluesky, truthsocial, stocktwits, linkedin, dripstack, devto, v2ex, telegram, trustpilot), omit it from all subqueries and list it in top-level `"omit_sources": ["arxiv"]`. Never omit a user-requested source.
 - `search_query` should be concise and keyword-heavy - match how content is TITLED on platforms
 - `ranking_query` should read like a natural language question
 - **X disambiguation:** express your disambiguation intent in `ranking_query` (e.g., "What are people saying about Rome the city in Italy, not AS Roma or Rome Odunze?") — do not phrase-quote `search_query` for X or invent X operators; the engine handles X query compilation internally.
@@ -567,7 +567,7 @@ Only show lines for platforms where something was resolved. On the Reddit line, 
 - For how_to: prioritize YouTube (tutorials) and Reddit (guides)
 - Primary subquery weight = 1.0, secondary = 0.6-0.8, peripheral = 0.3-0.5
 
-**Available sources (include every active one in the primary subquery):** use the engine's `ACTIVE_SOURCES_LIST`. The normal candidates are reddit, x, youtube, tiktok, instagram, hackernews, and polymarket; X remains part of the normal set when active and is simply omitted when unavailable. Optional: bluesky, truthsocial, threads, pinterest, grounding (web search - only if user has Brave/Exa/Serper key), digg (Digg clusters - only if `digg-pp-cli` is on PATH). `amazon` and `meta_ads` go in `--search`, not the plan (Step 0.5e / 0.5f)
+**Available sources (include every active one in the primary subquery):** use the engine's `ACTIVE_SOURCES_LIST`. The normal candidates are reddit, x, youtube, tiktok, instagram, hackernews, and polymarket; X remains part of the normal set when active and is simply omitted when unavailable. Optional: bluesky, truthsocial, threads, pinterest, grounding (web search - only if user has Brave/Exa/Serper key), digg (Digg clusters - only if `digg-pp-cli` is on PATH), v2ex (Chinese developer community - only when the user enabled it with `INCLUDE_SOURCES=v2ex`; when the user asks for V2EX or Chinese developer discussion, add `v2ex` to the full `--search` list). `amazon` and `meta_ads` go in `--search`, not the plan (Step 0.5e / 0.5f)
 
 **Intent → freshness_mode mapping:**
 - breaking_news, prediction → `strict_recent`

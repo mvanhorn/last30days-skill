@@ -53,7 +53,7 @@ Getting grok onto a local fixture took all of these:
 - Env vars `GROK_XAI_API_BASE_URL`, `GROK_CLI_CHAT_PROXY_BASE_URL`, `GROK_MODELS_BASE_URL` and `GROK_MODELS_LIST_URL` all pointing at the fixture, plus a dummy `XAI_API_KEY`. The custom models endpoint fetches its catalog with `XAI_API_KEY` (per grok's README), never the session. Without a catalog there is no Responses backend and no tools.
 - `/v1/models` serving the full model-info schema, including `api_backend: "responses"` and `supports_backend_search: true` (see `_model_info`).
 - `/v1/responses` answering as an SSE stream in which every event carries `sequence_number` (`grok_audit.py:324`), the response has `created_at`, and usage has `input_tokens_details` and `output_tokens_details`. Otherwise grok errors out. Session-title requests carry a `session_title` function tool and need their own answer.
-- For signed-in mode, a dummy OIDC `auth.json` in the throwaway HOME, keyed `https://auth.x.ai::<client_id>` with a fake unexpired JWT (`_write_dummy_session`, `grok_audit.py:430`). The same base-URL variables redirect it offline.
+- For signed-in mode, a dummy OIDC `auth.json` in the throwaway HOME, keyed `https://auth.x.ai::<client_id>` with a fake unexpired JWT (`_write_dummy_session`). The session proxy URL points at the fixture, but `GROK_MODELS_BASE_URL` and `GROK_MODELS_LIST_URL` must be absent: custom model endpoints require an API key and otherwise the CLI falls back to chat completions without the hosted X tool. The proxy serves `/models` using the dummy session token.
 - An HTTP(S) proxy on the fixture that refuses and records every connection, so any non-fixture host fails the audit.
 
 Checks, in order, for each restricted run (signed-in, then API key):
