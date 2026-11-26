@@ -341,6 +341,9 @@ def _sync_library_rust(
                 "unbounded_private": bool(meta["unbounded_private"]),
                 "fingerprint": meta["indexable_fingerprint"],
                 "path": Path(str(req["path"])),
+                "root": req.get("_root"),
+                "expected_parent_dir": req.get("_expected_parent_dir"),
+                "expected_parent_id": req.get("_expected_parent_id"),
             }
         )
 
@@ -413,11 +416,28 @@ def _sync_library_rust(
                     entry = library.parse_markdown_file(
                         rec["path"],  # type: ignore[arg-type]
                         source_format=str(rec["source_format"]),
+                        root=rec.get("root"),  # type: ignore[arg-type]
+                        expected_parent_dir=rec.get("expected_parent_dir"),  # type: ignore[arg-type]
+                        expected_parent_id=rec.get("expected_parent_id"),  # type: ignore[arg-type]
                     )
                 except (OSError, UnicodeError, ValueError) as exc:
                     notes.append(f"Skipped {rec['path']}: {exc}")
                     current_ids.discard(eid)
                     continue
+                if library.is_unbounded_private_brief(
+                    entry.content, source_format=entry.source_format
+                ):
+                    current_ids.discard(eid)
+                    continue
+                if entry.entry_id != eid:
+                    current_ids.discard(eid)
+                    current_ids.add(entry.entry_id)
+                if (
+                    entry.entry_id != eid
+                    or entry.source_mtime_ns != mtime_ns
+                    or entry.source_size != file_size
+                ):
+                    fingerprint = _fingerprint(_indexable_content(entry.content))
                 _upsert_entry(conn, entry, fingerprint=fingerprint)
                 indexed += 1
 

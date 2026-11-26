@@ -1487,6 +1487,9 @@ def _collect_sync_inputs(
                     "fallback_date": datetime.fromtimestamp(st.st_mtime).date().isoformat(),
                     "_mtime_ns": int(st.st_mtime_ns),
                     "_size": int(st.st_size),
+                    "_root": root,
+                    "_expected_parent_dir": expected_parent_dir,
+                    "_expected_parent_id": expected_parent_id,
                 }
             )
         except (OSError, ValueError) as exc:
@@ -1496,11 +1499,15 @@ def _collect_sync_inputs(
         if memory_path is not None:
             try:
                 with _open_dir_fd(memory_path) as memory_fd:
+                    memory_fd_st = os.fstat(memory_fd)
+                    memory_id = (memory_fd_st.st_dev, memory_fd_st.st_ino)
                     finished_path = memory_path / FINISHED_SUBDIR
                     try:
                         with _open_dir_fd(
                             FINISHED_SUBDIR, dir_fd=memory_fd, nofollow=True
                         ) as finished_fd:
+                            finished_fd_st = os.fstat(finished_fd)
+                            finished_id = (finished_fd_st.st_dev, finished_fd_st.st_ino)
                             names = _listdir_pinned(finished_fd, finished_path)
                             finished_intact = _dir_matches_fd(finished_path, finished_fd)
                             for name in names:
@@ -1511,6 +1518,9 @@ def _collect_sync_inputs(
                                         finished_path / name,
                                         "finished-brief",
                                         dir_fd=finished_fd,
+                                        root=memory_path,
+                                        expected_parent_dir=finished_path,
+                                        expected_parent_id=finished_id,
                                     )
                                 else:
                                     path = finished_path / name
@@ -1546,7 +1556,14 @@ def _collect_sync_inputs(
                         if not name.endswith(".md"):
                             continue
                         if mem_intact:
-                            _enqueue_md(memory_path / name, "markdown", dir_fd=memory_fd)
+                            _enqueue_md(
+                                memory_path / name,
+                                "markdown",
+                                dir_fd=memory_fd,
+                                root=memory_path,
+                                expected_parent_dir=memory_path,
+                                expected_parent_id=memory_id,
+                            )
                         else:
                             path = memory_path / name
                             try:

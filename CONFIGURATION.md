@@ -848,6 +848,20 @@ MCP returns the completed report with `status: "degraded"` and a visible coverag
 
 ---
 
+## Optional Rust accelerator
+
+`last30days-core` is an optional standalone native binary that accelerates CPU-bound local work (parallel library Markdown scanning and redaction, near-duplicate filtering, candidate clustering, and signal annotation). End users never need Rust installed; when no binary is present, the Python engine runs unchanged.
+
+These variables are read from the process environment (not from `.env` files):
+
+| Env var | Default | Accepted values | Behavior |
+| --- | --- | --- | --- |
+| `LAST30DAYS_ENGINE` | `auto` | `auto`, `rust` (`rs`, `force`, `required`), `python` (`py`, `off`, `0`, `false`) | Selects the local compute backend. `auto` uses `last30days-core` when a compatible binary is found and falls back silently to pure Python otherwise. `rust` requires the native binary and raises an error if it is missing or fails. `python` disables Rust acceleration completely. |
+| `LAST30DAYS_RUST_BIN` | unset | Path to a `last30days-core` executable | Overrides binary discovery. Lookup order when unset or empty: `LAST30DAYS_RUST_BIN`, `~/.local/share/last30days/bin/last30days-core` (`.exe` on Windows), `<repo>/rust/target/release/last30days-core`, then `last30days-core` on `PATH`. |
+| `LAST30DAYS_RUST_TIMEOUT` | `30` (seconds) | Positive finite number of seconds | Per-request deadline for the persistent stdio Rust worker (startup handshake is capped at `min(5, timeout)`). On timeout, the worker is killed; `auto` mode falls back to pure Python for that binary and `rust` mode raises `RustAccelError`. Invalid, zero, or negative values fall back to `30`. |
+
+---
+
 ## Debug mode (`--debug`)
 
 Add `--debug` to any run to emit verbose `[DEBUG]` log lines to stderr from the source modules (X API, HTTP, etc.). Helpful for diagnosing API errors or unexpected behavior.

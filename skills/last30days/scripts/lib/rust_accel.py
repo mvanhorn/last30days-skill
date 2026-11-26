@@ -10,15 +10,19 @@ from __future__ import annotations
 
 import atexit
 import json
+import math
 import os
+import select
 import shutil
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
 PROTOCOL_VERSION = 1
+DEFAULT_TIMEOUT_SECONDS = 30.0
 
 _BINARY_NAME = "last30days-core.exe" if sys.platform == "win32" else "last30days-core"
 
@@ -35,6 +39,20 @@ def engine_mode() -> str:
     if raw in {"rust", "rs", "force", "required"}:
         return "rust"
     return "auto"
+
+
+def worker_timeout() -> float:
+    """Return per-request timeout in seconds for the Rust stdio worker."""
+    raw = (os.environ.get("LAST30DAYS_RUST_TIMEOUT") or "").strip()
+    if not raw:
+        return DEFAULT_TIMEOUT_SECONDS
+    try:
+        value = float(raw)
+    except ValueError:
+        return DEFAULT_TIMEOUT_SECONDS
+    if not math.isfinite(value) or value <= 0:
+        return DEFAULT_TIMEOUT_SECONDS
+    return value
 
 
 def _candidate_binary_paths() -> list[Path]:
@@ -64,40 +82,71 @@ def find_binary() -> str | None:
 
 
 class _WorkerPool:
-    """Process-local, thread-safe persistent stdio worker."""
+    """Process-local, thread-safe persistent stdio worker with bounded I/O."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._proc: subprocess.Popen[str] | None = None
+        self._proc: subprocess.Popen[bytes] | None = None
         self._bin_path: str | None = None
         self._pid: int = os.getpid()
         self._disabled_for_bin: str | None = None
+        self._read_buf = bytearray()
 
-    def _reset_locked(self) -> None:
+    @staticmethod
+    def _terminate_proc(
+        proc: subprocess.Popen[bytes] | None,
+        *,
+        force: bool = False,
+    ) -> None:
+        if proc is None:
+            return
+        for stream in (proc.stdin, proc.stdout):
+            if stream is not None:
+                try:
+                    stream.close()
+                except OSError:
+                    pass
+        if force:
+            try:
+                proc.kill()
+                proc.wait(timeout=0.5)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+            return
+        try:
+            proc.terminate()
+            proc.wait(timeout=0.5)
+        except (OSError, subprocess.TimeoutExpired):
+            try:
+                proc.kill()
+                proc.wait(timeout=0.5)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+
+    def _reset_locked(self, *, force: bool = False) -> None:
         proc = self._proc
         self._proc = None
         self._bin_path = None
-        if proc is not None:
-            try:
-                if proc.stdin is not None:
-                    proc.stdin.close()
-            except OSError:
-                pass
-            try:
-                proc.terminate()
-                proc.wait(timeout=1.0)
-            except (OSError, subprocess.TimeoutExpired):
-                try:
-                    proc.kill()
-                    proc.wait(timeout=1.0)
-                except (OSError, subprocess.TimeoutExpired):
-                    pass
+        self._read_buf.clear()
+        self._terminate_proc(proc, force=force)
 
     def shutdown(self) -> None:
-        with self._lock:
-            self._reset_locked()
+        acquired = self._lock.acquire(timeout=0.2)
+        if acquired:
+            try:
+                self._reset_locked()
+            finally:
+                self._lock.release()
+        else:
+            # Another thread is mid-roundtrip; kill the worker directly so
+            # interpreter exit never deadlocks waiting for self._lock.
+            self._terminate_proc(self._proc, force=True)
 
-    def _ensure_started_locked(self, bin_path: str) -> subprocess.Popen[str]:
+    def _ensure_started_locked(
+        self,
+        bin_path: str,
+        timeout: float,
+    ) -> subprocess.Popen[bytes]:
         current_pid = os.getpid()
         if self._pid != current_pid:
             # Forked child: drop parent handle without touching parent's child process.
@@ -105,6 +154,7 @@ class _WorkerPool:
             self._bin_path = None
             self._pid = current_pid
             self._disabled_for_bin = None
+            self._read_buf.clear()
 
         if self._proc is not None and self._proc.poll() is None and self._bin_path == bin_path:
             return self._proc
@@ -115,15 +165,17 @@ class _WorkerPool:
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
-            text=True,
-            encoding="utf-8",
-            bufsize=1,
+            bufsize=0,
         )
+        if os.name == "posix":
+            assert proc.stdin is not None and proc.stdout is not None
+            os.set_blocking(proc.stdin.fileno(), False)
+            os.set_blocking(proc.stdout.fileno(), False)
         self._proc = proc
         self._bin_path = bin_path
 
         # Handshake once on worker start to confirm protocol compatibility.
-        resp = self._roundtrip_locked(proc, {"op": "ping"})
+        resp = self._roundtrip_locked(proc, {"op": "ping"}, timeout=min(5.0, timeout))
         if resp.get("status") != "ok" or resp.get("protocol") != PROTOCOL_VERSION:
             self._reset_locked()
             raise RustAccelError(
@@ -131,19 +183,122 @@ class _WorkerPool:
             )
         return proc
 
-    @staticmethod
-    def _roundtrip_locked(
-        proc: subprocess.Popen[str],
-        payload: dict[str, Any],
+    def _roundtrip_posix_locked(
+        self,
+        proc: subprocess.Popen[bytes],
+        data: bytes,
+        timeout: float,
     ) -> dict[str, Any]:
         assert proc.stdin is not None and proc.stdout is not None
-        encoded = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
-        proc.stdin.write(encoded + "\n")
-        proc.stdin.flush()
-        line = proc.stdout.readline()
-        if not line:
-            raise RustAccelError("last30days-core worker closed stdout unexpectedly")
-        return json.loads(line)
+        deadline = time.monotonic() + timeout
+        stdin_fd = proc.stdin.fileno()
+        stdout_fd = proc.stdout.fileno()
+
+        view = memoryview(data)
+        written = 0
+        while written < len(data):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"last30days-core worker timed out after {timeout:.1f}s while writing request"
+                )
+            _, writable, _ = select.select([], [stdin_fd], [], remaining)
+            if not writable:
+                raise TimeoutError(
+                    f"last30days-core worker timed out after {timeout:.1f}s while writing request"
+                )
+            try:
+                count = os.write(stdin_fd, view[written:])
+            except BlockingIOError:
+                continue
+            if count == 0:
+                raise RustAccelError("last30days-core worker closed stdin unexpectedly")
+            written += count
+
+        while True:
+            newline_idx = self._read_buf.find(b"\n")
+            if newline_idx != -1:
+                raw_line = bytes(self._read_buf[:newline_idx])
+                del self._read_buf[: newline_idx + 1]
+                return json.loads(raw_line.decode("utf-8"))
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"last30days-core worker timed out after {timeout:.1f}s waiting for response"
+                )
+            readable, _, _ = select.select([stdout_fd], [], [], remaining)
+            if not readable:
+                raise TimeoutError(
+                    f"last30days-core worker timed out after {timeout:.1f}s waiting for response"
+                )
+            try:
+                chunk = os.read(stdout_fd, 65536)
+            except BlockingIOError:
+                continue
+            if not chunk:
+                raise RustAccelError("last30days-core worker closed stdout unexpectedly")
+            self._read_buf.extend(chunk)
+
+    def _roundtrip_threaded_locked(
+        self,
+        proc: subprocess.Popen[bytes],
+        data: bytes,
+        timeout: float,
+    ) -> dict[str, Any]:
+        assert proc.stdin is not None and proc.stdout is not None
+        result: dict[str, Any] = {}
+        error: list[BaseException] = []
+
+        def _worker() -> None:
+            try:
+                assert proc.stdin is not None and proc.stdout is not None
+                view = memoryview(data)
+                written = 0
+                while written < len(data):
+                    count = proc.stdin.write(view[written:])
+                    if not count:
+                        raise RustAccelError("last30days-core worker closed stdin unexpectedly")
+                    written += count
+                while True:
+                    newline_idx = self._read_buf.find(b"\n")
+                    if newline_idx != -1:
+                        raw_line = bytes(self._read_buf[:newline_idx])
+                        del self._read_buf[: newline_idx + 1]
+                        result["resp"] = json.loads(raw_line.decode("utf-8"))
+                        return
+                    chunk = proc.stdout.read(65536)
+                    if not chunk:
+                        raise RustAccelError("last30days-core worker closed stdout unexpectedly")
+                    self._read_buf.extend(chunk)
+            except BaseException as exc:  # noqa: BLE001
+                error.append(exc)
+
+        thread = threading.Thread(target=_worker, daemon=True)
+        thread.start()
+        thread.join(timeout=timeout)
+        if thread.is_alive():
+            self._terminate_proc(proc, force=True)
+            thread.join(timeout=0.5)
+            raise TimeoutError(
+                f"last30days-core worker timed out after {timeout:.1f}s waiting for response"
+            )
+        if error:
+            raise error[0]
+        return result["resp"]
+
+    def _roundtrip_locked(
+        self,
+        proc: subprocess.Popen[bytes],
+        payload: dict[str, Any],
+        *,
+        timeout: float,
+    ) -> dict[str, Any]:
+        encoded = (
+            json.dumps(payload, separators=(",", ":"), ensure_ascii=False) + "\n"
+        ).encode("utf-8")
+        if os.name == "posix":
+            return self._roundtrip_posix_locked(proc, encoded, timeout)
+        return self._roundtrip_threaded_locked(proc, encoded, timeout)
 
     def call(self, payload: dict[str, Any]) -> dict[str, Any] | None:
         mode = engine_mode()
@@ -158,12 +313,19 @@ class _WorkerPool:
                 )
             return None
 
+        timeout = worker_timeout()
         with self._lock:
             if mode == "auto" and self._disabled_for_bin == bin_path:
                 return None
             try:
-                proc = self._ensure_started_locked(bin_path)
-                resp = self._roundtrip_locked(proc, payload)
+                proc = self._ensure_started_locked(bin_path, timeout)
+                resp = self._roundtrip_locked(proc, payload, timeout=timeout)
+            except TimeoutError as exc:
+                self._reset_locked(force=True)
+                if mode == "rust":
+                    raise RustAccelError(f"last30days-core call failed: {exc}") from exc
+                self._disabled_for_bin = bin_path
+                return None
             except (OSError, ValueError, RustAccelError) as exc:
                 self._reset_locked()
                 if mode == "rust":

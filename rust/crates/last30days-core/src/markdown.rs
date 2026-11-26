@@ -326,9 +326,10 @@ fn brief_clusters_heading_name(line_text: &str) -> Option<&'static str> {
         if let Some(rest) = line_text
             .strip_prefix("## ")
             .and_then(|s| s.strip_prefix(name))
-            && rest.bytes().all(|b| b == b' ' || b == b'\t')
         {
-            return Some(name);
+            if rest.bytes().all(|b| b == b' ' || b == b'\t') {
+                return Some(name);
+            }
         }
     }
     None
@@ -408,10 +409,10 @@ fn is_structured_engine_report(markdown: &str) -> bool {
 
 /// Returns `true` when a synthesized chat brief carries unbounded local-corpus content.
 pub fn is_unbounded_private_brief(markdown: &str, source_format: Option<&str>) -> bool {
-    if let Some(fmt) = source_format
-        && fmt != "finished-brief"
-    {
-        return false;
+    if let Some(fmt) = source_format {
+        if fmt != "finished-brief" {
+            return false;
+        }
     }
     if is_structured_engine_report(markdown) {
         return false;
@@ -1161,20 +1162,21 @@ fn format_valid_ymd(year: i64, month: u32, day: u32) -> Option<String> {
 }
 
 fn parse_badge_date(text: &str) -> Option<String> {
-    if let Some(last) = BADGE_MONTH_DAY_YEAR_RE.captures_iter(text).last()
-        && let (Some(month), Ok(day), Ok(year)) = (
+    if let Some(last) = BADGE_MONTH_DAY_YEAR_RE.captures_iter(text).last() {
+        if let (Some(month), Ok(day), Ok(year)) = (
             month_number(&last[1]),
             last[2].parse::<u32>(),
             last[3].parse::<i64>(),
-        )
-        && let Some(valid) = format_valid_ymd(year, month, day)
-    {
-        return Some(valid);
+        ) {
+            if let Some(valid) = format_valid_ymd(year, month, day) {
+                return Some(valid);
+            }
+        }
     }
-    if let Some(last) = BADGE_ISO_DATE_RE.captures_iter(text).last()
-        && crate::signals::parse_ymd_days(&last[1]).is_ok()
-    {
-        return Some(last[1].to_owned());
+    if let Some(last) = BADGE_ISO_DATE_RE.captures_iter(text).last() {
+        if crate::signals::parse_ymd_days(&last[1]).is_ok() {
+            return Some(last[1].to_owned());
+        }
     }
     None
 }
@@ -1200,11 +1202,11 @@ fn parse_badge_line(content: &str) -> (String, Option<String>) {
         }
     } else {
         for &segment in parts.iter().skip(1) {
-            if published.is_none()
-                && let Some(parsed) = parse_badge_date(segment)
-            {
-                published = Some(parsed);
-                continue;
+            if published.is_none() {
+                if let Some(parsed) = parse_badge_date(segment) {
+                    published = Some(parsed);
+                    continue;
+                }
             }
             if topic.is_empty()
                 && !BADGE_VERSION_RE.is_match(segment)
@@ -1231,13 +1233,13 @@ pub(crate) fn clean_inline(value: &str) -> String {
     } else {
         no_links.as_ref()
     };
-    let s1 = strip_delimited(no_quote, "**");
-    let s2 = strip_delimited(&s1, "__");
-    let s3 = strip_delimited(&s2, "*");
-    let s4 = strip_delimited(&s3, "_");
-    let s5 = strip_delimited(&s4, "`");
-    let mut collapsed = String::with_capacity(s5.len());
-    for word in s5.split_whitespace() {
+    // Match Python's exact three left-to-right regex passes so nested emphasis
+    // such as `**__Rust__**` produces `_Rust_` identically in both engines.
+    let s1 = strip_delimited_any(no_quote, &["**", "__"]);
+    let s2 = strip_delimited_any(&s1, &["*", "_"]);
+    let s3 = strip_delimited_any(&s2, &["`"]);
+    let mut collapsed = String::with_capacity(s3.len());
+    for word in s3.split_whitespace() {
         if !collapsed.is_empty() {
             collapsed.push(' ');
         }
@@ -1246,21 +1248,24 @@ pub(crate) fn clean_inline(value: &str) -> String {
     collapsed
 }
 
-/// Mirrors `(?<!\w)<delim>(?=\S)(.+?)(?<=\S)<delim>(?!\w)` without regex lookaround.
-fn strip_delimited(input: &str, delim: &str) -> String {
-    if !input.contains(delim) {
+/// Mirrors `(?<!\w)(d1|d2)(?=\S)(.+?)(?<=\S)\1(?!\w)` in a single left-to-right pass.
+fn strip_delimited_any(input: &str, delims: &[&str]) -> String {
+    if !delims.iter().any(|d| input.contains(d)) {
         return input.to_owned();
     }
     let mut out = String::with_capacity(input.len());
     let mut cursor = 0;
-    let dlen = delim.len();
 
     while cursor < input.len() {
-        let Some(rel_open) = input[cursor..].find(delim) else {
+        let next_open = delims
+            .iter()
+            .filter_map(|&delim| input[cursor..].find(delim).map(|rel| (cursor + rel, delim)))
+            .min_by_key(|&(pos, _)| pos);
+        let Some((open, delim)) = next_open else {
             out.push_str(&input[cursor..]);
             break;
         };
-        let open = cursor + rel_open;
+        let dlen = delim.len();
         let prev_is_word = input[..open]
             .chars()
             .next_back()
@@ -1272,7 +1277,7 @@ fn strip_delimited(input: &str, delim: &str) -> String {
             .is_some_and(|c| !c.is_whitespace());
 
         if !prev_is_word && next_is_non_ws {
-            // Find earliest valid closing delimiter on the same line (no `.` across `\n`).
+            // Find earliest valid matching closing delimiter on the same line (no `.` across `\n`).
             let line_end = input[after_open..]
                 .find('\n')
                 .map_or(input.len(), |i| after_open + i);
@@ -1307,8 +1312,11 @@ fn strip_delimited(input: &str, delim: &str) -> String {
                 continue;
             }
         }
-        out.push_str(&input[cursor..after_open]);
-        cursor = after_open;
+        // Advance by one character past `open` so an alternative delimiter
+        // inside a failed multi-char opener (e.g. `**` followed by `__`) is not skipped.
+        let step = input[open..].chars().next().map_or(1, char::len_utf8);
+        out.push_str(&input[cursor..open + step]);
+        cursor = open + step;
     }
     out
 }
@@ -1448,15 +1456,15 @@ fn markdown_summary(content: &str) -> String {
 }
 
 fn markdown_date(content: &str, stem: &str, fallback_date: &str) -> String {
-    if let Some(caps) = DATE_RANGE_RE.captures(content)
-        && crate::signals::parse_ymd_days(&caps[1]).is_ok()
-    {
-        return caps[1].to_owned();
+    if let Some(caps) = DATE_RANGE_RE.captures(content) {
+        if crate::signals::parse_ymd_days(&caps[1]).is_ok() {
+            return caps[1].to_owned();
+        }
     }
-    if let Some(caps) = DATED_FILENAME_RE.captures(stem)
-        && crate::signals::parse_ymd_days(&caps[1]).is_ok()
-    {
-        return caps[1].to_owned();
+    if let Some(caps) = DATED_FILENAME_RE.captures(stem) {
+        if crate::signals::parse_ymd_days(&caps[1]).is_ok() {
+            return caps[1].to_owned();
+        }
     }
     fallback_date.to_owned()
 }
@@ -1585,8 +1593,8 @@ fn read_regular_markdown_file(
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt as _;
-        // O_NOFOLLOW prevents TOCTOU symlink swaps during open.
-        opts.custom_flags(nofollow_flag());
+        // O_NOFOLLOW prevents TOCTOU symlink swaps; O_NONBLOCK prevents blocking on a swapped FIFO.
+        opts.custom_flags(unix_open_flags());
     }
     let file = opts.open(path).map_err(|e| e.to_string())?;
     let meta = file.metadata().map_err(|e| e.to_string())?;
@@ -1599,10 +1607,10 @@ fn read_regular_markdown_file(
         if (meta.dev(), meta.ino()) != (lmeta.dev(), lmeta.ino()) {
             return Err(format!("File changed during open: {}", path.display()));
         }
-        if let Some((exp_dev, exp_ino)) = expected_dev_ino
-            && (meta.dev(), meta.ino()) != (exp_dev, exp_ino)
-        {
-            return Err(format!("File changed during open: {}", path.display()));
+        if let Some((exp_dev, exp_ino)) = expected_dev_ino {
+            if (meta.dev(), meta.ino()) != (exp_dev, exp_ino) {
+                return Err(format!("File changed during open: {}", path.display()));
+            }
         }
     }
     #[cfg(not(unix))]
@@ -1629,20 +1637,23 @@ fn read_regular_markdown_file(
 }
 
 #[cfg(unix)]
-const fn nofollow_flag() -> i32 {
+const fn unix_open_flags() -> i32 {
     #[cfg(target_os = "macos")]
     {
-        0x0100
+        // O_NOFOLLOW (0x0100) | O_NONBLOCK (0x0004)
+        0x0100 | 0x0004
     }
     #[cfg(target_os = "linux")]
     {
         #[cfg(any(target_arch = "aarch64", target_arch = "arm"))]
         {
-            0o100_000
+            // O_NOFOLLOW (0o100000) | O_NONBLOCK (0o4000)
+            0o100_000 | 0o4000
         }
         #[cfg(not(any(target_arch = "aarch64", target_arch = "arm")))]
         {
-            0o400_000
+            // O_NOFOLLOW (0o400000) | O_NONBLOCK (0o4000)
+            0o400_000 | 0o4000
         }
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]

@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import os
 import random
+import stat
+import sys
+import time
 from pathlib import Path
 from unittest import mock
 
@@ -272,3 +275,162 @@ def test_library_sync_differential_parity(tmp_path: Path, monkeypatch):
     assert rs_on_py_db.indexed == 0
     assert rs_on_py_db.removed == 0
     assert rs_on_py_db.unchanged == py_sync.indexed
+
+
+@requires_rust
+def test_library_sync_nested_emphasis_titles_match_and_persist(tmp_path: Path, monkeypatch):
+    memory = tmp_path / "memory"
+    memory.mkdir()
+    briefs = tmp_path / "briefs"
+    (memory / "nested-a-raw.md").write_text(
+        "# **__Rust__**\n\n- Date range: 2026-10-27 to 2026-11-26\n\nNested bold underscore body.\n",
+        encoding="utf-8",
+    )
+    (memory / "nested-b-raw.md").write_text(
+        "# __**Rust**__\n\n- Date range: 2026-10-27 to 2026-11-26\n\nNested underscore bold body.\n",
+        encoding="utf-8",
+    )
+    (memory / "mixed-bold-raw.md").write_text(
+        "# **bold** and __bold2__\n\n- Date range: 2026-10-27 to 2026-11-26\n\nSeparate bold tokens.\n",
+        encoding="utf-8",
+    )
+
+    py_db = tmp_path / "py.db"
+    rs_db = tmp_path / "rs.db"
+
+    monkeypatch.setenv("LAST30DAYS_ENGINE", "python")
+    py_sync = library_index.sync_library(memory, briefs, db_path=py_db)
+    monkeypatch.setenv("LAST30DAYS_ENGINE", "rust")
+    rs_sync = library_index.sync_library(memory, briefs, db_path=rs_db)
+
+    assert (rs_sync.indexed, rs_sync.removed, rs_sync.unchanged) == (3, 0, 0)
+    assert (py_sync.indexed, py_sync.removed, py_sync.unchanged) == (3, 0, 0)
+
+    # Repeated warm sync must retain all rows with zero churn.
+    rs_sync_2 = library_index.sync_library(memory, briefs, db_path=rs_db)
+    assert (rs_sync_2.indexed, rs_sync_2.removed, rs_sync_2.unchanged) == (0, 0, 3)
+
+    # Cross-sync against Python's DB must also agree on every entry_id and fingerprint.
+    rs_on_py_db = library_index.sync_library(memory, briefs, db_path=py_db)
+    assert (rs_on_py_db.indexed, rs_on_py_db.removed, rs_on_py_db.unchanged) == (0, 0, 3)
+
+    matches = library_index.search("Nested", db_path=rs_db, store_db_path=tmp_path / "none.db")
+    assert len(matches) == 2
+
+
+@requires_rust
+@pytest.mark.skipif(os.name != "posix", reason="POSIX directory symlink swap regression")
+def test_library_sync_rust_rejects_parent_symlink_swap_before_upsert(tmp_path: Path, monkeypatch):
+    memory = tmp_path / "memory"
+    finished = memory / "finished"
+    finished.mkdir(parents=True)
+    briefs = tmp_path / "briefs"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    (finished / "target.md").write_text(
+        "# Original Safe Brief\n\n- Date range: 2026-10-27 to 2026-11-26\n\nSafe content.\n",
+        encoding="utf-8",
+    )
+    (outside / "target.md").write_text(
+        "# Outside Secret Brief\n\n- Date range: 2026-10-27 to 2026-11-26\n\nLeaked outside secret payload.\n",
+        encoding="utf-8",
+    )
+
+    real_scan = rust_accel.scan_markdown_files
+    swapped = False
+
+    def _swap_after_scan(requests):
+        nonlocal swapped
+        result = real_scan(requests)
+        if not swapped:
+            swapped = True
+            moved = tmp_path / "finished_backup"
+            finished.rename(moved)
+            os.symlink(outside, finished)
+        return result
+
+    monkeypatch.setenv("LAST30DAYS_ENGINE", "rust")
+    monkeypatch.setattr(rust_accel, "scan_markdown_files", _swap_after_scan)
+
+    db_path = tmp_path / "lib.db"
+    synced = library_index.sync_library(memory, briefs, db_path=db_path)
+
+    assert swapped is True
+    assert synced.indexed == 0
+    assert any("Skipped" in note for note in synced.notes)
+    assert library_index.search("Leaked", db_path=db_path, store_db_path=tmp_path / "none.db") == []
+    assert library_index.search("Outside", db_path=db_path, store_db_path=tmp_path / "none.db") == []
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX executable script helper")
+def test_worker_timeout_falls_back_in_auto_and_raises_in_rust(tmp_path: Path, monkeypatch):
+    stall_script = tmp_path / "stall-worker"
+    stall_script.write_text(
+        f"#!{sys.executable}\n"
+        "import json, sys, time\n"
+        "for line in sys.stdin:\n"
+        "    req = json.loads(line)\n"
+        "    if req.get('op') == 'ping':\n"
+        "        sys.stdout.write(json.dumps({'status': 'ok', 'protocol': 1}) + '\\n')\n"
+        "        sys.stdout.flush()\n"
+        "    else:\n"
+        "        time.sleep(60)\n",
+        encoding="utf-8",
+    )
+    stall_script.chmod(stall_script.stat().st_mode | stat.S_IXUSR)
+
+    monkeypatch.setenv("LAST30DAYS_RUST_BIN", str(stall_script))
+    monkeypatch.setenv("LAST30DAYS_RUST_TIMEOUT", "0.25")
+    rust_accel.shutdown()
+    rust_accel._POOL._disabled_for_bin = None
+    try:
+        # Auto mode: kills stalled worker, returns None, and falls back to pure Python.
+        monkeypatch.setenv("LAST30DAYS_ENGINE", "auto")
+        t0 = time.monotonic()
+        res = rust_accel.dedupe_kept_indices([{"mode": "fuzzy", "text": "hello"}], 0.7)
+        elapsed = time.monotonic() - t0
+        assert res is None
+        assert elapsed < 3.0
+        assert rust_accel._POOL._proc is None
+        assert rust_accel._POOL._disabled_for_bin == str(stall_script)
+
+        # Forced rust mode: raises RustAccelError within the deadline.
+        rust_accel.shutdown()
+        rust_accel._POOL._disabled_for_bin = None
+        monkeypatch.setenv("LAST30DAYS_ENGINE", "rust")
+        t1 = time.monotonic()
+        with pytest.raises(rust_accel.RustAccelError, match="timed out"):
+            rust_accel.dedupe_kept_indices([{"mode": "fuzzy", "text": "hello"}], 0.7)
+        assert time.monotonic() - t1 < 3.0
+        assert rust_accel._POOL._proc is None
+    finally:
+        rust_accel.shutdown()
+        rust_accel._POOL._disabled_for_bin = None
+
+
+@requires_rust
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="POSIX FIFO required")
+def test_rust_scan_rejects_fifo_without_blocking(tmp_path: Path, monkeypatch):
+    fifo_path = tmp_path / "named-pipe.md"
+    os.mkfifo(fifo_path)
+
+    monkeypatch.setenv("LAST30DAYS_ENGINE", "rust")
+    monkeypatch.setenv("LAST30DAYS_RUST_TIMEOUT", "2.0")
+    t0 = time.monotonic()
+    outcomes = rust_accel.scan_markdown_files(
+        [
+            {
+                "path": str(fifo_path),
+                "stem": "named-pipe",
+                "source_format": "markdown",
+                "expected_dev_ino": None,
+                "fallback_date": "2026-11-26",
+            }
+        ]
+    )
+    elapsed = time.monotonic() - t0
+    assert elapsed < 1.5
+    assert outcomes is not None
+    assert len(outcomes) == 1
+    assert outcomes[0]["status"] == "skipped"

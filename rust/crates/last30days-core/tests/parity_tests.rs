@@ -634,3 +634,34 @@ fn markdown_batch_and_meta_parse() {
         "fingerprint matches"
     );
 }
+
+#[test]
+fn markdown_nested_inline_emphasis_matches_python_clean_inline() {
+    let cases = [
+        ("# **__Rust__**\n", "_Rust_", "rust"),
+        ("# __**Rust**__\n", "*Rust*", "rust"),
+        (
+            "# **bold** and __bold2__\n",
+            "bold and bold2",
+            "bold-and-bold2",
+        ),
+        ("# snake_case_name\n", "snake_case_name", "snake-case-name"),
+        (
+            "# **__nested__** and *italic* and `code`\n",
+            "_nested_ and italic and code",
+            "nested-and-italic-and-code",
+        ),
+    ];
+    for (doc, expected_topic, expected_slug) in cases {
+        let meta = markdown::parse_markdown_meta(
+            doc,
+            "/tmp/sample.md",
+            "sample",
+            "markdown",
+            "2026-11-26",
+        )
+        .unwrap();
+        assert_eq!(meta.topic, expected_topic, "topic mismatch for {doc:?}");
+        assert_eq!(meta.slug, expected_slug, "slug mismatch for {doc:?}");
+    }
+}

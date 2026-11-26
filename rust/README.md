@@ -37,6 +37,9 @@ LAST30DAYS_ENGINE=python uv run python skills/last30days/scripts/last30days.py "
 # Force Rust (fails fast if binary missing)
 LAST30DAYS_ENGINE=rust uv run python skills/last30days/scripts/last30days.py "topic" --quick
 
+# Override per-request worker timeout in seconds (default: 30)
+LAST30DAYS_RUST_TIMEOUT=15 uv run python skills/last30days/scripts/last30days.py "topic" --quick
+
 # Run full parity + speedup benchmark suite
 uv run python scripts/bench_rust_vs_python.py
 ```
