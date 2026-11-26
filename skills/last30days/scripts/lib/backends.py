@@ -64,8 +64,10 @@ TIER_ERROR = "error"
 
 # Web search backend order. grounding.web_search's auto branch owns the
 # runtime behavior (brave -> exa -> serper -> parallel -> keyless floor);
-# parallel-mcp is opt-in only (--web-backend parallel-mcp) and never auto-selected.
-WEB_BACKEND_ORDER: Tuple[str, ...] = ("brave", "exa", "serper", "parallel", "keyless", "parallel-mcp")
+# parallel-mcp and webrouter are opt-in only (--web-backend <name>) and never auto-selected.
+WEB_BACKEND_ORDER: Tuple[str, ...] = (
+    "brave", "exa", "serper", "parallel", "keyless", "parallel-mcp", "webrouter",
+)
 
 # YouTube backend order (pipeline: yt-dlp first, ScrapeCreators search
 # fallback when yt-dlp is absent or fails — see lib/pipeline.py).
@@ -502,6 +504,29 @@ def _probe_web_parallel_mcp(config: Dict[str, Any]) -> BackendFinding:
     )
 
 
+_WEBROUTER_REQUIRES = "opt-in only (--web-backend webrouter; webrouter CLI on PATH, no key)"
+
+
+def _probe_web_webrouter(config: Dict[str, Any]) -> BackendFinding:
+    """Opt-in WebRouter CLI: keyless You.com/Exa chain, gated on the binary."""
+    from . import webrouter
+
+    if webrouter.is_available():
+        return BackendFinding(
+            name="webrouter",
+            status=health.OK,
+            detail="webrouter CLI on PATH (opt-in; keyless You.com, then Exa)",
+            requires=_WEBROUTER_REQUIRES,
+        )
+    return BackendFinding(
+        name="webrouter",
+        status=health.MISSING,
+        detail="webrouter CLI not on the agent-subprocess PATH",
+        prescription="uv tool install webrouter",
+        requires=_WEBROUTER_REQUIRES,
+    )
+
+
 def _probe_reddit_public(config: Dict[str, Any]) -> BackendFinding:
     """Reddit's keyless floor: Brave web search finds threads, Arctic Shift
     ``/posts/ids`` hydrates them.
@@ -556,9 +581,10 @@ _WEB_PROBES: Dict[str, Callable[[Dict[str, Any]], BackendFinding]] = {
     "parallel": _key_probe("parallel", "PARALLEL_API_KEY", "PARALLEL_API_KEY"),
     "keyless": _probe_web_keyless,
     "parallel-mcp": _probe_web_parallel_mcp,
+    "webrouter": _probe_web_webrouter,
 }
 _WEB_KEYED = {"brave", "exa", "serper", "parallel"}
-_WEB_OPT_IN = {"parallel-mcp"}
+_WEB_OPT_IN = {"parallel-mcp", "webrouter"}
 _WEB_REQUIRES: Dict[str, str] = {
     "brave": "BRAVE_API_KEY",
     "exa": "EXA_API_KEY",
@@ -566,6 +592,7 @@ _WEB_REQUIRES: Dict[str, str] = {
     "parallel": "PARALLEL_API_KEY",
     "keyless": "no key; suppressed on native-search hosts",
     "parallel-mcp": "opt-in only (--web-backend parallel-mcp; PARALLEL_API_KEY optional)",
+    "webrouter": _WEBROUTER_REQUIRES,
 }
 
 _SC_SPEC = BackendSpec(

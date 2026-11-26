@@ -197,7 +197,7 @@ class TestDescriptorRegistry:
         assert tuple(s.name for s in yt.backends) == ("yt-dlp", "scrapecreators")
         web = backends.get_descriptor("web")
         assert tuple(s.name for s in web.backends) == (
-            "brave", "exa", "serper", "parallel", "keyless", "parallel-mcp",
+            "brave", "exa", "serper", "parallel", "keyless", "parallel-mcp", "webrouter",
         )
         assert web.pin_flag == "--web-backend"
 

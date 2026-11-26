@@ -1,4 +1,4 @@
-"""Web search retrieval via Brave Search, Exa, Serper, Parallel, or a keyless floor."""
+"""Web search retrieval via Brave Search, Exa, Serper, Parallel, WebRouter, or a keyless floor."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 
-from . import dates, env, http, parallel_mcp, proxy, schema, web_search_keyless
+from . import dates, env, http, parallel_mcp, proxy, schema, web_search_keyless, webrouter
 
 
 @dataclass(frozen=True)
@@ -526,6 +526,14 @@ def _web_search_with(
             query, date_range, proxy.real_key(config.get("PARALLEL_API_KEY")),
             **mcp_kwargs,
         )
+    elif backend == "webrouter":
+        # Keyless by design: the CLI child gets no API keys (lib/webrouter.py).
+        webrouter_kwargs: dict = {}
+        if effective_deadline is not None:
+            webrouter_kwargs["deadline_monotonic"] = effective_deadline
+        if effective_cancel is not None:
+            webrouter_kwargs["cancel"] = effective_cancel
+        items, artifact = webrouter.search(query, date_range, **webrouter_kwargs)
     elif backend == "keyless":
         keyless_kwargs: dict = {}
         if effective_deadline is not None:

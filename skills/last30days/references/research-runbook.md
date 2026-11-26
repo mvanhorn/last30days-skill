@@ -191,6 +191,7 @@ Before running the engine, determine every applicable targeting flag and resolve
 | `--ig-creators={c1,c2,...}` | Step 0.55 | Creator / brand topics |
 | `--web-backend {backend}` | Explicit user request | Otherwise use automatic selection, including non-Latin topics. API backends require their resolved credential. |
 | `--web-backend parallel-mcp` | Explicit user request only | Use only when the user asks to use Parallel Search MCP. This opts the run into sending its search objective and queries to `https://search.parallel.ai/mcp`; never select it automatically. Anonymous use sends no authorization header; an existing `PARALLEL_API_KEY` is sent as Bearer auth. |
+| `--web-backend webrouter` | Explicit user request only | Use only when the user asks to search through WebRouter. Needs the `webrouter` CLI on PATH (`uv tool install webrouter`); this opts the run into sending its queries to You.com's and Exa's public MCP endpoints, keyless. Never select it automatically. |
 | `--auto-resolve` | Fallback | WebSearch is available but Step 0.55 could not resolve everything cleanly — use as belt-and-suspenders |
 
 **Checkpoint before running the engine:** your Bash command must include every flag from the checklist that applies to this topic. For a person who ships code (the Peter Steinberger class), that is MINIMUM `--x-handle` AND `--github-user` AND `--subreddits`, and typically `--x-related` too. A command with only `--x-handle` on a person topic is a pre-flight skip and a Step 0.5 regression.
