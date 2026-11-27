@@ -9,6 +9,13 @@ This project uses [towncrier](https://towncrier.readthedocs.io/). Upcoming notes
 
 <!-- towncrier release notes start -->
 
+## [4.8.0] - 2026-11-27
+
+### Added
+
+- Added Juejin (掘金), a large Chinese-language developer article platform, as a free, keyless, opt-in source. `INCLUDE_SOURCES=juejin` (or `--search juejin`) searches recent articles through Juejin's public web API, ranks them by likes, comments, saves and views, and attaches the most-liked comments from the top articles. It stays off, with no traffic to Juejin, until you turn it on.
+
+
 ## [4.7.0] - 2026-11-26
 
 ### Security
