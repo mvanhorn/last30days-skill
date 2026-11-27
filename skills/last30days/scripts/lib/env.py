@@ -76,7 +76,7 @@ KEYCHAIN_KEYS = (
     "TRUTHSOCIAL_TOKEN", "BRAVE_API_KEY", "EXA_API_KEY", "SERPER_API_KEY",
     "OPENROUTER_API_KEY", "PERPLEXITY_API_KEY", "PARALLEL_API_KEY", "XQUIK_API_KEY",
     "XIAOHONGSHU_API_BASE", "GITHUB_TOKEN", "BRIGHTDATA_API_KEY",
-    "X_BEARER_TOKEN", "DEEPLINE_API_KEY",
+    "X_BEARER_TOKEN", "DEEPLINE_API_KEY", "OCTEN_API_KEY",
 )
 
 # pass(1) integration: Linux/Unix analog of the Keychain source. Each key in
@@ -839,6 +839,7 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         ('LAST30DAYS_PERPLEXITY_REASONING_EFFORT', None),
         ('LAST30DAYS_PERPLEXITY_DEEP_TIMEOUT_SECONDS', '600'),
         ('PARALLEL_API_KEY', None),
+        ('OCTEN_API_KEY', None),
         ('XQUIK_API_KEY', None),
         # Deepline: one key for the person-run lanes (LinkedIn profile and
         # posts, name-to-profile lookup). Called directly, never proxied.

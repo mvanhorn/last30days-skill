@@ -1,6 +1,6 @@
 """Keyed web results with unknown dates keep their date uncertainty (#928).
 
-Brave, Exa, and Serper bound both ends at the provider. Parallel bounds the
+Brave, Exa, Serper, and Octen bound both ends at the provider. Parallel bounds the
 start date and retains undated results only for current-window searches.
 """
 
@@ -28,6 +28,9 @@ LIVE_DATE_RANGE = ((TODAY - timedelta(days=30)).isoformat(), TODAY.isoformat())
         (grounding.serper_search, {"organic": [
             {"title": "Undated", "link": "https://example.com/serper"},
         ]}),
+        (grounding.octen_search, {"code": 0, "data": {"results": [
+            {"title": "Undated", "url": "https://example.com/octen"},
+        ]}}),
     ],
 )
 def test_server_bounded_undated_result_survives_normalization(search, payload):

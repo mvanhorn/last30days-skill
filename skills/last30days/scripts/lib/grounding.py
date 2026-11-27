@@ -1,4 +1,4 @@
-"""Web search retrieval via Brave Search, Exa, Serper, Parallel, or a keyless floor."""
+"""Web search retrieval via Brave Search, Exa, Serper, Parallel, Octen, or a keyless floor."""
 
 from __future__ import annotations
 
@@ -331,6 +331,73 @@ def parallel_search(
     return items, artifact
 
 
+# ---------------------------------------------------------------------------
+# Octen Search
+# ---------------------------------------------------------------------------
+
+_OCTEN_SEARCH_URL = "https://api.octen.ai/search"
+# Undated pages (profiles, careers pages) appended after the dated results.
+_OCTEN_UNDATED_LIMIT = 3
+
+
+def octen_search(
+    query: str, date_range: tuple[str, str], api_key: str, count: int = 5,
+) -> tuple[list[dict], dict]:
+    """Search Octen. Up to ``count`` in-window dated results come first, then up to
+    three undated pages, which ``time_basis=published`` would drop
+    (https://docs.octen.ai/api-reference/search)."""
+    data = http.request(
+        "POST", _OCTEN_SEARCH_URL,
+        headers={"x-api-key": api_key},
+        json_data={
+            "query": query,
+            "count": count * 3,
+            "time_basis": "auto",
+            "start_time": f"{date_range[0]}T00:00:00.000Z",
+            "end_time": f"{date_range[1]}T23:59:59.999Z",
+            "highlight": {"enable": True},
+        },
+        timeout=15,
+    )
+    code = data.get("code")
+    if code not in (None, 0):
+        # Errors normally arrive as HTTP statuses; a body code is classified the same way.
+        status = code if isinstance(code, int) and 400 <= code < 600 else None
+        raise http.HTTPError(
+            f"Octen search failed: code={code} msg={data.get('msg', '')}", status_code=status,
+        )
+    results = (data.get("data") or {}).get("results") or []
+    dated: list[tuple[dict, str]] = []
+    undated: list[tuple[dict, None]] = []
+    for r in results:
+        if not isinstance(r, dict) or not r.get("url"):
+            continue
+        raw_date = r.get("time_published") or ""
+        pub_date = _normalize_date(raw_date[:10]) if raw_date else None
+        if _known_date_out_of_range(pub_date, date_range):
+            continue
+        if pub_date:
+            dated.append((r, pub_date))
+        else:
+            undated.append((r, None))
+    items = []
+    for i, (r, pub_date) in enumerate(dated[:count] + undated[:_OCTEN_UNDATED_LIMIT]):
+        url = r["url"]
+        items.append({
+            "id": f"WO{i + 1}",
+            "title": r.get("title", ""),
+            "url": url,
+            "source_domain": _domain(url),
+            "snippet": " ".join(str(r.get("highlight") or "").split())[:500],
+            "date": pub_date,
+            "relevance": 0.8,
+            "why_relevant": "Octen web search",
+            "metadata": {"date_window_basis": "server_bounds"},
+        })
+    artifact = {"label": "octen", "webSearchQueries": [query], "resultCount": len(items)}
+    return items, artifact
+
+
 _SERPER_RELATIVE_RE = re.compile(
     r"^(?:about\s+)?(\d+)\s+(minute|min|hour|hr|day|week|month|year)s?\s+ago$", re.I
 )
@@ -418,6 +485,7 @@ def configured_backend(config: dict) -> str | None:
         ("exa", "EXA_API_KEY"),
         ("serper", "SERPER_API_KEY"),
         ("parallel", "PARALLEL_API_KEY"),
+        ("octen", "OCTEN_API_KEY"),
     )
     for backend, key in backends:
         if config.get(key) and not proxy.is_sentinel(config.get(key)):
@@ -511,6 +579,11 @@ def _web_search_with(
         if not key:
             raise RuntimeError("PARALLEL_API_KEY is required when web_backend='parallel'")
         items, artifact = parallel_search(query, date_range, key)
+    elif backend == "octen":
+        key = config.get("OCTEN_API_KEY")
+        if not key:
+            raise RuntimeError("OCTEN_API_KEY is required when web_backend='octen'")
+        items, artifact = octen_search(query, date_range, key)
     elif backend == "parallel-mcp":
         # The MCP client is not behind the http.request proxy seam, so it
         # never receives the proxy-lane placeholder.

@@ -1,0 +1,1 @@
+Add Octen as an opt-in web search backend: it runs only when `OCTEN_API_KEY` is set (or pinned with `--web-backend=octen`, which also needs the key), is auto-detected after every existing web search key, and bills each search to that key. Keyless and existing-key behavior is unchanged.

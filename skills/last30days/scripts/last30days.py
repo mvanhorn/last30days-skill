@@ -1005,7 +1005,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--web-backend", default="auto",
-                        choices=["auto", "brave", "exa", "serper", "parallel", "parallel-mcp", "keyless", "none"],
+                        choices=["auto", "brave", "exa", "serper", "parallel", "octen", "parallel-mcp", "keyless", "none"],
                         help="Web search backend (default: auto; parallel-mcp explicitly opts into the "
                              "anonymous hosted MCP; keyless forces the zero-key floor)")
     parser.add_argument("--perplexity-search-type", choices=["web", "fast"],

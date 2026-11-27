@@ -517,7 +517,8 @@ def test_doctor_x_chain_ranks_proxied_xai_last_like_the_runtime(proxy_env):
 def test_doctor_chain_order_unchanged_outside_proxy_mode():
     config = {"PARALLEL_API_KEY": "user-parallel", "SERPER_API_KEY": "user-serper"}
     resolution = backends.resolve("web", config)
-    assert resolution.chain == list(backends.WEB_BACKEND_ORDER)
+    # Octen is listed only once OCTEN_API_KEY is set.
+    assert resolution.chain == [n for n in backends.WEB_BACKEND_ORDER if n != "octen"]
     assert resolution.active_backend == "serper"
 
 

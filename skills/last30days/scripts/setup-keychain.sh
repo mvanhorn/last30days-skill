@@ -44,6 +44,7 @@ ALL_KEYS=(
   BRIGHTDATA_API_KEY
   X_BEARER_TOKEN
   DEEPLINE_API_KEY
+  OCTEN_API_KEY
 )
 
 if [[ "${OSTYPE:-}" != darwin* ]]; then

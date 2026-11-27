@@ -22,6 +22,7 @@ metadata:
         - OPENROUTER_API_KEY
         - PERPLEXITY_API_KEY
         - PARALLEL_API_KEY
+        - OCTEN_API_KEY
         - BRAVE_API_KEY
         - APIFY_API_TOKEN
         - AUTH_TOKEN
@@ -240,7 +241,7 @@ After the response and required citations, stop and wait unless governing instru
 - Sends the topic text to Wikidata (`www.wikidata.org`, no key) when it looks like a company or person's name; when installed, `yahoo-finance-pp-cli` sends Yahoo Finance a ticker and, to confirm it, the company name; company runs send USPTO patent search (`ppubs.uspto.gov`, no key) the company name
 - Runs `yt-dlp` locally for YouTube search and transcripts (no API key, public data)
 - Sends TikTok/Instagram search, YouTube search backfill below the configured floor (default 3; `LAST30DAYS_YT_SC_MIN_ITEMS=0` means empty-only), and transcripts to ScrapeCreators (`api.scrapecreators.com`); keyed calls spend credits (10,000 free, then PAYG).
-- Optionally sends search queries to Brave Search, Parallel AI, Perplexity (`api.perplexity.ai`), or OpenRouter APIs for web search / synthesis
+- Optionally sends queries to Brave, Parallel, Octen, Perplexity (`api.perplexity.ai`), or OpenRouter for web search / synthesis
 - Fetches public Reddit thread data from `reddit.com` for engagement metrics
 - Reads the `reddit_session` cookie only with its own consent (`REDDIT_BROWSER_CONSENT=true`), sending it only to `reddit.com`; never on Grok Bot, hosted or scheduled runs
 - Stores research findings in local SQLite database (watchlist mode only)

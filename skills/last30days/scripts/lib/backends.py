@@ -63,9 +63,11 @@ TIER_WARN = "warn"
 TIER_ERROR = "error"
 
 # Web search backend order. grounding.web_search's auto branch owns the
-# runtime behavior (brave -> exa -> serper -> parallel -> keyless floor);
+# runtime behavior (brave -> exa -> serper -> parallel -> octen -> keyless floor);
 # parallel-mcp is opt-in only (--web-backend parallel-mcp) and never auto-selected.
-WEB_BACKEND_ORDER: Tuple[str, ...] = ("brave", "exa", "serper", "parallel", "keyless", "parallel-mcp")
+WEB_BACKEND_ORDER: Tuple[str, ...] = (
+    "brave", "exa", "serper", "parallel", "octen", "keyless", "parallel-mcp",
+)
 
 # YouTube backend order (pipeline: yt-dlp first, ScrapeCreators search
 # fallback when yt-dlp is absent or fails — see lib/pipeline.py).
@@ -122,7 +124,8 @@ class BackendSpec:
     ``probe`` must be side-effect-free. When ``paid`` is True the probe is
     key-presence only: no subprocess, no network, no credential spend.
     ``opt_in`` marks backends that are never auto-selected and require an
-    explicit pin (grok).
+    explicit pin (grok). ``listed_if_set`` names a config key that must be set
+    (or the backend pinned) before it is probed, so doctor never prescribes it.
     """
 
     name: str
@@ -130,6 +133,7 @@ class BackendSpec:
     probe: Callable[[Dict[str, Any]], "BackendFinding"]
     paid: bool = False
     opt_in: bool = False
+    listed_if_set: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -554,16 +558,20 @@ _WEB_PROBES: Dict[str, Callable[[Dict[str, Any]], BackendFinding]] = {
     "exa": _key_probe("exa", "EXA_API_KEY", "EXA_API_KEY"),
     "serper": _key_probe("serper", "SERPER_API_KEY", "SERPER_API_KEY"),
     "parallel": _key_probe("parallel", "PARALLEL_API_KEY", "PARALLEL_API_KEY"),
+    "octen": _key_probe("octen", "OCTEN_API_KEY", "OCTEN_API_KEY"),
     "keyless": _probe_web_keyless,
     "parallel-mcp": _probe_web_parallel_mcp,
 }
-_WEB_KEYED = {"brave", "exa", "serper", "parallel"}
+_WEB_KEYED = {"brave", "exa", "serper", "parallel", "octen"}
 _WEB_OPT_IN = {"parallel-mcp"}
+# Octen joins the chain only once its key is set; doctor never asks for it.
+_WEB_LISTED_IF_SET: Dict[str, str] = {"octen": "OCTEN_API_KEY"}
 _WEB_REQUIRES: Dict[str, str] = {
     "brave": "BRAVE_API_KEY",
     "exa": "EXA_API_KEY",
     "serper": "SERPER_API_KEY",
     "parallel": "PARALLEL_API_KEY",
+    "octen": "OCTEN_API_KEY",
     "keyless": "no key; suppressed on native-search hosts",
     "parallel-mcp": "opt-in only (--web-backend parallel-mcp; PARALLEL_API_KEY optional)",
 }
@@ -632,6 +640,7 @@ DESCRIPTORS: Dict[str, ChainDescriptor] = {
                 probe=_WEB_PROBES[name],
                 paid=name in _WEB_KEYED,
                 opt_in=name in _WEB_OPT_IN,
+                listed_if_set=_WEB_LISTED_IF_SET.get(name),
             )
             for name in WEB_BACKEND_ORDER
         ),
@@ -707,7 +716,10 @@ def _specs_for_policy(
     string carries a non-official backend unless it is pinned. Observation
     only: this mirrors ``env.x_backend_chain``, it never alters it.
     """
-    specs = list(descriptor.backends)
+    specs = [
+        spec for spec in descriptor.backends
+        if not spec.listed_if_set or config.get(spec.listed_if_set) or spec.name == pin
+    ]
     if descriptor.source != "x":
         return specs, {spec.name for spec in specs if not spec.opt_in}
     policy = env.x_policy(config)
