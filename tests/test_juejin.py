@@ -172,6 +172,22 @@ def test_keep_limit_caps_results_by_depth(monkeypatch):
     assert result["articles"][0]["article_id"] == "14"
 
 
+def test_ranking_uses_the_engagement_mix_not_likes_first(monkeypatch):
+    rows = [_row(n, f"Claude Code {n}", likes=1) for n in range(20)]
+    rows.append(_row(99, "Claude Code 深度实践", likes=0, comments=100, saves=50, views=10000))
+    _install(monkeypatch, FakeApi(pages=[rows]))
+    result = juejin.search_juejin("claude code", "2026-10-28", "2026-11-27", depth="default")
+    assert result["articles"][0]["article_id"] == "99"
+    assert len(result["articles"]) == juejin.KEEP_LIMIT["default"]
+
+
+def test_changed_reply_shape_is_an_error_not_an_empty_result(monkeypatch):
+    _install(monkeypatch, FakeApi(search_body={"err_no": 0, "err_msg": "success", "data": {"items": []}}))
+    result = juejin.search_juejin("claude code", "2026-10-28", "2026-11-27")
+    assert result["articles"] == []
+    assert "unexpected Juejin search data: dict" in result["error"]
+
+
 def test_chinese_topics_pass_relevance(monkeypatch):
     _install(monkeypatch, FakeApi(pages=[[_row(1, "鸿蒙原生应用开发实践", brief="从零开发一个鸿蒙应用")]]))
     result = juejin.search_juejin("鸿蒙开发", "2026-10-28", "2026-11-27")

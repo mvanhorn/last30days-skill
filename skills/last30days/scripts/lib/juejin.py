@@ -24,12 +24,13 @@ from __future__ import annotations
 
 import datetime
 import html
+import math
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from concurrent.futures import TimeoutError as FuturesTimeout
 from typing import Any
 
-from . import http, log
+from . import http, log, signals
 from .relevance import token_overlap_relevance
 
 # aid=2608 is the Juejin web client's app id; the API rejects calls without it.
@@ -103,13 +104,26 @@ def _article_text(row: dict[str, Any]) -> str:
     return " ".join([str(info.get("title") or ""), str(info.get("brief_content") or ""), " ".join(_tags(row))])
 
 
-def _engagement_rank(row: dict[str, Any]) -> tuple[int, int, int, int]:
+def _engagement(row: dict[str, Any]) -> dict[str, int]:
     info = row.get("article_info") or {}
-    return (
-        _int(info.get("digg_count")),
-        _int(info.get("comment_count")),
-        _int(info.get("collect_count")),
-        _int(info.get("view_count")),
+    return {
+        "likes": _int(info.get("digg_count")),
+        "comments": _int(info.get("comment_count")),
+        "saves": _int(info.get("collect_count")),
+        "views": _int(info.get("view_count")),
+    }
+
+
+def _engagement_mix(row: dict[str, Any]) -> float:
+    """The weighted log mix signals scores Juejin engagement on.
+
+    Ranking on the same mix keeps the articles the engine will score highest;
+    likes first would let one like outrank thousands of views.
+    """
+    engagement = _engagement(row)
+    return sum(
+        weight * math.log1p(engagement.get(field, 0))
+        for field, weight in signals.ENGAGEMENT_WEIGHTS["juejin"]
     )
 
 
@@ -148,6 +162,9 @@ def search_juejin(
         }
         try:
             data = _post(SEARCH_URL, body, deadline=deadline if page > 1 else None)
+            if not isinstance(data.get("data"), list):
+                # A changed reply shape is a failure, not "no matches".
+                raise ValueError(f"unexpected Juejin search data: {type(data.get('data')).__name__}")
         except Exception as exc:
             if page == 1:
                 _log(f"search failed for '{query}': {exc}")
@@ -155,7 +172,7 @@ def search_juejin(
             _log(f"search '{query}': page {page} failed ({exc}); keeping the {page - 1} pages fetched")
             break
         batch = [
-            r["result_model"] for r in data.get("data") or []
+            r["result_model"] for r in data["data"]
             if isinstance(r, dict) and isinstance(r.get("result_model"), dict)
             and isinstance(r["result_model"].get("article_info"), dict)
         ]
@@ -182,7 +199,7 @@ def search_juejin(
             dropped += 1
             continue
         articles[article_id] = row
-    kept = sorted(articles.values(), key=_engagement_rank, reverse=True)
+    kept = sorted(articles.values(), key=_engagement_mix, reverse=True)
     kept = kept[: KEEP_LIMIT.get(depth, KEEP_LIMIT["default"])]
     _log(f"search '{query}': kept {len(kept)} of {len(rows)} rows, dropped {dropped} off-topic")
     return {"articles": kept}
@@ -195,7 +212,8 @@ def parse_juejin_response(response: dict[str, Any], query: str = "") -> list[dic
         info = row.get("article_info") or {}
         author = row.get("author_user_info") or {}
         article_id = str(row.get("article_id") or info.get("article_id"))
-        likes, comments, saves, views = _engagement_rank(row)
+        engagement = _engagement(row)
+        likes, comments = engagement["likes"], engagement["comments"]
         content_score = token_overlap_relevance(query, _article_text(row)) if query else 0.5
         relevance = min(1.0, 0.7 * content_score + min(0.3, (likes + comments) / 100))
         created = datetime.datetime.fromtimestamp(_int(info.get("ctime")), datetime.timezone.utc)
@@ -207,7 +225,7 @@ def parse_juejin_response(response: dict[str, Any], query: str = "") -> list[dic
             "author": str(author.get("user_name") or ""),
             "date": created.date().isoformat(),
             "text": text[:TEXT_LIMIT] + "..." if len(text) > TEXT_LIMIT else text,
-            "engagement": {"likes": likes, "comments": comments, "saves": saves, "views": views},
+            "engagement": engagement,
             "relevance": round(relevance, 2),
             "why_relevant": "Juejin article (search)",
             "metadata": {
