@@ -679,6 +679,31 @@ def test_v2ex_signal_parity(monkeypatch):
     assert rs_res[0].local_rank_score == pytest.approx(py_res[0].local_rank_score, abs=1e-9)
 
 
+@requires_rust
+def test_juejin_signal_parity(monkeypatch):
+    items_py = [
+        schema.SourceItem(
+            item_id="juejin-1",
+            source="juejin",
+            title="Rust async runtime discussion",
+            body="Comparing Tokio and smol in production.",
+            url="https://juejin.cn/post/12345",
+            published_at="2026-11-25",
+            engagement={"likes": 8, "comments": 3, "saves": 4, "views": 1200},
+        )
+    ]
+    items_rs = [
+        schema.SourceItem(**{**items_py[0].__dict__, "engagement": dict(items_py[0].engagement)})
+    ]
+    monkeypatch.setenv("LAST30DAYS_ENGINE", "python")
+    py_res = signals.annotate_stream(items_py, "Rust async runtime", "balanced_recent", reference_date="2026-11-26")
+    monkeypatch.setenv("LAST30DAYS_ENGINE", "rust")
+    rs_res = signals.annotate_stream(items_rs, "Rust async runtime", "balanced_recent", reference_date="2026-11-26")
+    assert rs_res[0].source_quality == pytest.approx(py_res[0].source_quality, abs=1e-9)
+    assert rs_res[0].engagement_score == py_res[0].engagement_score
+    assert rs_res[0].local_rank_score == pytest.approx(py_res[0].local_rank_score, abs=1e-9)
+
+
 def test_setup_status_and_doctor_render_rust_core(monkeypatch):
     text = setup_wizard.get_setup_status_text(
         {

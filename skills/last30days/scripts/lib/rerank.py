@@ -47,6 +47,7 @@ _DISCOVERY_ENGAGEMENT_FIELDS = {
     "hackernews": ("points", "comments"),
     "devto": ("reactions", "comments"),
     "v2ex": ("replies",),
+    "juejin": ("likes", "comments"),
     "digg": ("postCount", "uniqueAuthors"),
     "x": ("likes", "reposts", "replies", "quotes"),
 }

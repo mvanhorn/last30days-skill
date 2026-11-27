@@ -54,6 +54,7 @@ from . import (
     jobs,
     jobs_digest,
     jobs_story,
+    juejin,
     linkedin,
     library,
     library_index,
@@ -144,6 +145,7 @@ SEARCH_ALIAS = {
 MAX_SOURCE_FETCHES: dict[str, int] = {
     "x": 2, "jobs": 1, "linkedin": 1, "stocktwits": 1, "trustpilot": 1, "amazon": 1,
     "telegram": 1, "meta_ads": 1, "devto": 1, "v2ex": 1,
+    "juejin": 1,
 }
 
 # Sources whose thin result is their normal success state, so the "<3 items"
@@ -770,6 +772,7 @@ MOCK_AVAILABLE_SOURCES = [
     "telegram",
     "devto",
     "v2ex",
+    "juejin",
 ]
 
 # Full set of searchable source names accepted by --search /
@@ -931,6 +934,12 @@ def available_sources(
         requested_sources and "v2ex" in requested_sources
     ):
         available.append("v2ex")
+    # Juejin is opt-in like dev.to and V2EX: its search API serves Juejin's
+    # own web client and should only see queries from users who asked for it.
+    if "juejin" in include_sources or (
+        requested_sources and "juejin" in requested_sources
+    ):
+        available.append("juejin")
     if which("digg-pp-cli"):
         available.append("digg")
     # arXiv is default-on when its Printing Press CLI is installed (zero auth).
@@ -3195,7 +3204,7 @@ def run(
             explicit=hiring_signals_mode or company_jobs_attached,
             topic=topic,
         )
-        for opt_in_source in ("devto", "v2ex"):
+        for opt_in_source in ("devto", "v2ex", "juejin"):
             _ensure_opt_in_source_in_plan(plan, available, opt_in_source)
     if "corpus" in available and plan.subqueries:
         # Corpus is deterministic and user-registered, so it always gets one
@@ -5141,6 +5150,15 @@ def _finalize_items_by_source(
                 items = _merge_replayed_enrichment(items, replayed)
             elif time.monotonic() < finalization_deadline:
                 v2ex.enrich_source_items(items, deadline=finalization_deadline)
+                http.fixture_source_record(enrichment_request, schema.to_dict(items))
+            else:
+                http.fixture_source_record(enrichment_request, [])
+        if source == "juejin" and items and not mock:
+            matched, replayed = http.fixture_source_replay(enrichment_request)
+            if matched:
+                items = _merge_replayed_enrichment(items, replayed)
+            elif time.monotonic() < finalization_deadline:
+                juejin.enrich_source_items(items, deadline=finalization_deadline)
                 http.fixture_source_record(enrichment_request, schema.to_dict(items))
             else:
                 http.fixture_source_record(enrichment_request, [])
@@ -9124,6 +9142,16 @@ def _retrieve_stream_impl(
         items = v2ex.parse_v2ex_response(result, query=relevance_topic)
         # Reply enrichment is deferred to _finalize_items_by_source so it
         # lands on the topics that survive relevance pruning.
+        return items, _result_outcome_artifact(source, result)
+    if source == "juejin":
+        relevance_topic = raw_topic or topic or subquery.search_query
+        result = juejin.search_juejin(
+            relevance_topic, from_date, to_date, depth=depth,
+            search_query=subquery.search_query,
+        )
+        items = juejin.parse_juejin_response(result, query=relevance_topic)
+        # Comment enrichment is deferred to _finalize_items_by_source so it
+        # lands on the articles that survive relevance pruning.
         return items, _result_outcome_artifact(source, result)
     if source == "stocktwits":
         # Pass raw_topic so symbol detection sees the full topic, not the

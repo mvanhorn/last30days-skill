@@ -124,7 +124,7 @@ pub fn source_quality(source: &str) -> f64 {
         "youtube" | "digg" | "techmeme" => 0.85,
         "hackernews" | "amazon" => 0.8,
         "devto" | "trustpilot" => 0.78,
-        "corpus" => 0.75,
+        "corpus" | "juejin" => 0.75,
         "meta_ads" | "jobs" | "v2ex" => 0.72,
         "xiaohongshu" => 0.7,
         "x" => 0.68,
@@ -175,6 +175,7 @@ fn engagement_log_reference(source: &str) -> Option<f64> {
         "polymarket" => Some(15.2),
         "digg" => Some(4.5),
         "v2ex" => Some(5.0),
+        "juejin" => Some(3.3),
         "trustpilot" | "amazon" => Some(11.5),
         _ => None,
     }
@@ -204,6 +205,12 @@ fn source_engagement_weights(source: &str) -> Option<&'static [(&'static str, f6
         "hackernews" => Some(&[("points", 0.55), ("comments", 0.45)]),
         "devto" => Some(&[("reactions", 0.60), ("comments", 0.40)]),
         "v2ex" => Some(&[("replies", 1.0)]),
+        "juejin" => Some(&[
+            ("likes", 0.40),
+            ("comments", 0.25),
+            ("saves", 0.15),
+            ("views", 0.20),
+        ]),
         "bluesky" => Some(&[
             ("likes", 0.40),
             ("reposts", 0.30),
