@@ -1,6 +1,6 @@
 # Hermes install-time scanner/package exclusions for repository-root scans.
 # Keep the public bundle focused on the runtime skill under skills/last30days/.
-
+# practice on github lad
 # Local secrets, credentials, VCS, local envs, caches, and generated outputs
 .env
 .env.*
