@@ -1,7 +1,7 @@
 import copy
 import unittest
 
-from lib import hiring_signals, render, schema
+from lib import hiring_signals, render, rerank, schema
 
 
 def sample_report() -> schema.Report:
@@ -105,6 +105,23 @@ def mixed_representative_report() -> schema.Report:
 
 
 class RenderV3Tests(unittest.TestCase):
+    def test_leading_intent_modifier_keeps_relevant_fallback_cluster(self):
+        report = sample_report()
+        report.topic = "emerging ai coding trends"
+        report.query_plan.raw_topic = report.topic
+        candidate = report.ranked_candidates[0]
+        candidate.title = "AI coding agents gain adoption"
+        candidate.snippet = "New workflows for AI coding agents"
+        rerank._apply_fallback_scores(
+            [candidate], primary_entity=rerank._primary_entity(report.topic)
+        )
+
+        text = render.render_compact(report)
+
+        self.assertNotIn("entity-miss", candidate.explanation or "")
+        self.assertIn("### 1. Grounded result", text)
+        self.assertNotIn("**Nothing solid this window.**", text)
+
     def test_render_compact_includes_cluster_first_sections(self):
         text = render.render_compact(sample_report())
         self.assertIn("# last30days v", text)

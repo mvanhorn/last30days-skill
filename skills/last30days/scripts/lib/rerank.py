@@ -214,6 +214,9 @@ _TRAILING_INTENT_MODIFIER_RE = re.compile(
     r")\b[\s?.,:;!]*$",
     re.IGNORECASE,
 )
+_LEADING_INTENT_MODIFIER_RE = re.compile(
+    r"^(?:emerging|rising|upcoming|growing)(?:\s+|$)", re.IGNORECASE
+)
 
 _GENERIC_GROUNDING_MIN_TOKENS = 4
 _GROUNDING_ANCHOR_MIN_LENGTH = 6
@@ -1043,12 +1046,12 @@ def _fallback_tuple(
 def _primary_entity(topic: str) -> str:
     """Extract the primary entity from the topic for grounding checks.
 
-    Strips intent-modifier suffixes (see planner._INTENT_MODIFIER_PATTERNS),
+    Strips leading trend and trailing intent modifiers (see planner._INTENT_MODIFIER_PATTERNS),
     trims trailing punctuation, collapses whitespace. Returns the empty
     string for topics that are all intent modifier with no entity, so
     callers can skip the grounding check.
     """
-    stripped = topic
+    stripped = _LEADING_INTENT_MODIFIER_RE.sub("", topic, count=1)
     while True:
         shortened = _TRAILING_INTENT_MODIFIER_RE.sub("", stripped, count=1)
         if shortened == stripped:
