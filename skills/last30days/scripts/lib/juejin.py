@@ -24,13 +24,12 @@ from __future__ import annotations
 
 import datetime
 import html
-import math
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from concurrent.futures import TimeoutError as FuturesTimeout
 from typing import Any
 
-from . import http, log, signals
+from . import dates, http, log, signals
 from .relevance import token_overlap_relevance
 
 # aid=2608 is the Juejin web client's app id; the API rejects calls without it.
@@ -85,9 +84,10 @@ def _post(url: str, body: dict[str, Any], deadline: float | None = None) -> dict
 
 
 def _int(value: Any) -> int:
+    """Parse a count or id, treating malformed or negative input as absent."""
     try:
-        return int(value or 0)
-    except (TypeError, ValueError):
+        return max(0, int(value or 0))
+    except (TypeError, ValueError, OverflowError):
         return 0
 
 
@@ -122,7 +122,7 @@ def _engagement_mix(row: dict[str, Any]) -> float:
     """
     engagement = _engagement(row)
     return sum(
-        weight * math.log1p(engagement.get(field, 0))
+        weight * signals.log1p_safe(engagement.get(field, 0))
         for field, weight in signals.ENGAGEMENT_WEIGHTS["juejin"]
     )
 
@@ -215,15 +215,19 @@ def parse_juejin_response(response: dict[str, Any], query: str = "") -> list[dic
         engagement = _engagement(row)
         likes, comments = engagement["likes"], engagement["comments"]
         content_score = token_overlap_relevance(query, _article_text(row)) if query else 0.5
-        relevance = min(1.0, 0.7 * content_score + min(0.3, (likes + comments) / 100))
-        created = datetime.datetime.fromtimestamp(_int(info.get("ctime")), datetime.timezone.utc)
+        # Cap each counter before adding: an extreme upstream int would overflow
+        # the division's float conversion, and the sum was capped at 0.3 anyway.
+        # A negative counter is no signal, not a reason to lower the score.
+        engagement_bonus = min(0.3, (min(likes, 100) + min(comments, 100)) / 100)
+        relevance = min(1.0, 0.7 * content_score + engagement_bonus)
+        created_at = dates.parse_date(_int(info.get("ctime")))
         text = _clean(info.get("brief_content"))
         items.append({
             "id": article_id,
             "title": _clean(info.get("title")),
             "url": ARTICLE_URL.format(id=article_id),
             "author": str(author.get("user_name") or ""),
-            "date": created.date().isoformat(),
+            "date": created_at.date().isoformat() if created_at else "",
             "text": text[:TEXT_LIMIT] + "..." if len(text) > TEXT_LIMIT else text,
             "engagement": engagement,
             "relevance": round(relevance, 2),

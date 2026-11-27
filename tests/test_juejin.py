@@ -247,6 +247,44 @@ def test_parse_maps_article_fields():
     assert 0 < item["relevance"] <= 1
 
 
+def test_search_tolerates_negative_and_huge_engagement(monkeypatch):
+    # math.log1p raises on a negative count and overflows on a huge int; both
+    # used to abort the source after its network phase had already finished.
+    for likes in (-3, 10**1000):
+        _install(monkeypatch, FakeApi(pages=[[_row(1, "Claude Code one", likes=likes)]]))
+        result = juejin.search_juejin("claude code", "2026-10-28", "2026-11-27", depth="quick")
+        assert [row["article_id"] for row in result["articles"]] == ["1"]
+
+
+def test_parse_treats_a_malformed_ctime_as_missing():
+    # Out-of-range seconds, a pre-epoch value, and a non-finite JSON number
+    # all fail fromtimestamp; the item should still be usable with no date.
+    for ctime in (10**18, -1, float("inf")):
+        row = _row(1, "Claude Code")
+        row["result_model"]["article_info"]["ctime"] = ctime
+        [item] = juejin.parse_juejin_response(
+            {"articles": [row["result_model"]]}, query="claude code"
+        )
+        assert item["date"] == ""
+
+
+def test_parse_clamps_negative_engagement_counts():
+    row = _row(1, "Claude Code", likes=-3, comments=-2)
+    [item] = juejin.parse_juejin_response(
+        {"articles": [row["result_model"]]}, query="claude code"
+    )
+    assert item["engagement"]["likes"] == 0
+    assert item["engagement"]["comments"] == 0
+
+
+def test_parse_tolerates_huge_engagement_counts():
+    row = _row(1, "Claude Code", likes=10**1000, comments=10**1000)
+    [item] = juejin.parse_juejin_response(
+        {"articles": [row["result_model"]]}, query="claude code"
+    )
+    assert 0 <= item["relevance"] <= 1
+
+
 def test_normalized_item_uses_juejin_container():
     [item] = _source_items([_row(1, "Claude Code 体验", brief="claude code 很好用")])
     assert item.source == "juejin"
