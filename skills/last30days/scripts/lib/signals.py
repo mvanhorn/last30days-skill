@@ -16,6 +16,7 @@ SOURCE_QUALITY = {
     "hackernews": 0.8,
     "devto": 0.78,
     "v2ex": 0.72,
+    "juejin": 0.75,
     "youtube": 0.85,
     "digg": 0.85,
     "arxiv": 0.9,
@@ -201,6 +202,7 @@ ENGAGEMENT_WEIGHTS: dict[str, list[tuple[str, float]]] = {
     "hackernews":       [("points", 0.55), ("comments", 0.45)],
     "devto":            [("reactions", 0.60), ("comments", 0.40)],
     "v2ex":             [("replies", 1.0)],
+    "juejin":           [("likes", 0.40), ("comments", 0.25), ("saves", 0.15), ("views", 0.20)],
     "github":           [("reactions", 0.60), ("comments", 0.40)],
     "bluesky":          [("likes", 0.40), ("reposts", 0.30), ("replies", 0.20), ("quotes", 0.10)],
     "truthsocial":      [("likes", 0.45), ("reposts", 0.30), ("replies", 0.25)],
@@ -343,6 +345,12 @@ _ENGAGEMENT_LOG_REFERENCE: dict[str, float] = {
     # Topic reply counts. The V2EX hot list on 2026-11-26 ran 130, 97, 81 at
     # the top and 57 at the median, so ~150 replies is a very busy topic.
     "v2ex":        5.0,  # ~log1p(150)
+    # Likes, comments, saves and views on the ENGAGEMENT_WEIGHTS mix. 467
+    # in-window articles across 8 topics on 2026-11-27 ran a weighted log
+    # mix of 0.76 at the median (no likes, ~35 views), 1.44 at p90, 2.86 at
+    # p99 (e.g. 8 likes, 3 comments, 4 saves, 1.2k views) and 4.08 at most,
+    # so the median article scores ~23 and the top percentile ~87.
+    "juejin":      3.3,
     # Saves on a viral pin reach ~10k.
     "pinterest":   9.2,  # ~log1p(10000)
     # Reactions run like Reddit upvotes: a viral post has ~2k.

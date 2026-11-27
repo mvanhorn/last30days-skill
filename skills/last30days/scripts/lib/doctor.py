@@ -185,6 +185,7 @@ SOURCE_ORDER = (
     "github",
     "devto",
     "v2ex",
+    "juejin",
     "digg",
     "techmeme",
     "arxiv",
@@ -851,6 +852,17 @@ def _v2ex_record(config):
     )
 
 
+def _juejin_record(config):
+    requires = "none (public Juejin web API)"
+    if "juejin" in env.include_sources(config):
+        return _record(status=health.OK, requires=requires)
+    return _record(
+        status="opt-in", requires=requires,
+        fix="add juejin to INCLUDE_SOURCES (or request it via --search juejin)",
+        note="off by default",
+    )
+
+
 def _polymarket_record(config):
     return _record(status=health.OK, requires="none (public API)")
 
@@ -1284,6 +1296,7 @@ _SOURCE_BUILDERS: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
     "github": _github_record,
     "devto": _devto_record,
     "v2ex": _v2ex_record,
+    "juejin": _juejin_record,
     "digg": _digg_record,
     "techmeme": _techmeme_record,
     "arxiv": _arxiv_record,

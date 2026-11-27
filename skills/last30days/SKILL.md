@@ -51,6 +51,7 @@ metadata:
       - hackernews
       - devto
       - v2ex
+      - juejin
       - polymarket
       - digg
       - bluesky
@@ -234,6 +235,7 @@ After the response and required citations, stop and wait unless governing instru
 - Sends search queries, free and without auth, to Algolia HN Search (`hn.algolia.com`) and Polymarket Gamma (`gamma-api.polymarket.com`)
 - dev.to API only on `--devto-tags`/`INCLUDE_SOURCES=devto`
 - V2EX only on `INCLUDE_SOURCES=v2ex`/`--search v2ex`: queries to SOV2EX (`www.sov2ex.com`), replies from `www.v2ex.com`
+- Juejin API (`api.juejin.cn`) only on `INCLUDE_SOURCES=juejin`/`--search juejin`
 - Person runs (`--employer`, `--linkedin`, `--email`) fetch the employer's public pages; with `DEEPLINE_API_KEY` they send the name, employer, and any supplied LinkedIn URL or email to Deepline (`code.deepline.com`), which spends credits
 - Sends the topic text to Wikidata (`www.wikidata.org`, no key) when it looks like a company or person's name; when installed, `yahoo-finance-pp-cli` sends Yahoo Finance a ticker and, to confirm it, the company name; company runs send USPTO patent search (`ppubs.uspto.gov`, no key) the company name
 - Runs `yt-dlp` locally for YouTube search and transcripts (no API key, public data)

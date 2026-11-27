@@ -33,6 +33,7 @@ HOST_PLAN_BACKFILL_SOURCES = (
     "dripstack",
     "devto",
     "v2ex",
+    "juejin",
     "telegram",
     "trustpilot",
 )
@@ -166,6 +167,7 @@ SOURCE_CAPABILITIES = {
     "hackernews": {"discussion", "link"},
     "devto": {"discussion", "link", "reference"},
     "v2ex": {"discussion"},
+    "juejin": {"discussion", "link", "reference"},
     "bluesky": {"discussion", "social"},
     "truthsocial": {"discussion", "social"},
     "linkedin": {"discussion", "social"},

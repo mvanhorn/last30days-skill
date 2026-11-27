@@ -245,6 +245,7 @@ SOURCE_LABELS = {
     "hackernews": "Hacker News",
     "devto": "dev.to",
     "v2ex": "V2EX",
+    "juejin": "Juejin",
     "truthsocial": "Truth Social",
     "linkedin": "LinkedIn",
     "linkedin_profile": "LinkedIn",
@@ -2071,6 +2072,7 @@ def render_full(report: schema.Report, save_path: str | None = None) -> str:
         "hackernews",
         "devto",
         "v2ex",
+        "juejin",
         "bluesky",
         "truthsocial",
         "polymarket",
@@ -3723,6 +3725,7 @@ _SITE_NAMES: dict[str, str] = {
     "substack.com": "Substack",
     "dev.to": "dev.to",
     "v2ex.com": "V2EX",
+    "juejin.cn": "Juejin",
     "github.com": "GitHub",
     "stackoverflow.com": "Stack Overflow",
     "producthunt.com": "Product Hunt",
@@ -3878,6 +3881,7 @@ _FOOTER_SOURCES: list[tuple[str, str, str, str, list[tuple[str, str]]]] = [
     ),
     ("devto", "👩‍💻", "dev.to", "article", [("reactions", "reactions"), ("comments", "comments")]),
     ("v2ex", "💬", "V2EX", "topic", [("replies", "replies")]),
+    ("juejin", "📘", "Juejin", "article", [("likes", "likes"), ("comments", "comments"), ("views", "views")]),
     ("bluesky", "🦋", "Bluesky", "post", [("likes", "likes"), ("reposts", "reposts")]),
     (
         "truthsocial",
@@ -4756,6 +4760,7 @@ ENGAGEMENT_DISPLAY: dict[str, list[tuple[str, str]]] = {
     "hackernews": [("points", "pts"), ("comments", "cmt")],
     "devto": [("reactions", "react"), ("comments", "cmt")],
     "v2ex": [("replies", "re")],
+    "juejin": [("likes", "likes"), ("comments", "cmt"), ("views", "views")],
     "bluesky": [("likes", "likes"), ("reposts", "rt"), ("replies", "re")],
     "truthsocial": [("likes", "likes"), ("reposts", "rt"), ("replies", "re")],
     "linkedin": [("likes", "likes"), ("comments", "cmt")],
@@ -5097,11 +5102,15 @@ _TOP_COMMENT_MIN_SCORE: dict[str, int] = {
     "devto": 0,
     # V2EX replies carry no votes at all.
     "v2ex": 0,
+    # Most Juejin comments have no likes; any positive floor would drop the
+    # whole source.
+    "juejin": 0,
 }
 _TOP_COMMENT_VOTE_LABEL: dict[str, str] = {
     "reddit": "upvotes",
     "hackernews": "points",
     "devto": "replies",
+    "juejin": "likes",
     "youtube": "likes",
     "tiktok": "likes",
     "instagram": "likes",
