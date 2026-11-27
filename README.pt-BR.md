@@ -86,6 +86,8 @@ Se você vai se reunir com um CEO, já leu todos os tweets e todas as transcriç
 | **Threads** | A camada de texto do pós-Twitter. Conversas de criadores e marcas. |
 | **Pinterest** | Descoberta visual. Pins, itens salvos e comentários sobre produtos e ideias. |
 | **Xiaohongshu (RED)** | Sinais chineses sobre estilo de vida, produtos e criadores. É pedido explicitamente com `--search xhs` quando há um plugin de navegador x-mcp logado ou um serviço `xiaohongshu-mcp` rodando localmente. |
+| **Juejin** | Chinese developer write-ups on what just shipped, ranked by likes, comments, saves, and views. Opt in with `--search juejin` or `INCLUDE_SOURCES=juejin`. Free, no API key. |
+| **V2EX** | The Chinese developer forum: threads and replies from the top topics. Opt in with `--search v2ex` or `INCLUDE_SOURCES=v2ex`. Free, no API key. |
 | **Bluesky** | A camada social descentralizada. Publicações do AT Protocol vindas da migração pós-Twitter. |
 | **Perplexity** | Síntese controlada da Agent API, alternativa Sonar via OpenRouter, resultados brutos da Search API e Deep Research explícito. |
 | **DEV Community (dev.to)** | Artigos de desenvolvedores e melhores comentários pela API pública, sem chave. Ative com `--devto-tags`, `--search devto` ou `INCLUDE_SOURCES=devto`. |

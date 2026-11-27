@@ -86,6 +86,8 @@ CEOと会うとして、直近30日間のツイートと YouTube の文字起こ
 | **Threads** | Twitter 以後のテキストの層。クリエイターやブランドの会話です。 |
 | **Pinterest** | ビジュアル起点の発見。プロダクトやアイデアに対するピン・保存・コメント。 |
 | **Xiaohongshu(RED)** | 中国のライフスタイル・プロダクト・クリエイターのシグナル。ログイン済みの x-mcp ブラウザプラグイン、または `xiaohongshu-mcp` サービスがローカルで動いているときに、`--search xhs` で明示的に指定して使います。 |
+| **Juejin** | Chinese developer write-ups on what just shipped, ranked by likes, comments, saves, and views. Opt in with `--search juejin` or `INCLUDE_SOURCES=juejin`. Free, no API key. |
+| **V2EX** | The Chinese developer forum: threads and replies from the top topics. Opt in with `--search v2ex` or `INCLUDE_SOURCES=v2ex`. Free, no API key. |
 | **Bluesky** | 分散型のソーシャル層。Twitter 以後の移住で生まれた AT Protocol の投稿です。 |
 | **Perplexity** | 制御された Agent API の統合、OpenRouter の Sonar フォールバック、Search API の生の結果、明示的な Deep Research。 |
 | **DEV Community (dev.to)** | 公開 API で開発者の記事とトップコメントを検索します。キーは不要です。`--devto-tags`、`--search devto`、または `INCLUDE_SOURCES=devto` で有効にします。 |

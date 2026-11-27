@@ -95,6 +95,8 @@ npx skills add mvanhorn/last30days-skill -g
 | **Threads** | محادثات صناع المحتوى والعلامات التجارية |
 | **Pinterest** | اكتشاف المنتجات والأفكار بصريا عبر الصور المحفوظة والتعليقات |
 | **Xiaohongshu (RED)** | إشارات من المحتوى الصيني حول أسلوب الحياة والمنتجات، ويطلب صراحة باستخدام `--search xhs` مع تشغيل `x-mcp` أو `xiaohongshu-mcp` محليا وتسجيل الدخول |
+| **Juejin** | Chinese developer write-ups on what just shipped, ranked by likes, comments, saves, and views. Opt in with `--search juejin` or `INCLUDE_SOURCES=juejin`. Free, no API key. |
+| **V2EX** | The Chinese developer forum: threads and replies from the top topics. Opt in with `--search v2ex` or `INCLUDE_SOURCES=v2ex`. Free, no API key. |
 | **Bluesky** | منشورات شبكة AT Protocol الاجتماعية اللامركزية |
 | **Perplexity** | تلخيص عبر Agent API، مع بديل OpenRouter Sonar، ونتائج Search API الخام، وإمكانية طلب Deep Research صراحة |
 | **DEV Community (dev.to)** | مقالات المطورين وأبرز التعليقات عبر API عامة دون مفتاح، ويمكن تفعيلها بـ`--devto-tags` أو `--search devto` أو `INCLUDE_SOURCES=devto` |

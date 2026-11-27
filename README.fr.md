@@ -86,6 +86,8 @@ Si vous rencontrez un PDG, avez-vous lu tous ses tweets et toutes ses transcript
 | **Threads** | La couche texte de l'après-Twitter. Les conversations des créateurs et des marques. |
 | **Pinterest** | La découverte visuelle. Épingles, enregistrements et commentaires sur des produits et des idées. |
 | **Xiaohongshu (RED)** | Les signaux chinois sur le lifestyle, les produits et les créateurs. À demander explicitement avec `--search xhs` quand un plugin de navigateur x-mcp connecté ou un service `xiaohongshu-mcp` tourne en local. |
+| **Juejin** | Chinese developer write-ups on what just shipped, ranked by likes, comments, saves, and views. Opt in with `--search juejin` or `INCLUDE_SOURCES=juejin`. Free, no API key. |
+| **V2EX** | The Chinese developer forum: threads and replies from the top topics. Opt in with `--search v2ex` or `INCLUDE_SOURCES=v2ex`. Free, no API key. |
 | **Bluesky** | La couche sociale décentralisée. Les posts AT Protocol issus de la migration post-Twitter. |
 | **Perplexity** | Une synthèse contrôlée avec l’Agent API, un repli Sonar via OpenRouter, les résultats bruts de la Search API et Deep Research explicite. |
 | **DEV Community (dev.to)** | Articles de développeurs et meilleurs commentaires via l'API publique, sans clé. Activation avec `--devto-tags`, `--search devto` ou `INCLUDE_SOURCES=devto`. |
