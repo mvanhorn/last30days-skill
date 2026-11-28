@@ -260,6 +260,16 @@ class EntityGroundingTests(unittest.TestCase):
         self.assertEqual("Claude Code", rerank._primary_entity("Claude Code workflows"))
         self.assertEqual("DSPy", rerank._primary_entity("DSPy tutorial"))
 
+    def test_primary_entity_strips_leading_intent_modifier(self):
+        for modifier in ("emerging", "rising", "upcoming", "growing"):
+            with self.subTest(modifier=modifier):
+                entity = rerank._primary_entity(f"{modifier} Stripe payments")
+                self.assertEqual("Stripe payments", entity)
+                self.assertTrue(rerank._entity_grounded("Stripe chargebacks", entity))
+                self.assertFalse(rerank._entity_grounded("PayPal chargebacks", entity))
+        self.assertEqual("", rerank._primary_entity("emerging"))
+        self.assertEqual("Stripe", rerank._primary_entity("Emerging Stripe"))
+
     def test_primary_entity_leaves_bare_entity_unchanged(self):
         self.assertEqual("Kanye West", rerank._primary_entity("Kanye West"))
         self.assertEqual("Nous Research", rerank._primary_entity("Nous Research"))
