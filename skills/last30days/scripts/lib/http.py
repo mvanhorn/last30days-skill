@@ -5,6 +5,8 @@ import io
 import ipaddress
 import json
 from collections import OrderedDict
+from datetime import timezone
+from email.utils import parsedate_to_datetime
 import math
 import os
 import random
@@ -95,7 +97,9 @@ def retry_delay_from_headers(headers, fallback):
     USPTO Patent Public Search names its wait in
     ``x-rate-limit-retry-after-seconds`` instead.
 
-    Returns ``fallback`` when none of these headers is present or parseable.
+    ``Retry-After`` accepts both delay-seconds and an HTTP-date. Date values
+    are converted to a delay against the current clock and share the same cap.
+    Returns ``fallback`` when none of these headers names a positive delay.
     """
     if not headers:
         return fallback
@@ -110,10 +114,20 @@ def retry_delay_from_headers(headers, fallback):
         try:
             value = float(raw)
         except (TypeError, ValueError):
-            continue
-        if value >= _EPOCH_RESET_THRESHOLD:
-            # GitHub-style absolute reset time.
-            value = value - time.time()
+            if name != "Retry-After" or not isinstance(raw, str):
+                continue
+            try:
+                retry_at = parsedate_to_datetime(raw)
+                # Obsolete HTTP asctime dates omit GMT but still mean UTC.
+                if retry_at.tzinfo is None:
+                    retry_at = retry_at.replace(tzinfo=timezone.utc)
+                value = retry_at.timestamp() - time.time()
+            except (TypeError, ValueError, OverflowError, OSError):
+                continue
+        else:
+            if value >= _EPOCH_RESET_THRESHOLD:
+                # GitHub-style absolute reset time.
+                value = value - time.time()
         if value > 0:
             return min(value, MAX_RETRY_DELAY_SECONDS)
     return fallback

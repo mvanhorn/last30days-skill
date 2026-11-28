@@ -254,3 +254,57 @@ def test_post_sends_a_bare_json_scalar_body(monkeypatch):
     http.post("https://api.example.test/session", json_data=-1)
 
     assert sent == {"data": b"-1", "content_type": "application/json"}
+
+
+@pytest.mark.parametrize("retry_after", [
+    "Sat, 28 Nov 2026 12:00:30 GMT",
+    "Saturday, 28-Nov-26 12:00:30 GMT",
+    "Sat Nov 28 12:00:30 2026",
+])
+def test_429_with_http_date_waits_until_retry_time(monkeypatch, retry_after):
+    from datetime import datetime, timezone
+
+    now = datetime(2026, 11, 28, 12, 0, tzinfo=timezone.utc).timestamp()
+    monkeypatch.setattr(http.time, "time", lambda: now)
+    sleeps = []
+    monkeypatch.setattr(http.time, "sleep", sleeps.append)
+    outcomes = iter([
+        urllib.error.HTTPError(
+            "https://api.example.test/search", 429, "Too Many Requests",
+            _headers({"Retry-After": retry_after}), None,
+        ),
+        _response('{"ok": true}'),
+    ])
+
+    def urlopen(*_args, **_kwargs):
+        outcome = next(outcomes)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(http.urllib.request, "urlopen", urlopen)
+    assert http.get("https://api.example.test/search") == {"ok": True}
+    assert sleeps == [30.0]
+
+
+def test_http_date_retry_delay_keeps_cap_and_header_precedence(monkeypatch):
+    from datetime import datetime, timezone
+
+    now = datetime(2026, 11, 28, 12, 0, tzinfo=timezone.utc).timestamp()
+    monkeypatch.setattr(http.time, "time", lambda: now)
+    assert http.retry_delay_from_headers({
+        "Retry-After": "Sat, 28 Nov 2026 12:02:00 GMT", "x-ratelimit-reset": "5",
+    }, 3.0) == http.MAX_RETRY_DELAY_SECONDS
+    assert http.retry_delay_from_headers({
+        "Retry-After": "Sat, 28 Nov 2026 11:59:59 GMT", "x-ratelimit-reset": "5",
+    }, 3.0) == 5.0
+    assert http.retry_delay_from_headers({
+        "Retry-After": "not a date", "x-ratelimit-reset": "5",
+    }, 3.0) == 5.0
+
+
+@pytest.mark.parametrize("value", [["bad"], {"value": "bad"}])
+def test_non_string_retry_after_still_falls_through(value):
+    assert http.retry_delay_from_headers({
+        "Retry-After": value, "x-ratelimit-reset": "5",
+    }, 3.0) == 5.0
