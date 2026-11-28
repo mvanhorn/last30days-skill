@@ -331,13 +331,13 @@ def _sse(output: List[Dict[str, Any]], rid: str) -> bytes:
 
 
 class _FixtureServer(ThreadingHTTPServer):
-      """Local audit-fixture server with a listen backlog sized for the
-      concurrent probes. The default backlog (5) drops simultaneous
-      connections on macOS, resetting healthy probes and making an
-      otherwise healthy audit inconclusive. Audit-specific: the global
-      server class is untouched."""
+    """Local audit-fixture server with a listen backlog sized for the
+    concurrent probes. The default backlog (5) drops simultaneous
+    connections on macOS, resetting healthy probes and making an
+    otherwise healthy audit inconclusive. Audit-specific: the global
+    server class is untouched."""
 
-request_queue_size = 64
+    request_queue_size = 64
 
 
 class _Fixture:
