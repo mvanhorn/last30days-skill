@@ -348,6 +348,10 @@ def compute_quality_score(config: dict, research_results: dict) -> dict:
             )
             and "youtube_comments" not in env.exclude_sources(config)
         ),
+        suggest_threads=(
+            env.is_threads_available(config)
+            and "threads" not in env.exclude_sources(config)
+        ),
     ) if (core_missing or core_degraded or bonus_errored) else None
 
     return {
@@ -373,11 +377,13 @@ def _build_nudge_text(
     core_total: int | None = None,
     x_fix: Optional[prescriptions.Prescription] = None,
     suggest_youtube_comments: bool = False,
+    suggest_threads: bool = False,
 ) -> str:
     """Build human-readable nudge text describing what was missed or degraded.
 
-    Prioritizes free suggestions. Optionally mentions bonus sources
-    (TikTok, Instagram, Threads, Pinterest) if ScrapeCreators key is configured.
+    Prioritizes free suggestions (including keyless Threads, a headless
+    browser search). Optionally mentions bonus sources (TikTok, Instagram,
+    Pinterest) if ScrapeCreators key is configured.
     YouTube comments are only listed when the opt-in can actually enable them:
     not already available through yt-dlp or INCLUDE_SOURCES, and not switched
     off with EXCLUDE_SOURCES.
@@ -513,11 +519,16 @@ def _build_nudge_text(
             "the most distinctive noun in your query."
         )
 
-    # Mention bonus opt-in sources when SC key is present
+    # Threads is keyless (a headless browser); offer it only when it could
+    # actually run here and is not excluded. The other extras need the SC key.
+    if suggest_threads and "threads" not in (active_sources or []):
+        free_suggestions.append(
+            "Threads needs no key: it searches through a headless browser "
+            "(Playwright, or uv to fetch it). Add threads to INCLUDE_SOURCES "
+            "in your .env to enable."
+        )
     if has_sc:
         bonus_hints = []
-        if "threads" not in (active_sources or []):
-            bonus_hints.append("Threads")
         if "pinterest" not in (active_sources or []):
             bonus_hints.append("Pinterest")
         if suggest_youtube_comments:

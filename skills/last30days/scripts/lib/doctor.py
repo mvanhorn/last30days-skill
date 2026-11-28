@@ -250,6 +250,8 @@ KEY_PRESENCE_VARS = (
     "GITHUB_TOKEN",
     "TRUTHSOCIAL_TOKEN",
     "BSKY_APP_PASSWORD",
+    "THREADS_ACCESS_TOKEN",
+    "THREADS_APP_TOKEN",
 )
 
 # Failing statuses ranked most-specific-first for chained rollups: a broken
@@ -1052,9 +1054,27 @@ def _instagram_record(config):
 
 
 def _threads_record(config):
-    # Threads needs the key AND an INCLUDE_SOURCES=threads opt-in to run, so it
-    # is opt-in-gated (not on-by-default like TikTok/Instagram).
-    return _sc_optin_record(config, "threads", "threads")
+    # Threads is keyless (Playwright browser search, lib/threads.py) but still
+    # needs an INCLUDE_SOURCES=threads opt-in to run, since each run starts a
+    # headless browser; it never auto-activates.
+    from . import threads
+    requires = ("Playwright or uv (no API key; optional THREADS_ACCESS_TOKEN) "
+                "+ INCLUDE_SOURCES=threads")
+    if not env.is_threads_available(config):
+        if not threads.browser_enabled(config):
+            fix = f"unset {threads.BROWSER_ENV} (the Threads browser is switched off)"
+        else:
+            fix = ("install uv, or `pip install playwright && "
+                   "python -m playwright install chromium`")
+        return _record(status="unconfigured", requires=requires, fix=fix)
+    detail = threads.describe_backend(config)
+    if "threads" in env.include_sources(config):
+        return _record(status=health.OK, requires=requires, detail=detail)
+    return _record(
+        status="opt-in", requires=requires, detail=detail,
+        fix="add threads to INCLUDE_SOURCES (or request it via --search threads)",
+        note="keyless browser search; never auto-activates",
+    )
 
 
 def _telegram_record(config):

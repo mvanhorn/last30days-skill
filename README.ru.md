@@ -290,7 +290,8 @@ Reddit (с комментариями), Hacker News, Polymarket и GitHub раб
 | X / Twitter | Задайте `X_BEARER_TOKEN` для официального X API (свежие посты примерно за последнюю неделю, если у вашего проекта разработчика X нет доступа к полному архиву; в Grok Bot это запасной вариант после встроенных инструментов бота для X, в остальных местах подключается через `LAST30DAYS_X_BACKEND=xapi`), или войдите на x.com в любом браузере, или задайте `XQUIK_API_KEY` / `XAI_API_KEY` | Кредиты X API списываются с вашего проекта разработчика X; cookies браузера бесплатны; другие ключи зависят от провайдера |
 | YouTube | `brew install yt-dlp` | Бесплатно |
 | Bluesky | Пароль приложения с bsky.app | Бесплатно |
-| TikTok + Instagram + Threads + Pinterest + LinkedIn + комментарии YouTube | Ключ ScrapeCreators | 10 000 бесплатных вызовов, дальше оплата по факту |
+| TikTok + Instagram + Pinterest + LinkedIn + комментарии YouTube | Ключ ScrapeCreators | 10 000 бесплатных вызовов, дальше оплата по факту |
+| Threads | Python с `playwright` или `uv` в PATH, затем `--search threads` или `INCLUDE_SOURCES=threads`; ищет на threads.com без входа в headless-браузере | Бесплатно, без ключа |
 | TikTok (и Instagram, по возможности) без ключа | `yt-dlp`, используется, когда ключ ScrapeCreators не задан; меньше результатов, без комментариев | Бесплатно |
 | Xiaohongshu (RED) | Запустите залогиненный браузерный плагин x-mcp или сервис `xiaohongshu-mcp` и подключите источник флагом `--search xhs` на один запуск или `INCLUDE_SOURCES=xiaohongshu` в `.env`; last30days сам проверяет `http://localhost:18060`, затем `http://host.docker.internal:18060`, а для своего адреса есть `XIAOHONGSHU_API_BASE` | API-ключ last30days не нужен; зависит от вашего локального сервиса с сессией браузера |
 | DripStack (премиальные финансовые рассылки) | Подключается явно: `--search dripstack` на один запуск или `INCLUDE_SOURCES=dripstack` в `.env` | Без ключа; бесплатный открытый API поиска |

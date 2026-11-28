@@ -290,7 +290,8 @@ Bu platformlar birbirine bağlı değil. X, Reddit'in ne düşündüğünü bilm
 | X / Twitter | Resmî X API için `X_BEARER_TOKEN` ayarlayın (X geliştirici projenizde tam arşiv erişimi yoksa yaklaşık son haftanın gönderileri; Grok Bot'ta yerleşik araçlardan sonra yedek, diğer ortamlarda `LAST30DAYS_X_BACKEND=xapi` ile isteğe bağlı). Alternatif olarak tarayıcıda x.com'a giriş yapın veya `XQUIK_API_KEY` / `XAI_API_KEY` ayarlayın | X API kredileri geliştirici projenizden gelir; tarayıcı çerezleri ücretsizdir, diğer anahtarların ücretleri sağlayıcıya bağlıdır |
 | YouTube | `brew install yt-dlp` | Ücretsiz |
 | Bluesky | bsky.app uygulama parolası | Ücretsiz |
-| TikTok + Instagram + Threads + Pinterest + LinkedIn + YouTube yorumları | ScrapeCreators anahtarı | İlk 10.000 çağrı ücretsiz, sonra kullandıkça öde |
+| TikTok + Instagram + Pinterest + LinkedIn + YouTube yorumları | ScrapeCreators anahtarı | İlk 10.000 çağrı ücretsiz, sonra kullandıkça öde |
+| Threads | `playwright` kurulu Python veya PATH'te `uv`, ardından `--search threads` ya da `INCLUDE_SOURCES=threads`; threads.com'u oturum açmadan headless tarayıcıda arar | Ücretsiz, anahtar yok |
 | Anahtarsız TikTok (Instagram sınırlı) | `yt-dlp`; ScrapeCreators anahtarı yoksa kullanılır; daha az sonuç, yorum yok | Ücretsiz |
 | Xiaohongshu (RED) | Giriş yapılmış x-mcp tarayıcı eklentisi veya `xiaohongshu-mcp` çalıştırıp her çalışmada `--search xhs` ya da `.env` içinde `INCLUDE_SOURCES=xiaohongshu` ile açın. last30days önce `http://localhost:18060`, sonra `http://host.docker.internal:18060` adresini dener; özel URL için `XIAOHONGSHU_API_BASE` kullanın | last30days API anahtarı gerekmez; yerel tarayıcı oturumu hizmetinize bağlıdır |
 | DripStack (ücretli finans bültenleri) | Her çalışmada `--search dripstack` veya `.env` içinde `INCLUDE_SOURCES=dripstack` ile açın | Anahtarsız, ücretsiz genel arama API'si |

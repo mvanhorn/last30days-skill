@@ -23,7 +23,6 @@ from lib import (
     reddit,
     setup_wizard,
     telegram,
-    threads,
     tiktok,
     usage,
     youtube_yt,
@@ -116,9 +115,6 @@ class TestModuleUrlConstructionWithOverride:
     def test_telegram_endpoints(self):
         assert telegram._sc_base() == "https://mock.scrapecreators.local/v1/telegram"
 
-    def test_threads_endpoints(self):
-        assert threads._sc_base() == "https://mock.scrapecreators.local/v1/threads"
-
     def test_pinterest_endpoints(self):
         assert pinterest._sc_base() == "https://mock.scrapecreators.local/v1/pinterest"
 
@@ -159,10 +155,6 @@ class TestMonkeypatchBackwardCompatibility:
     def test_telegram_base_override(self, monkeypatch):
         monkeypatch.setattr(telegram, "SCRAPECREATORS_BASE", "https://custom.test/telegram")
         assert telegram._sc_base() == "https://custom.test/telegram"
-
-    def test_threads_base_override(self, monkeypatch):
-        monkeypatch.setattr(threads, "SCRAPECREATORS_BASE", "https://custom.test/threads")
-        assert threads._sc_base() == "https://custom.test/threads"
 
     def test_pinterest_base_override(self, monkeypatch):
         monkeypatch.setattr(pinterest, "SCRAPECREATORS_BASE", "https://custom.test/pinterest")

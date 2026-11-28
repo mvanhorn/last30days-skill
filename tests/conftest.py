@@ -83,6 +83,14 @@ def pytest_configure(config):
 
 
 @pytest.fixture(autouse=True)
+def _threads_browser_installed():
+    """Threads' browser gate looks for Chromium/Chrome on disk; CI has none.
+    Tests that exercise the gate patch ``lib.threads._find_browser``."""
+    with mock.patch("lib.threads.browser_installed", return_value=True):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _isolated_config(tmp_path_factory, monkeypatch):
     """Start each test with empty config, stores, and project discovery inputs.
 

@@ -146,6 +146,9 @@ MAX_SOURCE_FETCHES: dict[str, int] = {
     "x": 2, "jobs": 1, "linkedin": 1, "stocktwits": 1, "trustpilot": 1, "amazon": 1,
     "telegram": 1, "meta_ads": 1, "devto": 1, "v2ex": 1,
     "juejin": 1,
+    # Each Threads fetch starts a headless browser that walks its own query
+    # ladder in both modes, so one fetch per run is the budget.
+    "threads": 1,
 }
 
 # Sources whose thin result is their normal success state, so the "<3 items"
@@ -157,7 +160,9 @@ MAX_SOURCE_FETCHES: dict[str, int] = {
 #   meta_ads resolves one advertiser page per run, so a brand that genuinely
 #   ran two creatives this month is complete; a retry would re-resolve the
 #   page and re-spend the discovery credit.
-THIN_RETRY_EXEMPT: frozenset[str] = frozenset({"trustpilot", "perplexity", "meta_ads"})
+#   threads already walks a shorter-query ladder in both modes inside its one
+#   browser run, so a retry would only start another browser.
+THIN_RETRY_EXEMPT: frozenset[str] = frozenset({"trustpilot", "perplexity", "meta_ads", "threads"})
 
 # Stream-artifact keys promoted to named top-level report artifacts. A stream
 # artifact only ever reaches the report as an anonymous entry in the grounding
@@ -2627,6 +2632,9 @@ def diagnose(
         "trustpilot-pp-cli": bool(which("trustpilot-pp-cli")),
         "brightdata": bool(which("brightdata")),
         "gh": bool(which("gh")),
+        # Opted-in Threads launches a headless Chromium (Playwright, possibly
+        # fetched by `uv run --with playwright`) against threads.com.
+        "threads-browser": threads.browser_command(config) is not None,
     }
     # Network-free two-field probe (bird_installed/bird_authenticated
     # precedent): "installed" is PATH resolution, "authenticated" is a
@@ -9325,7 +9333,7 @@ def _retrieve_stream_impl(
         result = threads.search_threads(
             subquery.search_query, from_date, to_date,
             depth=depth,
-            token=config.get("SCRAPECREATORS_API_KEY"),
+            config=config,
         )
         return threads.parse_threads_response(result), _result_outcome_artifact(source, result)
     if source == "telegram":

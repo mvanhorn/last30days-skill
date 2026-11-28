@@ -53,6 +53,7 @@ PROVIDER_CREDENTIALS = {
     "brightdata": "Bright Data API key",
     "groq": "Groq API key",
     "deepline": "Deepline API key",
+    "threads_api": "Threads API access/app token",
     "hosted_api": "last30days hosted/proxy API key",
     "publish_password": "HTML publish password",
 }
@@ -307,6 +308,11 @@ def build(
         "deepline": {
             "present": _has_secret(config.get("DEEPLINE_API_KEY")),
             "label": PROVIDER_CREDENTIALS["deepline"],
+        },
+        "threads_api": {
+            "present": _has_secret(config.get("THREADS_ACCESS_TOKEN"))
+            or _has_secret(config.get("THREADS_APP_TOKEN")),
+            "label": PROVIDER_CREDENTIALS["threads_api"],
         },
         "hosted_api": {"present": hosted_api_key_present, "label": PROVIDER_CREDENTIALS["hosted_api"]},
         "publish_password": {

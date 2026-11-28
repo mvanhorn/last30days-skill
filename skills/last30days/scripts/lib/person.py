@@ -233,7 +233,7 @@ def build_person_context(
 
 _NON_SITE_HOSTS = (
     "linkedin.com", "x.com", "twitter.com", "github.com", "facebook.com",
-    "instagram.com", "youtube.com", "tiktok.com", "threads.net", "bsky.app",
+    "instagram.com", "youtube.com", "tiktok.com", "threads.net", "threads.com", "bsky.app",
     "medium.com", "substack.com",
 )
 

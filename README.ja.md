@@ -290,7 +290,8 @@ Reddit(コメント込み)、Hacker News、Polymarket、GitHub はすぐに使�
 | X / Twitter | 公式 X API 用に `X_BEARER_TOKEN` を設定（最近の投稿、およそ直近 1 週間分。X 開発者プロジェクトにフルアーカイブ検索のアクセスがある場合を除く。Grok Bot ではボットの組み込み X ツールの次のバックアップ、それ以外のホストでは `LAST30DAYS_X_BACKEND=xapi` でオプトイン）するか、任意のブラウザで x.com にログインするか、`XQUIK_API_KEY` / `XAI_API_KEY` を設定 | X API のクレジットはご自身の X 開発者プロジェクトから消費。ブラウザのクッキーは無料。その他のキーの料金は提供元によります |
 | YouTube | `brew install yt-dlp` | 無料 |
 | Bluesky | bsky.app のアプリパスワード | 無料 |
-| TikTok + Instagram + Threads + Pinterest + LinkedIn + YouTube のコメント | ScrapeCreators のキー | 1万リクエストまで無料、以降は従量課金 |
+| TikTok + Instagram + Pinterest + LinkedIn + YouTube のコメント | ScrapeCreators のキー | 1万リクエストまで無料、以降は従量課金 |
+| Threads | `playwright` 入りの Python か PATH 上の `uv`。`--search threads` または `INCLUDE_SOURCES=threads` で有効化。ヘッドレスブラウザでログインせずに threads.com を検索します | 無料、キー不要 |
 | キーなしの TikTok（Instagram は限定的） | `yt-dlp`。ScrapeCreators のキーがないときに使われます。取得件数は少なめで、コメントは取得しません | 無料 |
 | Xiaohongshu(RED) | ログイン済みの x-mcp ブラウザプラグインか `xiaohongshu-mcp` サービスを動かしたうえで、実行ごとに `--search xhs` を付けるか `.env` に `INCLUDE_SOURCES=xiaohongshu` を設定して有効化します。last30days は `http://localhost:18060`、次に `http://host.docker.internal:18060` の順に自動で接続を試し、独自のURLを使う場合は `XIAOHONGSHU_API_BASE` を指定します | last30days 側のAPIキーは不要。ローカルのブラウザセッションのサービス次第です |
 | DripStack(有料の金融ニュースレター) | 任意で有効化: 実行ごとに `--search dripstack`、または `.env` に `INCLUDE_SOURCES=dripstack` | キー不要。無料の公開検索APIを使います |

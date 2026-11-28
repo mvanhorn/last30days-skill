@@ -76,7 +76,7 @@ KEYCHAIN_KEYS = (
     "TRUTHSOCIAL_TOKEN", "BRAVE_API_KEY", "EXA_API_KEY", "SERPER_API_KEY",
     "OPENROUTER_API_KEY", "PERPLEXITY_API_KEY", "PARALLEL_API_KEY", "XQUIK_API_KEY",
     "XIAOHONGSHU_API_BASE", "GITHUB_TOKEN", "BRIGHTDATA_API_KEY",
-    "X_BEARER_TOKEN", "DEEPLINE_API_KEY",
+    "X_BEARER_TOKEN", "DEEPLINE_API_KEY", "THREADS_ACCESS_TOKEN", "THREADS_APP_TOKEN",
 )
 
 # pass(1) integration: Linux/Unix analog of the Keychain source. Each key in
@@ -873,6 +873,15 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         # Truthy -> disable Trustpilot's headless-Chrome WAF-cookie harvest in
         # automated contexts (cron/CI/eval). Read by trustpilot._harvest_allowed.
         ('LAST30DAYS_TRUSTPILOT_NO_BROWSER', None),
+        # Keyless Threads browser search (lib/threads.py): "off" disables it;
+        # THREADS_PYTHON names an interpreter that has Playwright installed.
+        ('LAST30DAYS_THREADS_BROWSER', None),
+        ('LAST30DAYS_THREADS_PYTHON', None),
+        # Optional official Threads API (lib/threads_api.py): a user token
+        # adds keyword_search, an app token (TH|id|secret) adds trending topics.
+        ('THREADS_ACCESS_TOKEN', None),
+        ('THREADS_APP_TOKEN', None),
+        ('LAST30DAYS_THREADS_TRENDS_COUNTRY', None),
         ('FROM_BROWSER', None),
         ('BROWSER_CONSENT', None),
         # Opt-in logged-in Reddit session (lib/reddit_session.py). Its own
@@ -2541,14 +2550,19 @@ def is_setup_complete(config: dict[str, Any]) -> bool:
 
 
 def is_threads_available(config: dict[str, Any]) -> bool:
-    """Check if the Threads credential is available.
+    """Check if the keyless Threads browser search can run here.
 
-    Returns True when SCRAPECREATORS_API_KEY is set. This is an availability
-    predicate only: whether Threads is actually *scheduled* is gated in the
-    pipeline's ``available_sources`` by an ``INCLUDE_SOURCES=threads`` opt-in
-    (the onboarding "Everything" tier), so a key alone no longer runs Threads.
+    Threads needs no API key: lib/threads.py drives a headless browser
+    through Playwright (this interpreter, LAST30DAYS_THREADS_PYTHON, or
+    ``uv run --with playwright``). THREADS_ACCESS_TOKEN (official API keyword
+    search) also makes it available. False when neither lane can run. This is
+    an availability predicate only:
+    whether Threads is actually *scheduled* is gated in the pipeline's
+    ``available_sources`` by an ``INCLUDE_SOURCES=threads`` opt-in (or
+    ``--search threads``), since each run starts a browser.
     """
-    return bool(config.get('SCRAPECREATORS_API_KEY'))
+    from . import threads
+    return threads.is_available(config)
 
 
 def is_instagram_available(config: dict[str, Any]) -> bool:

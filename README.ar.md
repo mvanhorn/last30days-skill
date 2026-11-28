@@ -299,7 +299,8 @@ ln -s "$(pwd)/last30days-skill/skills/last30days" ~/.claude/skills/last30days
 | X / Twitter | `X_BEARER_TOKEN` لاستخدام API الرسمية للمنشورات الحديثة، عادة خلال نحو أسبوع ما لم يملك مشروعك وصولا إلى الأرشيف الكامل، ويعمل كبديل في Grok Bot بعد أدوات X المدمجة أو اختياريا في غيره عبر `LAST30DAYS_X_BACKEND=xapi`، أو يمكنك تسجيل الدخول إلى x.com في المتصفح أو توفير `XQUIK_API_KEY` أو `XAI_API_KEY` | رصيد API تابع لمشروع X الخاص بك، أو Cookies مجانية، أو تسعير المزود الآخر |
 | YouTube | `brew install yt-dlp` | مجاني |
 | Bluesky | كلمة مرور التطبيق من bsky.app | مجاني |
-| TikTok وInstagram وThreads وPinterest وLinkedIn وتعليقات YouTube | مفتاح ScrapeCreators | 10,000 استدعاء مجاني، ثم الدفع حسب الاستخدام |
+| TikTok وInstagram وPinterest وLinkedIn وتعليقات YouTube | مفتاح ScrapeCreators | 10,000 استدعاء مجاني، ثم الدفع حسب الاستخدام |
+| Threads | Python مع `playwright` أو `uv` في PATH، ثم `--search threads` أو `INCLUDE_SOURCES=threads`؛ يبحث في threads.com دون تسجيل دخول عبر متصفح بلا واجهة | مجاني، دون مفتاح |
 | TikTok (وInstagram بتغطية محدودة) دون مفتاح | `yt-dlp`، ويُستخدم عند عدم ضبط مفتاح ScrapeCreators؛ نتائج أقل ودون تعليقات | مجاني |
 | Xiaohongshu (RED) | تشغيل `x-mcp` أو `xiaohongshu-mcp` محليا مع جلسة دخول، ثم اختيار `--search xhs` أو `INCLUDE_SOURCES=xiaohongshu` في `.env`، وتفحص last30days العنوانين `http://localhost:18060` و`http://host.docker.internal:18060` تلقائيا، أو تستخدم `XIAOHONGSHU_API_BASE` لعنوان آخر | لا تحتاج إلى مفتاح API خاص بـlast30days، وتتوقف التكلفة على خدمة جلسة المتصفح المحلية |
 | DripStack | تفعيل `--search dripstack` أو `INCLUDE_SOURCES=dripstack` | API عامة مجانية دون مفتاح |
