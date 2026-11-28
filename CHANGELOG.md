@@ -9,6 +9,21 @@ This project uses [towncrier](https://towncrier.readthedocs.io/). Upcoming notes
 
 <!-- towncrier release notes start -->
 
+## [4.8.1] - 2026-11-28
+
+### Changed
+
+- Juejin and V2EX are now listed in the "Sources, scored by the people" table of the English and all 11 translated READMEs, after the Xiaohongshu (RED) row. Both are free and keyless, so they belong in the main source table rather than the "Bring your own keys" table. Fixes #1651. ([#1651](https://github.com/mvanhorn/last30days-skill/issues/1651))
+- Configuration docs clarify that caption-free YouTube videos are not speech-to-text transcribed and Groq/OpenAI keys do not enable that path.
+
+### Fixed
+
+- Reports on emerging or rising topics no longer discard relevant evidence because a leading trend word is mistaken for the subject. ([#1645](https://github.com/mvanhorn/last30days-skill/issues/1645))
+- Juejin articles with a malformed timestamp or an extreme engagement count no longer abort parsing: an invalid date is reported as missing, and a negative or overflowing counter counts as no signal. ([#1649](https://github.com/mvanhorn/last30days-skill/issues/1649))
+- Finished briefs, library pages, and hosted-mode saves for long topics now use the same shortened filename as local saves instead of failing with "File name too long".
+- The research engine no longer creates Python bytecode caches inside installed skill directories.
+
+
 ## [4.8.0] - 2026-11-27
 
 ### Added
