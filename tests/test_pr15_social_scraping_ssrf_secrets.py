@@ -50,7 +50,6 @@ from lib import (
     pinterest,
     public_host,
     telegram,
-    threads,
     transcribe,
     truthsocial,
     xiaohongshu_api,
@@ -305,12 +304,7 @@ class TestHigh183TokenValidationAndSecretScrubbing:
                 assert ts_res["statuses"] == []
                 assert ts_res["error"] == "Invalid token format"
 
-                # 2. Threads
-                th_res = threads.search_threads(
-                    "ai agents", "2026-06-01", "2026-06-30", token=malformed_token,
-                )
-                assert th_res["items"] == []
-                assert th_res["error"] == "Invalid token format"
+                # 2. Threads is keyless (Playwright browser search): no token.
 
                 # 3. Pinterest
                 pi_res = pinterest.search_pinterest(
@@ -360,7 +354,6 @@ class TestHigh183TokenValidationAndSecretScrubbing:
             for output in (
                 stderr,
                 ts_res["error"],
-                th_res["error"],
                 pi_res["error"],
                 li_res["error"],
                 rp_res["detail"],
@@ -378,10 +371,6 @@ class TestHigh183TokenValidationAndSecretScrubbing:
         with mock.patch.object(truthsocial.http, "request", return_value={"statuses": []}) as ts_req:
             truthsocial.search_truthsocial("ai", "2026-06-01", "2026-06-30", config={"TRUTHSOCIAL_TOKEN": token_with_nl})
         assert ts_req.call_args.kwargs["headers"]["Authorization"] == "Bearer valid_devtools_secret_999"
-
-        with mock.patch.object(threads.http, "get", return_value={"items": []}) as th_get:
-            threads.search_threads("ai", "2026-06-01", "2026-06-30", token=token_with_nl)
-        assert th_get.call_args.kwargs["headers"]["x-api-key"] == "valid_devtools_secret_999"
 
         with mock.patch.object(pinterest.http, "get", return_value={"pins": []}) as pi_get:
             pinterest.search_pinterest("ai", "2026-06-01", "2026-06-30", token=token_with_nl)
@@ -423,8 +412,6 @@ class TestHigh183TokenValidationAndSecretScrubbing:
         try:
             with mock.patch.object(truthsocial.http, "request", side_effect=leaking_exc):
                 ts = truthsocial.search_truthsocial("ai", "2026-06-01", "2026-06-30", config={"TRUTHSOCIAL_TOKEN": secret})
-            with mock.patch.object(threads.http, "get", side_effect=leaking_exc):
-                th = threads.search_threads("ai", "2026-06-01", "2026-06-30", token=secret)
             with mock.patch.object(pinterest.http, "get", side_effect=leaking_exc):
                 pi = pinterest.search_pinterest("ai", "2026-06-01", "2026-06-30", token=secret)
             with mock.patch.object(linkedin.http, "get", side_effect=leaking_exc):
@@ -447,7 +434,7 @@ class TestHigh183TokenValidationAndSecretScrubbing:
             assert tg["items"] == []
             assert "error" in tg
             stderr = capsys.readouterr().err
-            for surface in (stderr, ts["error"], th["error"], pi["error"], li["error"], tg["error"], bs["error"]):
+            for surface in (stderr, ts["error"], pi["error"], li["error"], tg["error"], bs["error"]):
                 assert secret not in surface
                 assert "<redacted>" in surface
         finally:

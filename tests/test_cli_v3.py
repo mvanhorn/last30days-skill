@@ -192,11 +192,13 @@ class CliV3Tests(unittest.TestCase):
         with (
             mock.patch.object(sys, "argv", [
                 "last30days.py", "best rust async tools",
-                # local fork: tiktok runs keyless (shortform_oss), so use two
-                # SC-keyed sources to exercise the none-available exit path.
+                # local fork: tiktok runs keyless (shortform_oss), so use
+                # telegram (SC-keyed) and threads with its browser switched
+                # off to exercise the none-available exit path.
                 "--search", "telegram,threads", "--quick", "--web-backend", "none",
             ]),
-            mock.patch.object(cli.env, "get_config", return_value={}),
+            mock.patch.object(cli.env, "get_config",
+                              return_value={"LAST30DAYS_THREADS_BROWSER": "off"}),
             mock.patch.object(cli.pipeline, "diagnose", return_value={}),
             mock.patch.dict(os.environ, {"LAST30DAYS_SKIP_PREFLIGHT": "1"}),
             redirect_stderr(stderr),
@@ -211,9 +213,9 @@ class CliV3Tests(unittest.TestCase):
         self.assertIn("last30days.py doctor", stderr.getvalue())
         self.assertNotIn("Traceback", stderr.getvalue())
 
-    def test_explicit_threads_search_uses_scrapecreators_key_without_include_sources(self):
+    def test_explicit_threads_search_runs_keyless_without_include_sources(self):
         available = cli.pipeline.available_sources(
-            {"SCRAPECREATORS_API_KEY": "test-key", "INCLUDE_SOURCES": ""},
+            {"LAST30DAYS_THREADS_PYTHON": sys.executable, "INCLUDE_SOURCES": ""},
             requested_sources=["threads"],
         )
         self.assertIn("threads", available)

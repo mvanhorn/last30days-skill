@@ -231,7 +231,7 @@ The magic of /last30days is Reddit comments + X posts together - and both are fr
 
 **Bonus: TikTok, Instagram, YouTube comments (ScrapeCreators):**
 - `SCRAPECREATORS_API_KEY=xxx` - 10,000 free calls at scrapecreators.com.
-- After adding your key, set `INCLUDE_SOURCES=tiktok,instagram` to turn on the popular ones. (Threads, Pinterest, LinkedIn, and Meta Ads are also available via `INCLUDE_SOURCES=threads,pinterest,linkedin,meta_ads` for power users.)
+- After adding your key, set `INCLUDE_SOURCES=tiktok,instagram` to turn on the popular ones. (Pinterest, LinkedIn, and Meta Ads are also available via `INCLUDE_SOURCES=pinterest,linkedin,meta_ads` for power users; Threads needs no key.)
 
 **Other optional sources (add anytime):**
 - `PERPLEXITY_API_KEY=xxx` - preferred Agent/Search API path with citations; set `INCLUDE_SOURCES=perplexity`. Existing `OPENROUTER_API_KEY` installs keep the synchronous Sonar fallback.

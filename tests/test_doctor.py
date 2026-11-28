@@ -1582,29 +1582,39 @@ class BackupAndCommentLanes(unittest.TestCase):
 
 
 class ThreadsOptIn(unittest.TestCase):
-    """U6: Threads reports opt-in state honestly against INCLUDE_SOURCES."""
+    """U6: Threads (keyless browser search) reports opt-in state honestly."""
 
-    def test_key_without_optin_is_could_be_on(self):
-        report = _build({"SCRAPECREATORS_API_KEY": "dummy-sc-secret-000"})
+    BROWSER = {"LAST30DAYS_THREADS_PYTHON": sys.executable}
+
+    def test_browser_without_optin_is_could_be_on(self):
+        report = _build(dict(self.BROWSER))
         rec = report["sources"]["threads"]
         self.assertEqual("opt-in", rec["status"])
         self.assertEqual(doctor.AUDIT_COULD_BE_ON, rec["audit_state"])
         self.assertIn("INCLUDE_SOURCES", rec["fix"])
+        self.assertNotIn("SCRAPECREATORS", rec["requires"])
 
-    def test_key_with_optin_is_working(self):
-        report = _build(
-            {
-                "SCRAPECREATORS_API_KEY": "dummy-sc-secret-000",
-                "INCLUDE_SOURCES": "tiktok,instagram,threads",
-            }
-        )
+    def test_browser_with_optin_is_working_without_key(self):
+        report = _build({**self.BROWSER, "INCLUDE_SOURCES": "tiktok,instagram,threads"})
         rec = report["sources"]["threads"]
         self.assertEqual("ok", rec["status"])
 
-    def test_no_key_is_could_be_on_with_sc_fix(self):
-        rec = _build({})["sources"]["threads"]
+    def test_sc_key_alone_does_not_matter(self):
+        rec = _build({
+            "SCRAPECREATORS_API_KEY": "dummy-sc-secret-000",
+            "LAST30DAYS_THREADS_BROWSER": "off",
+            "INCLUDE_SOURCES": "threads",
+        })["sources"]["threads"]
+        self.assertEqual("unconfigured", rec["status"])
+        self.assertIn("LAST30DAYS_THREADS_BROWSER", rec["fix"])
+
+    def test_no_browser_is_could_be_on_with_install_fix(self):
+        from lib import threads as threads_mod
+        with mock.patch.object(threads_mod, "browser_command", return_value=None):
+            rec = _build({})["sources"]["threads"]
         self.assertEqual("unconfigured", rec["status"])
         self.assertEqual(doctor.AUDIT_COULD_BE_ON, rec["audit_state"])
+        self.assertIn("playwright", rec["fix"])
 
     def test_tiktok_on_by_default_with_key_unchanged(self):
         # Regression: TikTok/Instagram stay on-by-default with a key (WORKING),

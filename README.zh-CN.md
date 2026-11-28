@@ -289,7 +289,8 @@ Reddit（含评论）、Hacker News、Polymarket 和 GitHub 无需任何配置�
 | X / Twitter | 设置 `X_BEARER_TOKEN` 使用官方 X API（近期帖子，大约最近一周；除非你的 X 开发者项目拥有完整归档访问权限。Grok Bot 上作为机器人内置 X 工具之后的备用方式，其他宿主需通过 `LAST30DAYS_X_BACKEND=xapi` 选择启用），或在任意浏览器中登录 x.com，或设置 `XQUIK_API_KEY` / `XAI_API_KEY` | X API 额度来自你自己的 X 开发者项目；浏览器 Cookie 免费；其他密钥费用取决于服务商 |
 | YouTube | `brew install yt-dlp` | 免费 |
 | Bluesky | 来自 bsky.app 的应用密码 | 免费 |
-| TikTok + Instagram + Threads + Pinterest + LinkedIn + YouTube 评论 | ScrapeCreators 密钥 | 前 10,000 次调用免费，之后按量付费 |
+| TikTok + Instagram + Pinterest + LinkedIn + YouTube 评论 | ScrapeCreators 密钥 | 前 10,000 次调用免费，之后按量付费 |
+| Threads | 装有 `playwright` 的 Python，或 PATH 上的 `uv`，再用 `--search threads` 或 `INCLUDE_SOURCES=threads`；以无头浏览器在未登录状态下搜索 threads.com | 免费，无需密钥 |
 | 无密钥的 TikTok（Instagram 覆盖有限） | `yt-dlp`，未设置 ScrapeCreators 密钥时使用；结果较少，不含评论 | 免费 |
 | 小红书（RED） | 运行已登录的 x-mcp 浏览器插件或 `xiaohongshu-mcp` 服务，并在单次运行中通过 `--search xhs` 启用，或在 `.env` 中设置 `INCLUDE_SOURCES=xiaohongshu`；last30days 会依次自动探测 `http://localhost:18060` 和 `http://host.docker.internal:18060`，也可通过 `XIAOHONGSHU_API_BASE` 指定自定义地址 | last30days 不需要 API 密钥；依赖本地浏览器会话服务 |
 | DripStack（付费金融通讯） | 每次运行通过 `--search dripstack` 启用，或在 `.env` 中设置 `INCLUDE_SOURCES=dripstack` | 无需密钥；公共搜索 API 免费 |

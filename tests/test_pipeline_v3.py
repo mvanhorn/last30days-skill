@@ -1,3 +1,4 @@
+import sys
 import contextlib
 import dataclasses
 import threading
@@ -2611,10 +2612,12 @@ class TestScrapeCreatorsTierGating(unittest.TestCase):
         self.assertIn("instagram", avail)
 
     def test_threads_off_without_include_sources(self):
-        self.assertNotIn("threads", pipeline.available_sources(dict(self.KEY)))
+        cfg = {**self.KEY, "LAST30DAYS_THREADS_PYTHON": sys.executable}
+        self.assertNotIn("threads", pipeline.available_sources(cfg))
 
     def test_threads_on_with_include_sources(self):
-        cfg = {**self.KEY, "INCLUDE_SOURCES": "threads"}
+        # Keyless: the browser path, not the SC key, makes Threads available.
+        cfg = {"LAST30DAYS_THREADS_PYTHON": sys.executable, "INCLUDE_SOURCES": "threads"}
         self.assertIn("threads", pipeline.available_sources(cfg))
 
     def test_pinterest_off_without_include_sources(self):

@@ -233,6 +233,8 @@ class TestHigh064PermissionPreflight:
             "BRIGHTDATA_API_KEY": "dummy-brightdata-064",
             "GROQ_API_KEY": "dummy-groq-064",
             "DEEPLINE_API_KEY": "dummy-deepline-064",
+            "THREADS_ACCESS_TOKEN": "dummy-threads-user-064",
+            "THREADS_APP_TOKEN": "dummy-threads-app-064",
             "LAST30DAYS_API_KEY": "dummy-hosted-064",
             "LAST30DAYS_PUBLISH_PASSWORD": "dummy-publish-064",
         }
@@ -251,6 +253,7 @@ class TestHigh064PermissionPreflight:
             "brightdata",
             "groq",
             "deepline",
+            "threads_api",
             "hosted_api",
             "publish_password",
         ):

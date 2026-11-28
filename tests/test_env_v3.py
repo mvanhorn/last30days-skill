@@ -1,3 +1,4 @@
+import sys
 import os
 import unittest
 from pathlib import Path
@@ -148,28 +149,30 @@ class XurlSafePathGatingTests(unittest.TestCase):
 
 
 class ThreadsAvailabilityTests(unittest.TestCase):
-    """Threads is in the SC default-on family: same key, same per-call cost
-    shape as TikTok / Instagram, so the same default-on rule applies.
-    Suppression goes through EXCLUDE_SOURCES, not gated opt-in."""
+    """Threads is keyless: availability means a Playwright browser can run.
 
-    def test_threads_available_with_sc_key_only(self):
-        self.assertTrue(env.is_threads_available({"SCRAPECREATORS_API_KEY": "k"}))
+    Scheduling is gated separately by INCLUDE_SOURCES in the pipeline's
+    available_sources (see TestScrapeCreatorsTierGating); the predicate only
+    reports whether the browser path exists.
+    """
 
-    def test_threads_unavailable_without_sc_key(self):
-        self.assertFalse(env.is_threads_available({}))
-        self.assertFalse(env.is_threads_available({"INCLUDE_SOURCES": "threads"}))
+    BROWSER = {"LAST30DAYS_THREADS_PYTHON": sys.executable}
 
-    def test_threads_availability_predicate_is_key_only(self):
-        """is_threads_available is availability-only (key present).
+    def test_threads_available_without_any_key(self):
+        self.assertTrue(env.is_threads_available(dict(self.BROWSER)))
 
-        Scheduling is gated separately by INCLUDE_SOURCES in the pipeline's
-        available_sources (see TestScrapeCreatorsTierGating) — the predicate
-        itself only reports whether the credential exists.
-        """
-        self.assertTrue(env.is_threads_available({
-            "SCRAPECREATORS_API_KEY": "k",
-            "INCLUDE_SOURCES": "",
+    def test_threads_off_switch(self):
+        self.assertFalse(env.is_threads_available({
+            **self.BROWSER, "LAST30DAYS_THREADS_BROWSER": "off",
         }))
+
+    def test_sc_key_does_not_make_threads_available(self):
+        from lib import threads
+        with mock.patch.object(threads, "browser_command", return_value=None):
+            self.assertFalse(env.is_threads_available({"SCRAPECREATORS_API_KEY": "k"}))
+
+    def test_threads_availability_predicate_ignores_include_sources(self):
+        self.assertTrue(env.is_threads_available({**self.BROWSER, "INCLUDE_SOURCES": ""}))
 
 
 class TikTokApifyTokenTests(unittest.TestCase):

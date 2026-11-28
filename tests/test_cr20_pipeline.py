@@ -78,9 +78,10 @@ def test_unconfigured_search_sources_name_the_sources(monkeypatch):
     with pytest.raises(pipeline.NoRequestedSourceAvailable, match="--search can run here: telegram, threads"):
         pipeline.run(
             topic="rust async",
-            config={},
+            # threads is keyless (Playwright); switch its browser off here.
+            config={"LAST30DAYS_THREADS_BROWSER": "off"},
             depth="quick",
-            # local fork: tiktok runs keyless (shortform_oss); threads is SC-keyed.
+            # local fork: tiktok runs keyless (shortform_oss).
             requested_sources=["telegram", "threads"],
             web_backend="none",
         )

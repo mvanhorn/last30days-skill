@@ -89,7 +89,7 @@ DIAGNOSE_PROVIDERS_KEYS = {"google", "openai", "xai", "openrouter", "perplexity"
 DIAGNOSE_BROWSER_COOKIES_KEYS = {"mode", "browsers", "reads_values"}
 DIAGNOSE_EXTERNAL_COMMANDS_KEYS = {
     "yt-dlp", "digg-pp-cli", "arxiv-pp-cli", "techmeme-pp-cli", "trustpilot-pp-cli",
-    "brightdata", "gh",
+    "brightdata", "gh", "threads-browser",
 }
 DIAGNOSE_CREDENTIAL_DESTINATIONS_KEYS = {"global_env"}
 
@@ -119,7 +119,7 @@ PREFLIGHT_CREDENTIALS_KEYS = {
     # diagnose.providers (whose key set above stays frozen).
     "x_bearer", "x_cookies", "brave", "exa", "serper", "parallel", "bluesky",
     "truthsocial", "apify", "xquik", "brightdata", "groq", "deepline",
-    "hosted_api", "publish_password",
+    "threads_api", "hosted_api", "publish_password",
 }
 PREFLIGHT_NETWORK_KEYS = {
     "available_sources", "hosted_mode", "native_search", "endpoint_overrides",

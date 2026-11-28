@@ -182,7 +182,7 @@ _PLATFORM_HOSTS = {
     "facebook.com", "instagram.com", "tiktok.com", "linkedin.com",
     "wikipedia.org", "medium.com", "trustpilot.com", "crunchbase.com",
     "bloomberg.com", "apple.com", "play.google.com", "google.com",
-    "threads.com", "pinterest.com", "glassdoor.com", "indeed.com",
+    "threads.com", "threads.net", "pinterest.com", "glassdoor.com", "indeed.com",
     "news.ycombinator.com", "substack.com", "amazon.com", "ebay.com",
 }
 

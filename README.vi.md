@@ -290,7 +290,8 @@ Các nền tảng này không có quan hệ với nhau. X không biết Reddit n
 | X / Twitter | Đặt `X_BEARER_TOKEN` cho X API chính thức (bài đăng gần đây, khoảng tuần qua, trừ khi dự án nhà phát triển X của bạn có quyền truy cập kho lưu trữ đầy đủ; một dự phòng trên Grok Bot sau các công cụ X tích hợp của bot, tuỳ chọn tham gia ở nơi khác bằng `LAST30DAYS_X_BACKEND=xapi`), hoặc đăng nhập vào x.com trong bất kỳ trình duyệt nào, hoặc đặt `XQUIK_API_KEY` / `XAI_API_KEY` | Tín dụng X API đến từ dự án nhà phát triển X của bạn; cookie trình duyệt miễn phí; các khóa khác tùy thuộc nhà cung cấp |
 | YouTube | `brew install yt-dlp` | Miễn phí |
 | Bluesky | Mật khẩu ứng dụng từ bsky.app | Miễn phí |
-| TikTok + Instagram + Threads + Pinterest + LinkedIn + bình luận YouTube | Khóa ScrapeCreators | 10.000 cuộc gọi miễn phí, sau đó PAYG |
+| TikTok + Instagram + Pinterest + LinkedIn + bình luận YouTube | Khóa ScrapeCreators | 10.000 cuộc gọi miễn phí, sau đó PAYG |
+| Threads | Python có `playwright` hoặc `uv` trên PATH, rồi `--search threads` hoặc `INCLUDE_SOURCES=threads`; tìm trên threads.com không đăng nhập bằng trình duyệt headless | Miễn phí, không cần khóa |
 | TikTok (và Instagram, tối đa khả năng) không cần khóa | `yt-dlp`, dùng khi không có khóa ScrapeCreators (`INCLUDE_SOURCES=tiktok,instagram`) | Miễn phí |
 | Xiaohongshu (RED) | Chạy một plugin trình duyệt x-mcp đã đăng nhập hoặc dịch vụ `xiaohongshu-mcp` và chọn tham gia bằng `--search xhs` mỗi lượt chạy hoặc `INCLUDE_SOURCES=xiaohongshu` trong `.env`; last30days tự thăm dò `http://localhost:18060` rồi `http://host.docker.internal:18060`, hoặc dùng `XIAOHONGSHU_API_BASE` cho một URL tùy chỉnh | Không cần API key của last30days; phụ thuộc vào dịch vụ phiên trình duyệt cục bộ của bạn |
 | DripStack (bản tin tài chính cao cấp) | Tuỳ chọn tham gia: `--search dripstack` mỗi lượt chạy, hoặc `INCLUDE_SOURCES=dripstack` trong `.env` | Không cần khóa; API tìm kiếm công khai miễn phí |
