@@ -242,6 +242,14 @@ class TestHigh136GrokAuditOidcAuthMode:
                 recorded_auths = {r["authorization"] for r in fixture.requests}
             assert recorded_auths == {f"Bearer oidc-jwt-{i}" for i in range(worker_count)}
 
+    def test_fixture_servers_backlog_fits_concurrent_probes(self):
+        # The fixture releases 12 clients at once; the default listen
+        # backlog (5) drops simultaneous connections on macOS, resetting
+        # healthy probes. The fixture servers must accept the whole burst.
+        with grok_audit._Fixture([]) as fixture:
+            assert fixture._api.request_queue_size >= 12
+            assert fixture._proxy.request_queue_size >= 12
+
 
 # ---------------------------------------------------------------------------
 # HIGH-137: grok_x raw CLI stderr/stdout secret leakage & auth detection
