@@ -15,6 +15,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import socket
 import subprocess
 import sys
 import threading
@@ -241,6 +242,19 @@ class TestHigh136GrokAuditOidcAuthMode:
             with fixture._lock:
                 recorded_auths = {r["authorization"] for r in fixture.requests}
             assert recorded_auths == {f"Bearer oidc-jwt-{i}" for i in range(worker_count)}
+
+    def test_fixture_servers_backlog_fits_concurrent_probes(self, monkeypatch):
+        listen = socket.socket.listen
+        backlogs = {}
+
+        def record_listen(server_socket, backlog):
+            listen(server_socket, backlog)
+            backlogs[server_socket] = backlog
+
+        monkeypatch.setattr(socket.socket, "listen", record_listen)
+        with grok_audit._Fixture([]) as fixture:
+            assert backlogs[fixture._api.socket] >= 12
+            assert backlogs[fixture._proxy.socket] >= 12
 
 
 # ---------------------------------------------------------------------------
