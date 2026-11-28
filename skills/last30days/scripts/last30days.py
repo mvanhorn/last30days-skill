@@ -46,6 +46,9 @@ def ensure_supported_python(version_info: tuple[int, int, int] | object | None =
 
 ensure_supported_python()
 
+# Installed skill directories hold source; runtime imports must not add caches.
+sys.dont_write_bytecode = True
+
 if os.name == "nt":
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
