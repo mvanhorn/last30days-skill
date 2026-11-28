@@ -86,8 +86,8 @@ Nếu bạn sắp gặp một CEO, bạn đã đọc hết tweet và bản ghi c
 | **Threads** | Lớp văn bản thời hậu Twitter. Các cuộc trò chuyện từ nhà sáng tạo và thương hiệu. |
 | **Pinterest** | Khám phá trực quan. Pin, lượt lưu và bình luận về sản phẩm và ý tưởng. |
 | **Xiaohongshu (RED)** | Tín hiệu lối sống, sản phẩm và nhà sáng tạo của Trung Quốc. Yêu cầu rõ ràng bằng `--search xhs` khi một plugin trình duyệt x-mcp đã đăng nhập hoặc dịch vụ `xiaohongshu-mcp` đang chạy cục bộ. |
-| **Juejin** | Chinese developer write-ups on what just shipped, ranked by likes, comments, saves, and views. Opt in with `--search juejin` or `INCLUDE_SOURCES=juejin`. Free, no API key. |
-| **V2EX** | The Chinese developer forum: threads and replies from the top topics. Opt in with `--search v2ex` or `INCLUDE_SOURCES=v2ex`. Free, no API key. |
+| **Juejin** | Bài viết của lập trình viên Trung Quốc về những gì vừa ra mắt, xếp hạng theo lượt thích, bình luận, lưu và xem. Chọn tham gia bằng `--search juejin` hoặc `INCLUDE_SOURCES=juejin`. Miễn phí, không cần khóa API. |
+| **V2EX** | Diễn đàn lập trình viên Trung Quốc: chủ đề và phản hồi từ các mục nổi bật. Chọn tham gia bằng `--search v2ex` hoặc `INCLUDE_SOURCES=v2ex`. Miễn phí, không cần khóa API. |
 | **Bluesky** | Lớp mạng xã hội phi tập trung. Các bài đăng AT Protocol từ làn sóng rời Twitter. |
 | **Perplexity** | Tổng hợp Agent API có kiểm soát, dự phòng OpenRouter Sonar, các hàng Search API thô, và Deep Research tường minh. |
 | **DEV Community (dev.to)** | Bài viết của lập trình viên và bình luận hàng đầu qua API công khai, không cần khóa. Chọn tham gia bằng `--devto-tags`, `--search devto`, hoặc `INCLUDE_SOURCES=devto`. |

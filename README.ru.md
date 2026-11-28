@@ -86,8 +86,8 @@ Google собирает мнения редакторов. /last30days ищет 
 | **Threads** | Текстовый слой после Twitter. Разговоры авторов и брендов. |
 | **Pinterest** | Визуальные находки. Пины, сохранения и комментарии о товарах и идеях. |
 | **Xiaohongshu (RED)** | Китайские сигналы о стиле жизни, товарах и авторах. Подключается явно флагом `--search xhs`, когда локально работает залогиненный браузерный плагин x-mcp или сервис `xiaohongshu-mcp`. |
-| **Juejin** | Chinese developer write-ups on what just shipped, ranked by likes, comments, saves, and views. Opt in with `--search juejin` or `INCLUDE_SOURCES=juejin`. Free, no API key. |
-| **V2EX** | The Chinese developer forum: threads and replies from the top topics. Opt in with `--search v2ex` or `INCLUDE_SOURCES=v2ex`. Free, no API key. |
+| **Juejin** | Статьи китайских разработчиков о том, что только что вышло, с ранжированием по лайкам, комментариям, сохранениям и просмотрам. Подключается флагом `--search juejin` или `INCLUDE_SOURCES=juejin`. Бесплатно, без API-ключа. |
+| **V2EX** | Китайский форум разработчиков: треды и ответы из главных тем. Подключается флагом `--search v2ex` или `INCLUDE_SOURCES=v2ex`. Бесплатно, без API-ключа. |
 | **Bluesky** | Децентрализованный социальный слой. Посты в AT Protocol после массового ухода из Twitter. |
 | **Perplexity** | Управляемый синтез через Agent API, запасной вариант Sonar через OpenRouter, сырые строки Search API и Deep Research по явному запросу. |
 | **DEV Community (dev.to)** | Статьи разработчиков и лучшие комментарии через открытый API без ключа. Подключается флагами `--devto-tags`, `--search devto` или `INCLUDE_SOURCES=devto`. |

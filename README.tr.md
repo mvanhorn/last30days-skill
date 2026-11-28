@@ -86,8 +86,8 @@ Bir CEO ile görüşecekseniz son 30 gündeki tüm gönderilerini ve YouTube dö
 | **Threads** | Twitter sonrası metin katmanı. İçerik üreticilerinin ve markaların konuşmaları. |
 | **Pinterest** | Görsel keşif. Ürün ve fikirlere ilişkin pinler, kaydetmeler ve yorumlar. |
 | **Xiaohongshu (RED)** | Çin'den yaşam tarzı, ürün ve içerik üreticisi sinyalleri. Yerelde giriş yapılmış x-mcp tarayıcı eklentisi veya `xiaohongshu-mcp` hizmeti çalışırken `--search xhs` ile açıkça istenir. |
-| **Juejin** | Chinese developer write-ups on what just shipped, ranked by likes, comments, saves, and views. Opt in with `--search juejin` or `INCLUDE_SOURCES=juejin`. Free, no API key. |
-| **V2EX** | The Chinese developer forum: threads and replies from the top topics. Opt in with `--search v2ex` or `INCLUDE_SOURCES=v2ex`. Free, no API key. |
+| **Juejin** | Yeni çıkanlar üzerine Çinli geliştirici yazıları; beğeni, yorum, kaydetme ve görüntülenmeye göre sıralanır. `--search juejin` veya `INCLUDE_SOURCES=juejin` ile etkinleştirin. Ücretsiz, API anahtarı gerekmez. |
+| **V2EX** | Çin'in geliştirici forumu: öne çıkan konulardan başlıklar ve yanıtlar. `--search v2ex` veya `INCLUDE_SOURCES=v2ex` ile etkinleştirin. Ücretsiz, API anahtarı gerekmez. |
 | **Bluesky** | Merkeziyetsiz sosyal katman. Twitter sonrası göçten gelen AT Protocol gönderileri. |
 | **Perplexity** | Kontrollü Agent API sentezi, yedek OpenRouter Sonar, ham Search API satırları ve açıkça istenen Deep Research. |
 | **DEV Community (dev.to)** | Genel, anahtarsız API üzerinden geliştirici yazıları ve öne çıkan yorumlar. `--devto-tags`, `--search devto` veya `INCLUDE_SOURCES=devto` ile etkinleştirin. |

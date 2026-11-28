@@ -86,8 +86,8 @@ npx skills add mvanhorn/last30days-skill -g
 | **Threads** | لایه متنی پس از توییتر. گفتگوهای میان تولیدکنندگان محتوا و برندها. |
 | **Pinterest** | کشف بصری. پین‌ها، ذخیره‌ها و نظرات درباره محصولات و ایده‌ها. |
 | **Xiaohongshu (RED)** | سیگنال‌های سبک زندگی، محصول و تولیدکنندگان محتوای چینی. به طور صریح با `--search xhs` فراخوانی می‌شود در صورتی که پلاگین مرورگر ورود به سیستم x-mcp یا سرویس `xiaohongshu-mcp` به صورت محلی در حال اجرا باشد. |
-| **Juejin** | Chinese developer write-ups on what just shipped, ranked by likes, comments, saves, and views. Opt in with `--search juejin` or `INCLUDE_SOURCES=juejin`. Free, no API key. |
-| **V2EX** | The Chinese developer forum: threads and replies from the top topics. Opt in with `--search v2ex` or `INCLUDE_SOURCES=v2ex`. Free, no API key. |
+| **Juejin** | نوشته‌های توسعه‌دهندگان چینی درباره آنچه تازه منتشر شده، رتبه‌بندی‌شده بر اساس لایک، نظر، ذخیره و بازدید. فعال‌سازی اختیاری با `--search juejin` یا `INCLUDE_SOURCES=juejin`. رایگان و بدون کلید API. |
+| **V2EX** | انجمن توسعه‌دهندگان چینی: رشته‌ها و پاسخ‌ها از موضوعات برتر. فعال‌سازی اختیاری با `--search v2ex` یا `INCLUDE_SOURCES=v2ex`. رایگان و بدون کلید API. |
 | **Bluesky** | لایه اجتماعی غیرمتمرکز. پست‌های پروتکل AT حاصل از مهاجرت پس از توییتر. |
 | **Perplexity** | سنتز کنترل‌شده Agent API، جایگزین OpenRouter Sonar، ردیف‌های خام Search API و جستجوی عمیق صریح Deep Research. |
 | **DEV Community (dev.to)** | مقالات توسعه‌دهندگان و نظرات برتر از طریق API عمومی و بدون کلید. فعال‌سازی اختیاری با `--devto-tags`، `--search devto` یا `INCLUDE_SOURCES=devto`. |

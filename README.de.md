@@ -86,8 +86,8 @@ Wenn du dich mit einem CEO triffst: Hast du alle Tweets und YouTube-Transkripte 
 | **Threads** | Die Textebene nach Twitter. Gespräche von Creators und Marken. |
 | **Pinterest** | Visuelle Entdeckung. Pins, gespeicherte Beiträge und Kommentare zu Produkten und Ideen. |
 | **Xiaohongshu (RED)** | Chinesische Signale zu Lifestyle, Produkten und Creators. Wird ausdrücklich mit `--search xhs` angefordert, wenn lokal ein eingeloggtes x-mcp-Browser-Plugin oder ein `xiaohongshu-mcp`-Dienst läuft. |
-| **Juejin** | Chinese developer write-ups on what just shipped, ranked by likes, comments, saves, and views. Opt in with `--search juejin` or `INCLUDE_SOURCES=juejin`. Free, no API key. |
-| **V2EX** | The Chinese developer forum: threads and replies from the top topics. Opt in with `--search v2ex` or `INCLUDE_SOURCES=v2ex`. Free, no API key. |
+| **Juejin** | Chinesische Entwicklerartikel zu frisch Veröffentlichtem, gewichtet nach Likes, Kommentaren, Speicherungen und Aufrufen. Aktivierung mit `--search juejin` oder `INCLUDE_SOURCES=juejin`. Kostenlos, ohne API-Schlüssel. |
+| **V2EX** | Das chinesische Entwicklerforum: Threads und Antworten aus den Top-Themen. Aktivierung mit `--search v2ex` oder `INCLUDE_SOURCES=v2ex`. Kostenlos, ohne API-Schlüssel. |
 | **Bluesky** | Die dezentrale soziale Ebene. AT-Protocol-Beiträge aus der Abwanderung nach Twitter. |
 | **Perplexity** | Gesteuerte Agent-API-Synthese, OpenRouter-Sonar-Fallback, Rohtreffer der Search API und explizite Deep Research. |
 | **DEV Community (dev.to)** | Entwicklerartikel und Top-Kommentare über die öffentliche API ohne Schlüssel. Aktivierung mit `--devto-tags`, `--search devto` oder `INCLUDE_SOURCES=devto`. |
