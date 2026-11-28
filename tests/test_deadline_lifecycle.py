@@ -1,6 +1,7 @@
 import errno
 import json
 import os
+import shutil
 import socket
 import signal
 import sqlite3
@@ -12,6 +13,7 @@ import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlsplit
 from unittest.mock import patch
 
@@ -221,6 +223,25 @@ def test_owned_get_preserves_redirect_auth_policy(local_http, children, cross_or
     else:
         assert lowered["authorization"] == "Bearer dummy"
         assert lowered["x-api-key"] == "dummy-key"
+
+
+def test_owned_get_worker_keeps_installed_sources_clean(local_http, tmp_path, monkeypatch):
+    url, _, _, _ = local_http
+    installed = tmp_path / "installed skill" / "lib"
+    shutil.copytree(
+        Path(bounded_get.__file__).parent, installed,
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+    )
+    monkeypatch.setattr(bounded_get, "__file__", str(installed / "bounded_get.py"))
+
+    req = urllib.request.Request(url + "/echo", headers={"X-Example": "worker"})
+    status, body, error = bounded_get.get(
+        req, timeout=3, deadline_monotonic=time.monotonic() + 5, bypass_proxy=True,
+    )
+    assert status == 200 and error is None
+    assert json.loads(body)["X-Example"] == "worker"
+    assert not list(installed.rglob("__pycache__"))
+    assert not list(installed.rglob("*.pyc"))
 
 
 def test_owned_get_cancellation_reaps_transport(local_http, children):

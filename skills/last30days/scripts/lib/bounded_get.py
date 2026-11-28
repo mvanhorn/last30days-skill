@@ -346,7 +346,7 @@ def get(
         transport_deadline = deadline_monotonic - 2 * CLEANUP_GRACE_SECONDS
         try:
             result = subproc.run_with_timeout(
-                [sys.executable, "-I", str(Path(__file__).resolve())],
+                [sys.executable, "-I", "-B", str(Path(__file__).resolve())],
                 timeout=max(0, transport_deadline - time.monotonic()),
                 deadline_monotonic=transport_deadline,
                 input_text=json.dumps(payload),

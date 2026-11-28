@@ -286,3 +286,5 @@ def test_packaged_runtime_resolves_from_a_path_with_spaces_outside_cwd(packaged_
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout == str(tmp_path / "saved research")
+    assert not list(installed.rglob("__pycache__"))
+    assert not list(installed.rglob("*.pyc"))
