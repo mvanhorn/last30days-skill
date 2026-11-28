@@ -330,6 +330,16 @@ def _sse(output: List[Dict[str, Any]], rid: str) -> bytes:
     return "".join(chunks).encode()
 
 
+class _FixtureServer(ThreadingHTTPServer):
+      """Local audit-fixture server with a listen backlog sized for the
+      concurrent probes. The default backlog (5) drops simultaneous
+      connections on macOS, resetting healthy probes and making an
+      otherwise healthy audit inconclusive. Audit-specific: the global
+      server class is untouched."""
+
+request_queue_size = 64
+
+
 class _Fixture:
     """Fake xAI endpoint plus a refusing proxy, both on 127.0.0.1."""
 
@@ -405,8 +415,8 @@ class _Fixture:
 
             do_CONNECT = do_GET = do_POST = do_PUT = do_HEAD = _refuse
 
-        self._api = ThreadingHTTPServer(("127.0.0.1", 0), Api)
-        self._proxy = ThreadingHTTPServer(("127.0.0.1", 0), Proxy)
+        self._api = _FixtureServer(("127.0.0.1", 0), Api)
+        self._proxy = _FixtureServer(("127.0.0.1", 0), Proxy)
         self.base = f"http://127.0.0.1:{self._api.server_address[1]}/v1"
         self.proxy = f"http://127.0.0.1:{self._proxy.server_address[1]}"
 
