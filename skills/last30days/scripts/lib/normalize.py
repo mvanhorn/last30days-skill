@@ -682,7 +682,7 @@ def _normalize_juejin(
         author=str(item.get("author") or ""),
         container="Juejin",
         published_at=item.get("date"),
-        date_confidence=_date_confidence(item, from_date, to_date, default="high"),
+        date_confidence=_date_confidence(item, from_date, to_date, default="low"),
         engagement=item.get("engagement") or {},
         relevance_hint=item.get("relevance", 0.5),
         why_relevant=str(item.get("why_relevant") or ""),

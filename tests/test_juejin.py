@@ -268,6 +268,14 @@ def test_parse_treats_a_malformed_ctime_as_missing():
         assert item["date"] == ""
 
 
+def test_normalized_item_with_a_malformed_ctime_has_low_date_confidence():
+    row = _row(1, "Claude Code one")
+    row["result_model"]["article_info"]["ctime"] = float("inf")
+    [item] = _source_items([row])
+    assert item.published_at in (None, "")
+    assert item.date_confidence == "low"
+
+
 def test_parse_clamps_negative_engagement_counts():
     row = _row(1, "Claude Code", likes=-3, comments=-2)
     [item] = juejin.parse_juejin_response(
