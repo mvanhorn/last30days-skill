@@ -100,3 +100,22 @@ def test_every_readme_lists_yahoo_finance_as_a_source() -> None:
         assert len(rows) == 1, path.name
         assert "`yahoo-finance-pp-cli`" in rows[0], path.name
         assert rows[0].count("|") == 3, path.name
+
+
+def test_every_readme_lists_the_chinese_developer_sources() -> None:
+    for path in READMES.values():
+        text = path.read_text(encoding="utf-8")
+        juejin_rows = [
+            line for line in text.splitlines() if line.startswith("| **Juejin** |")
+        ]
+        v2ex_rows = [
+            line for line in text.splitlines() if line.startswith("| **V2EX** |")
+        ]
+        assert len(juejin_rows) == 1, f"{path.name}: expected 1 Juejin row, got {len(juejin_rows)}"
+        assert len(v2ex_rows) == 1, f"{path.name}: expected 1 V2EX row, got {len(v2ex_rows)}"
+        jr = juejin_rows[0]
+        vr = v2ex_rows[0]
+        assert "`--search juejin`" in jr and "INCLUDE_SOURCES=juejin" in jr, path.name
+        assert "`--search v2ex`" in vr and "INCLUDE_SOURCES=v2ex" in vr, path.name
+        assert jr.count("|") == 3, path.name
+        assert vr.count("|") == 3, path.name

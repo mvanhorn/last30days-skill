@@ -86,6 +86,8 @@ Si te vas a reunir con un CEO, ¿te has leído todos sus tuits y todas sus trans
 | **Threads** | La capa de texto posterior a Twitter. Conversaciones de creadores y marcas. |
 | **Pinterest** | Descubrimiento visual. Pines, guardados y comentarios sobre productos e ideas. |
 | **Xiaohongshu (RED)** | Señales chinas sobre estilo de vida, productos y creadores. Se pide de forma explícita con `--search xhs` cuando tienes corriendo en local un plugin de navegador x-mcp con sesión iniciada o un servicio `xiaohongshu-mcp`. |
+| **Juejin** | Artículos de desarrolladores chinos sobre lo que acaba de salir, ordenados por likes, comentarios, guardados y vistas. Actívalo con `--search juejin` o `INCLUDE_SOURCES=juejin`. Gratis, sin clave de API. |
+| **V2EX** | El foro de desarrolladores chino: hilos y respuestas de los temas principales. Actívalo con `--search v2ex` o `INCLUDE_SOURCES=v2ex`. Gratis, sin clave de API. |
 | **Bluesky** | La capa social descentralizada. Publicaciones de AT Protocol surgidas de la migración posterior a Twitter. |
 | **Perplexity** | Síntesis controlada con la Agent API, alternativa Sonar mediante OpenRouter, resultados en bruto de la Search API y Deep Research explícita. |
 | **DEV Community (dev.to)** | Artículos de desarrolladores y mejores comentarios mediante la API pública, sin clave. Actívalo con `--devto-tags`, `--search devto` o `INCLUDE_SOURCES=devto`. |

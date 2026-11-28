@@ -89,6 +89,8 @@ Google 聚合编辑选出的内容，`/last30days` 搜索真实的人。
 | **Threads** | 后 Twitter 时代的文字内容层，汇集创作者和品牌的讨论。 |
 | **Pinterest** | 视觉发现：围绕产品和创意的 Pin、收藏与评论。 |
 | **小红书（RED）** | 来自中国生活方式、产品和创作者的信号。当本机运行已登录的 x-mcp 浏览器插件或 `xiaohongshu-mcp` 服务时，通过 `--search xhs` 显式启用。 |
+| **Juejin** | 稀土掘金上关于新发布内容的中文开发者文章，按点赞、评论、收藏和浏览量排序。通过 `--search juejin` 或 `INCLUDE_SOURCES=juejin` 按需启用。免费，无需 API 密钥。 |
+| **V2EX** | 中文开发者论坛：热门节点中的主题与回复。通过 `--search v2ex` 或 `INCLUDE_SOURCES=v2ex` 按需启用。免费，无需 API 密钥。 |
 | **Bluesky** | 去中心化的社交内容层，搜索 Twitter 用户迁移后产生的 AT Protocol 帖子。 |
 | **Perplexity** | 受控 Agent API 综合结果、OpenRouter Sonar 回退、原始 Search API 数据和显式 Deep Research。 |
 | **DEV Community（dev.to）** | 通过无需密钥的公共 API 搜索开发者文章和热门评论。通过 `--devto-tags`、`--search devto` 或 `INCLUDE_SOURCES=devto` 按需启用。 |
