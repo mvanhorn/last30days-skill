@@ -253,13 +253,23 @@ def save_finished_brief(brief: CapturedBrief, save_dir: Path | str) -> SaveResul
     finished_dir = base_dir / FINISHED_SUBDIR
     _ensure_finished_dir(finished_dir, private=brief.is_private)
 
-    stem_prefix = f"{brief.slug}-{brief.published_date.isoformat()}"
+    stem_prefix = f"{library.filename_slug(brief.slug)}-{brief.published_date.isoformat()}"
     candidates = [finished_dir / f"{stem_prefix}.md"]
     candidates.extend(finished_dir / f"{stem_prefix}-{idx}.md" for idx in range(2, 100))
+    # Briefs saved before filenames were shortened kept the full slug. Check
+    # those names too so re-saving one is still reported as a duplicate.
+    legacy_prefix = f"{brief.slug}-{brief.published_date.isoformat()}"
+    legacy = []
+    if legacy_prefix != stem_prefix:
+        legacy = [finished_dir / f"{legacy_prefix}.md"]
+        legacy.extend(finished_dir / f"{legacy_prefix}-{idx}.md" for idx in range(2, 100))
 
     with _finished_dir_lock(finished_dir):
-        for existing in candidates:
-            if not existing.exists():
+        for existing in [*legacy, *candidates]:
+            try:
+                if not existing.exists():
+                    continue
+            except OSError:
                 continue
             try:
                 existing_text = existing.read_text(encoding="utf-8")

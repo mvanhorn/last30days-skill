@@ -309,3 +309,74 @@ Engineers compare Qdrant, LanceDB, and SQLite-vec for hybrid search.
     assert list((tmp_path / "finished").glob("*.tmp")) == []
 
 
+def test_finished_brief_for_a_long_topic_gets_a_short_filename(tmp_path):
+    full_topic = "multi model comparison across providers and pricing tiers " * 8
+    raw_path = tmp_path / "long-topic-raw.md"
+    raw_path.write_text(
+        f"# last30days v4.5.0: {full_topic}\n\n- Date range: 2026-10-22 to 2026-11-21\n",
+        encoding="utf-8",
+    )
+    brief_text = f"""🌐 last30days · Multi model comparison across providers... · Oct 22 to Nov 21, 2026 · v4.5.0
+
+What I learned:
+
+Teams compare model pricing tiers across providers.
+
+```text
+---
+✅ All agents reported back!
+├─ 🟠 Reddit: 10 threads
+├─ 🗓️ Oct 22 to Nov 21, 2026
+└─ 📎 Raw results saved to {raw_path}
+---
+```
+"""
+    captured = brief_capture.extract_finished_brief(brief_text)
+    assert captured is not None
+    assert captured.slug == library.slugify(full_topic)
+
+    saved = brief_capture.save_finished_brief(captured, tmp_path)
+    assert saved.status == "saved"
+    assert len(saved.path.name.encode("utf-8")) < 255
+    parsed = library.parse_markdown_file(saved.path, source_format="finished-brief")
+    assert parsed.slug == captured.slug
+    assert len(parsed.output_name.encode("utf-8")) < 255
+
+
+def test_resaving_a_long_topic_brief_saved_under_its_full_slug_is_a_duplicate(tmp_path):
+    # A 190-character slug fit under the 255-byte limit before filenames were
+    # shortened, so a brief may already exist under its full-slug name.
+    topic = "agent frameworks compared " * 8
+    raw_path = tmp_path / "raw.md"
+    raw_path.write_text(
+        f"# last30days v4.5.0: {topic}\n\n- Date range: 2026-10-22 to 2026-11-21\n",
+        encoding="utf-8",
+    )
+    brief_text = f"""🌐 last30days · Agent frameworks compared... · Oct 22 to Nov 21, 2026 · v4.5.0
+
+What I learned:
+
+Teams keep comparing agent frameworks.
+
+```text
+---
+✅ All agents reported back!
+├─ 🟠 Reddit: 10 threads
+├─ 🗓️ Oct 22 to Nov 21, 2026
+└─ 📎 Raw results saved to {raw_path}
+---
+```
+"""
+    captured = brief_capture.extract_finished_brief(brief_text)
+    assert captured is not None
+    assert len(captured.slug) > 180
+    finished = tmp_path / "finished"
+    finished.mkdir()
+    legacy = finished / f"{captured.slug}-{captured.published_date.isoformat()}.md"
+    legacy.write_text(captured.content, encoding="utf-8")
+
+    saved = brief_capture.save_finished_brief(captured, tmp_path)
+
+    assert saved.status == "duplicate"
+    assert saved.path == legacy
+    assert sorted(p.name for p in finished.glob("*.md")) == [legacy.name]

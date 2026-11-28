@@ -548,7 +548,7 @@ class LibraryEntry:
 
     @property
     def output_name(self) -> str:
-        return f"{self.slug}-{self.identity_hash}-{self.published_date.isoformat()}.html"
+        return f"{filename_slug(self.slug)}-{self.identity_hash}-{self.published_date.isoformat()}.html"
 
     @property
     def identity_hash(self) -> str:
@@ -562,6 +562,19 @@ class LibraryEntry:
 def slugify(value: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
     return slug or "last30days"
+
+
+def filename_slug(slug: str, max_length: int = 180) -> str:
+    """Shorten a slug for use in a filename.
+
+    Filenames built from long topics can exceed the OS 255-byte limit
+    (macOS errno 63). Truncate and append a hash of the full slug so distinct
+    long topics still get distinct, deterministic names.
+    """
+    if len(slug) <= max_length:
+        return slug
+    digest = hashlib.sha1(slug.encode("utf-8")).hexdigest()[:10]
+    return f"{slug[:max_length].rstrip('-')}-{digest}"
 
 
 @contextmanager
