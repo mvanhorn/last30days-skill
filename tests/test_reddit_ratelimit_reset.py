@@ -5,6 +5,8 @@ every step of which is shorter than the ~42s Reddit actually requires, so each
 retry re-429s and the source is reported dead when it was only early.
 """
 
+from datetime import datetime, timezone
+
 from lib import http
 
 
@@ -36,8 +38,9 @@ class TestRetryDelayFromHeaders:
         assert http.retry_delay_from_headers({}, 7.5) == 7.5
         assert http.retry_delay_from_headers(None, 7.5) == 7.5
 
-    def test_unparseable_values_use_fallback(self):
-        # Retry-After may be an HTTP-date rather than a delta-seconds integer.
+    def test_expired_date_and_unparseable_values_use_fallback(self, monkeypatch):
+        now = datetime(2026, 10, 22, tzinfo=timezone.utc).timestamp()
+        monkeypatch.setattr(http.time, "time", lambda: now)
         assert http.retry_delay_from_headers({"Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT"}, 4.0) == 4.0
         assert http.retry_delay_from_headers({"x-ratelimit-reset": ""}, 4.0) == 4.0
 

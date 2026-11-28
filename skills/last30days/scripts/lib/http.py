@@ -5,7 +5,7 @@ import io
 import ipaddress
 import json
 from collections import OrderedDict
-from datetime import timezone
+from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 import math
 import os
@@ -74,6 +74,25 @@ RETRY_DELAY = 2.0
 MAX_RETRY_DELAY_SECONDS = 60.0
 # A reset value this large is an absolute epoch timestamp, not delta-seconds.
 _EPOCH_RESET_THRESHOLD = 100_000_000.0
+_RFC850_DATE = re.compile(
+    r"[A-Za-z]+, [0-9]{2}-[A-Za-z]{3}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} GMT"
+)
+
+
+def _retry_after_date_delay(raw: str, now: float) -> float:
+    retry_at = parsedate_to_datetime(raw)
+    # Obsolete HTTP asctime dates omit GMT but still mean UTC.
+    if retry_at.tzinfo is None:
+        retry_at = retry_at.replace(tzinfo=timezone.utc)
+    if _RFC850_DATE.fullmatch(raw.strip()):
+        # HTTP uses a rolling 50-year limit for RFC 850's two-digit year.
+        current = datetime.fromtimestamp(now, tz=timezone.utc)
+        limit_year = current.year + 50
+        year = limit_year - (limit_year - retry_at.year) % 100
+        if year == limit_year and retry_at.timetuple()[1:6] > current.timetuple()[1:6]:
+            year -= 100
+        retry_at = retry_at.replace(year=year)
+    return retry_at.timestamp() - now
 
 
 def retry_delay_from_headers(headers, fallback):
@@ -117,11 +136,7 @@ def retry_delay_from_headers(headers, fallback):
             if name != "Retry-After" or not isinstance(raw, str):
                 continue
             try:
-                retry_at = parsedate_to_datetime(raw)
-                # Obsolete HTTP asctime dates omit GMT but still mean UTC.
-                if retry_at.tzinfo is None:
-                    retry_at = retry_at.replace(tzinfo=timezone.utc)
-                value = retry_at.timestamp() - time.time()
+                value = _retry_after_date_delay(raw, time.time())
             except (TypeError, ValueError, OverflowError, OSError):
                 continue
         else:

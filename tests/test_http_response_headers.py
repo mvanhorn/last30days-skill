@@ -303,6 +303,22 @@ def test_http_date_retry_delay_keeps_cap_and_header_precedence(monkeypatch):
     }, 3.0) == 5.0
 
 
+@pytest.mark.parametrize(("current_year", "retry_after", "delay"), [
+    (2069, "Thursday, 28-Nov-69 12:00:30 GMT", 30.0),
+    (2019, "Thursday, 28-Nov-69 12:00:00 GMT", http.MAX_RETRY_DELAY_SECONDS),
+    (2019, "Friday, 28-Nov-69 12:00:01 GMT", 5.0),
+    (2018, "Thursday, 28-Nov-68 12:00:01 GMT", 5.0),
+])
+def test_rfc850_retry_after_uses_rolling_fifty_year_limit(monkeypatch, current_year, retry_after, delay):
+    from datetime import datetime, timezone
+
+    now = datetime(current_year, 11, 28, 12, 0, tzinfo=timezone.utc).timestamp()
+    monkeypatch.setattr(http.time, "time", lambda: now)
+    assert http.retry_delay_from_headers({
+        "Retry-After": retry_after, "x-ratelimit-reset": "5",
+    }, 3.0) == delay
+
+
 @pytest.mark.parametrize("value", [["bad"], {"value": "bad"}])
 def test_non_string_retry_after_still_falls_through(value):
     assert http.retry_delay_from_headers({
